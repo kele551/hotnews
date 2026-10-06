@@ -1,4 +1,4 @@
-hotnews · 热点新闻检索 v1.1.1
+hotnews · 热点新闻检索 v1.2.0
 =====================================
 
 一、项目说明
@@ -93,24 +93,33 @@ hotnews · 热点新闻检索 v1.1.1
     2) python app.py
     3) 浏览器打开 http://localhost:8000
 
-八、翻译后端配置
+八、自动更新（v1.2.0 新增）
+  · 启动时后台静默检查新版本（约 5 秒后，不阻塞使用）
+  · 发现新版 → 自动下载 → 校验 sha256 → 退出时自动替换并重启
+  · 页面右上角「检查更新」按钮可手动触发
+  · 更新源：Gitee（国内下载稳定，约 1.4MB/s）
+    https://gitee.com/kele551/hotnews
+  · 关闭自动更新：config.json 里把 update.enabled 改成 false
+  · 检查失败（无网络）静默忽略，不影响正常使用
+
+九、翻译后端配置
   国际新闻源为英文，可配置翻译为中文。编辑 config.json：
     backend: mymemory（免费免 key，默认兜底）/ baidu（需 appid + secret）
              / deepl（需 auth_key）
   实测：mymemory 可用，例如
     "Global markets rallied today" -> "全球市场今日反弹"
 
-九、打包
+十、打包
   python build.py                                   # 源码包 + 绿色版 zip
   python make_icon.py                               # 重新生成图标
   pyinstaller build_exe.spec --clean --noconfirm    # 单文件 exe（约 14 秒）
   注意 build_exe.spec 里 console=False（不弹黑窗）；
   改成 True 可恢复控制台观察启动过程。
 
-十、已知取舍
-  · 本副本是按「热点新闻检索 · 项目说明」文档重建的，原仓库
-    https://gitee.com/kele551/hotnews.git 为私有仓库（匿名访问 403），
-    本地无代码副本，如有本地改动过的逻辑需自行 merge。
+十一、已知取舍
+  · 本副本早期按「热点新闻检索 · 项目说明」文档重建，现已接管
+    Gitee 仓库 https://gitee.com/kele551/hotnews.git（已转公开）作为
+    更新源，GitHub 为镜像（https://github.com/kele551/hotnews）。
   · httpx 走 trust_env=False 直连：环境里的代理会让 RSS 抓取从
     0.1s 劣化到约 20s，因此全程绕开代理。
   · 启动时后台预热两个 Region，首屏打开即见数据（约 8s 内就绪）。
