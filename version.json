@@ -1,9 +1,3 @@
 {
-  "version": "1.3.0",
-  "launcher": {
-    "url": "https://gitee.com/kele551/hotnews/releases/download/v1.3.0/hotnews-v1.3.0.exe",
-    "sha256": "26A500D591A31B3EE6A0569EBB16CD53927DE89CF4EEAA5664824F15A1F7FC4D",
-    "size": 14242285
-  },
-  "notes": "新增「实时热点」板块（今日头条热榜，免 cookie、国内直连，含标题/热度/链接，每5分钟刷新）；修复：已是最新仍误报有更新（单文件 exe 读不到内置 version.json）；主页/标题乱码（中关村在线 RSS 为 GBK 字节，改为按原始字节交给 feedparser 解码）；更新替换改用 wscript 无黑窗；exe 嵌入版本资源（悬停显示版本号）并注明作者与联系邮箱。"
+  "version": "1.4.0"
 }
