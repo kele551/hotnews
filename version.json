@@ -1,9 +1,9 @@
 {
-  "version": "1.2.0",
-  "notes": "新增自动更新（Gitee 国内下载源）+ 图片质量修复",
+  "version": "1.2.1",
+  "notes": "修复：自动更新替换 exe 时弹黑窗、检查更新卡住不动",
   "launcher": {
-    "url": "https://gitee.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
-    "sha256": "CE845DEF8D93F84A47ADF471B955C5F56D2890BC81557FDF2F560EBB0AFB2C69",
-    "size": 14234876
+    "url": "https://gitee.com/kele551/hotnews/releases/download/v1.2.1/hotnews-v1.2.1.exe",
+    "sha256": "2531A7E5B083DDCC78CF938F8A2B4A738A7F3A4238C41787BDFCBC31EC23B333",
+    "size": 14236500
   }
 }
