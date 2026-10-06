@@ -9,3 +9,21 @@ __pycache__/
 *.pyc
 uvicorn.log
 pyi.log
+build/
+
+# 临时调试脚本 / 抓取快照 / 历史 exe 归档（一次性验证用，不入库）
+_probe*.py
+_check*.py
+_dbg_*.py
+_retry_*.py
+_home*.html
+_probe_nbc_home.html
+_cn_check.json
+_smoke_*.json
+hotnews_cn_test.json
+_shot/
+_news.opml
+hotnews_build_archive/
+_mefcl_*.py
+_test_collect.py
+_ifeng_news_home.html
