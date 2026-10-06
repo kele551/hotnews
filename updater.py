@@ -2,16 +2,16 @@
 """
 hotnews 自动更新模块
 --------------------------------------------------------------
-版本来源：GitHub raw 上的 version.json
-  https://raw.githubusercontent.com/kele551/hotnews/main/version.json
+版本来源：Gitee 仓库的 version.json（国内下载稳定，GitHub 仅作镜像）
+  https://raw.giteeusercontent.com/kele551/hotnews/raw/master/version.json
 
 version.json 结构（含 launcher 字段才支持自动下载）：
   {
     "version": "1.2.0",
     "launcher": {
-      "url":    "https://github.com/kele551/hotnews/releases/download/v1.2.0/热点新闻.exe",
+      "url":    "https://gitee.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
       "sha256": "大写十六进制，64 位",
-      "size":   14226182
+      "size":   14234524
     },
     "notes": "更新说明（可选）"
   }
@@ -37,9 +37,9 @@ try:
 except ImportError:
     httpx = None
 
-REMOTE_VERSION_URL = "https://raw.githubusercontent.com/kele551/hotnews/main/version.json"
-# 国内直连 raw.githubusercontent 可能被墙，回落到 jsDelivr CDN 镜像
-REMOTE_VERSION_URL_ALT = "https://cdn.jsdelivr.net/gh/kele551/hotnews@main/version.json"
+# 国内下载源：Gitee（raw.giteeusercontent.com 是 Gitee raw 的实际存储域名，国内直连稳定）
+REMOTE_VERSION_URL = "https://raw.giteeusercontent.com/kele551/hotnews/raw/master/version.json"
+REMOTE_VERSION_URL_ALT = "https://gitee.com/kele551/hotnews/raw/master/version.json"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
