@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<!--
+  World edition (English-only shell).
+
+  Why this page exists:
+    The main UI is Chinese and uses a machine-translation backend that can be
+    slow or rate-limited. Instead of blocking the feed on translation, this page
+    is served as a genuinely English document (<html lang="en">) so the browser's
+    own full-page translation (Edge / Chrome) can take over instantly and free.
+
+  How it is used:
+    click "Browser translate" in the World tab -> this page opens -> the browser
+    offers to translate it into Chinese with one click.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>World News - HotNews</title>
+<style>
+  :root{
+    --primary:#1a4d8f;
+    --accent:#e8632f;
+    --bg:#f4f6fa;
+    --card:#ffffff;
+    --line:#e3e8f0;
+    --text:#1c2430;
+    --muted:#6b7789;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    background:var(--bg);color:var(--text);
+    font-size:18px;line-height:1.65;-webkit-font-smoothing:antialiased;
+  }
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:20px 32px;
+    position:sticky;top:0;z-index:50}
+  .hd-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  h1{font-size:28px;font-weight:700;letter-spacing:.5px}
+  h1 span{color:var(--accent)}
+  .badge{background:#eaf0fa;color:var(--primary);border-radius:999px;
+    padding:4px 14px;font-size:14px;font-weight:600}
+  .spacer{flex:1}
+  .tip{
+    margin-top:14px;background:#fff7f2;border:1px solid #f6d9c7;border-left:4px solid var(--accent);
+    border-radius:9px;padding:11px 16px;color:#8a4a24;font-size:15px;line-height:1.6;
+  }
+  .tip b{color:#6d3717}
+  .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px}
+  button.act{font-family:inherit;font-size:16px;font-weight:600;cursor:pointer;
+    padding:9px 20px;border-radius:9px;border:1px solid var(--line);
+    background:var(--card);color:var(--text);transition:.15s}
+  button.act:hover{border-color:var(--primary);color:var(--primary)}
+  button.act.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .meta{color:var(--muted);font-size:15px}
+  main{padding:24px 32px 60px}
+  .grid{display:grid;gap:22px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;display:flex;flex-direction:column;
+    transition:transform .16s ease, box-shadow .16s ease}
+  .card:hover{transform:translateY(-3px);box-shadow:0 8px 22px rgba(26,77,143,.12)}
+  .thumb{height:190px;background:#eceff4;position:relative;overflow:hidden}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb.ph{height:104px;background:linear-gradient(118deg,#16406f 0%,#2b6bb0 58%,#3f83c9 100%);
+    display:flex;align-items:center;justify-content:center;position:relative}
+  .thumb.ph i{font-style:normal;font-size:24px;font-weight:800;color:rgba(255,255,255,.94);
+    letter-spacing:4px}
+  .body{padding:15px 18px 17px;display:flex;flex-direction:column;gap:9px;flex:1}
+  .tags{display:flex;gap:8px;align-items:center;font-size:14px}
+  .tag{background:#eef1f6;color:var(--muted);border-radius:5px;padding:2px 9px}
+  .tag.cls{background:#fdeee5;color:var(--accent);font-weight:600}
+  .card h2{font-size:19px;font-weight:700;line-height:1.5}
+  .card h2 a{color:var(--text);text-decoration:none}
+  .card h2 a:hover{color:var(--primary)}
+  .desc{color:var(--muted);font-size:15px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .time{color:var(--muted);font-size:14px;margin-top:auto}
+  .empty{padding:60px;text-align:center;color:var(--muted)}
+  footer{padding:18px 32px;color:var(--muted);font-size:14px;border-top:1px solid var(--line);
+    background:var(--card)}
+</style>
+</head>
+<body>
+<header>
+  <div class="hd-top">
+    <h1>World News<span> Feed</span></h1>
+    <span class="badge" id="ver">v-</span>
+    <div class="spacer"></div>
+  </div>
+  <div class="tip" id="tip">
+    <b>To read this page in Chinese:</b> your browser can translate the whole page itself.
+    In <b>Microsoft Edge</b> or <b>Chrome</b>, click the translate icon at the right end of the
+    address bar, or right-click the page and choose <b>"Translate to Chinese (Simplified)"</b>.
+    This uses the browser's own translator - no quota, no waiting for our server.
+  </div>
+  <div class="toolbar">
+    <button class="act primary" id="reload">Reload</button>
+    <button class="act" id="back">Back to main UI</button>
+    <span class="meta" id="meta"></span>
+  </div>
+</header>
+<main><div id="grid"><div class="empty">Loading the latest world headlines...</div></div></main>
+<footer>HotNews &middot; World edition &middot; contact: 75219857@qq.com</footer>
+
+<script>
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
+
+function shortLabel(s){
+  s = String(s||"");
+  if(!s) return "";
+  return /^[\x00-\x7F]+$/.test(s) ? s.slice(0,3).toUpperCase() : s.slice(0,3);
+}
+
+function imgUrl(u){
+  if(!u) return "";
+  // route third-party images through our proxy (adds Referer when needed)
+  return /^https?:\/\//.test(u) ? "/img?url=" + encodeURIComponent(u) : u;
+}
+
+function fmt(ts){
+  if(!ts) return "";
+  const d = new Date(ts*1000);
+  const diff = (Date.now() - ts*1000)/1000;
+  if(diff < 3600) return Math.max(1, Math.round(diff/60)) + " min ago";
+  if(diff < 86400) return Math.round(diff/3600) + " hr ago";
+  return Math.round(diff/86400) + " d ago · " + d.toLocaleDateString("en-US",
+    {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
+}
+
+function card(it){
+  // show the ORIGINAL English text (title_en holds it once a translation exists)
+  const title = it.title_en || it.title || "";
+  const desc  = it.desc_en  || it.desc  || "";
+  const thumb = it.image
+    ? `<div class="thumb"><img loading="lazy" src="${esc(imgUrl(it.image))}" alt=""></div>`
+    : `<div class="thumb ph"><i>${esc(shortLabel(it.label||it.channel))}</i></div>`;
+  return `<article class="card">
+    ${thumb}
+    <div class="body">
+      <div class="tags">
+        ${it.cls?`<span class="tag cls">${esc(it.cls)}</span>`:""}
+        <span class="tag">${esc(it.label||it.channel||"")}</span>
+      </div>
+      <h2><a href="${esc(it.link||"#")}" target="_blank" rel="noopener">${esc(title)}</a></h2>
+      <p class="desc">${esc(desc)}</p>
+      <span class="time">${esc(fmt(it.published))}</span>
+    </div></article>`;
+}
+
+async function load(){
+  document.getElementById("meta").textContent = "Loading...";
+  try{
+    const r = await fetch("/api/news?region=intl&limit=200");
+    const js = await r.json();
+    const items = js.items || [];
+    document.getElementById("ver").textContent = "v" + (js.version || "-");
+    document.getElementById("grid").innerHTML = items.length
+      ? `<div class="grid">` + items.map(card).join("") + `</div>`
+      : `<div class="empty">Nothing loaded yet. The feed may still be warming up - press Reload.</div>`;
+    document.getElementById("meta").textContent = items.length + " articles";
+  }catch(e){
+    document.getElementById("grid").innerHTML =
+      `<div class="empty">Load failed: ${esc(e.message)}</div>`;
+  }
+}
+
+document.getElementById("reload").onclick = load;
+document.getElementById("back").onclick = ()=>{ location.href = "/"; };
+load();
+</script>
+</body>
+</html>

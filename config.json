@@ -5,6 +5,7 @@
   "translate": {
     "enabled": true,
     "backend": "mymemory",
+    "contact": "kele551@example.com",
     "baidu": {
       "appid": "",
       "secret": ""

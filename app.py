@@ -81,7 +81,7 @@ def main():
     running = find_running()
     if running:
         print(f"[ok] 已有实例在 {running} 端口运行，直接打开浏览器")
-        webbrowser.open(f"http://localhost:{running}")
+        webbrowser.open(f"http://127.0.0.1:{running}")
         return
 
     # 2) 没有实例 → 启动
@@ -91,7 +91,7 @@ def main():
               f"请先释放端口后重试。")
         return
 
-    url = f"http://localhost:{port}"
+    url = f"http://127.0.0.1:{port}"
     print("=" * 52)
     print(f"  热点新闻检索  v{VERSION}")
     print(f"  访问地址:  {url}")

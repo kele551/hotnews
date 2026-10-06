@@ -74,7 +74,8 @@ def fetch_remote():
         return None
     for url in (REMOTE_VERSION_URL, REMOTE_VERSION_URL_ALT):
         try:
-            r = httpx.get(url, timeout=8, follow_redirects=True,
+            # trust_env=False：不走系统/环境代理，直连 Gitee 更快更稳（同 server._fetch）
+            r = httpx.get(url, timeout=5, follow_redirects=True, trust_env=False,
                           headers={"User-Agent": "hotnews-updater"})
             if r.status_code == 200:
                 return r.json()
@@ -86,9 +87,13 @@ def fetch_remote():
 def check(silent=True):
     """
     检查是否有更新。返回状态：
-      {"status": "latest"|"update"|"error", "remote": <ver>, "message": <str>}
+      {"status": "latest"|"update"|"error"|"checking", "remote": <ver>, "message": <str>}
+    非阻塞：若已有检查在进行，直接返回 checking，避免手动点按钮被后台检查卡住。
     """
-    with _lock:
+    if not _lock.acquire(blocking=False):
+        return {"status": "checking", "remote": _state.get("remote"),
+                "message": "检查进行中，请稍候"}
+    try:
         try:
             remote = fetch_remote()
             if not remote or not remote.get("version"):
@@ -106,12 +111,29 @@ def check(silent=True):
         except Exception as ex:
             _state.update(status="error", message=f"检查失败: {type(ex).__name__}", remote=None)
             return _state.copy()
+    finally:
+        _lock.release()
+
+
+def _res(rel):
+    """资源定位：兼容 PyInstaller 单文件（_MEIPASS 解包目录）与源码目录。
+    单文件 exe 运行时 version.json 在 _MEIPASS，不在 exe 同级目录，必须用这个定位。"""
+    cands = []
+    if getattr(sys, "_MEIPASS", None):
+        cands.append(os.path.join(sys._MEIPASS, rel))
+    cands.append(os.path.join(BASE_DIR, rel))
+    for p in cands:
+        if os.path.exists(p):
+            return p
+    return cands[-1]
 
 
 def _read_local_version():
-    """本地版本，跟 server.VERSION 同源（读 version.json，兜底 1.1.0）"""
+    """本地版本，跟 server.VERSION 同源（读 version.json，兜底 1.1.0）。
+    必须用 _res 定位：单文件 exe 的 version.json 在 _MEIPASS，直接按 BASE_DIR 读会找不到
+    → 误判 1.1.0 → 远端 1.2.1 永远大于它 → 已是最新也提示有更新（2026-10-06 修复）。"""
     try:
-        with open(os.path.join(BASE_DIR, "version.json"), "r", encoding="utf-8") as f:
+        with open(_res("version.json"), "r", encoding="utf-8") as f:
             return json.load(f).get("version", "1.1.0")
     except Exception:
         return "1.1.0"
@@ -159,57 +181,63 @@ def download_and_prepare(remote):
             os.remove(tmp_exe)
             return False, "校验失败，文件可能被篡改"
 
-    # 写替换脚本：杀掉旧进程 → 覆盖 → 重启
-    _write_replace_bat(tmp_exe)
+    # 写替换脚本：等待主程序退出 → 覆盖 → 重启（VBS 由 wscript 跑，无黑窗）
+    _write_replace_vbs(tmp_exe)
     _state.update(status="ready", message="新版本已下载，退出程序时自动安装",
                   latest=remote)
     return True, "新版本已就绪"
 
 
-def _write_replace_bat(new_exe):
-    """生成替换脚本。脚本会在下次退出/重启时执行。"""
-    bat = os.path.join(tempfile.gettempdir(), "hotnews_update.bat")
+def _write_replace_vbs(new_exe):
+    """
+    生成替换脚本（VBScript），由 wscript.exe 以 GUI 方式运行 —— 绝不分配控制台窗口。
+
+    弃用 powershell.exe 的原因：powershell 是控制台型程序，-File 模式下
+    -WindowStyle Hidden 在本机仍会闪出黑窗，加上脚本末尾 Start-Process 拉起的新进程
+    又是一个控制台，于是「两个小黑窗」。wscript.exe 属于 GUI 子系统，天生无控制台，
+    从根上杜绝黑窗；末尾 sh.Run 拉起的也是 console=False 的 exe，同样无控制台。
+    """
+    vbs = os.path.join(tempfile.gettempdir(), "hotnews_update.vbs")
     target = EXE_PATH
-    lines = [
-        "@echo off",
-        "chcp 65001 >nul",
-        "title hotnews 更新",
-        # 等待旧进程退出
-        ":waitloop",
-        "tasklist /FI \"IMAGENAME eq hotnews.exe\" 2>nul | find /I \"hotnews.exe\" >nul",
-        "if not errorlevel 1 (",
-        "  timeout /t 1 /nobreak >nul",
-        "  goto waitloop",
-        ")",
-        f'copy /Y "{new_exe}" "{target}" >nul',
-        "if errorlevel 1 (",
-        "  echo 替换失败，可能文件被占用",
-        "  timeout /t 5 >nul",
-        "  exit /b 1",
-        ")",
-        # 清理临时文件与脚本自身
-        f'del /F /Q "{new_exe}" >nul 2>nul',
-        'start "" "{target}"',
-        "del /F /Q \"%~f0\" >nul 2>nul",
-        "exit /b 0",
-    ]
-    with open(bat, "w", encoding="utf-8", newline="\r\n") as f:
-        f.write("\n".join(lines))
-    return bat
+    # VBS 字符串用双引号；Windows 路径是反斜杠，与 VBS 字符串不冲突，直接拼入即可。
+    # 路径可能含中文（如 热点新闻.exe），故写 utf-8-sig(BOM)，wscript 才能正确识别。
+    script = (
+        'On Error Resume Next\n'
+        'Set fso = CreateObject("Scripting.FileSystemObject")\n'
+        'Set sh = CreateObject("WScript.Shell")\n'
+        'WScript.Sleep 2000\n'
+        'ok = False\n'
+        'For i = 1 To 30\n'
+        '  fso.CopyFile "' + new_exe + '", "' + target + '", True\n'
+        '  If Err.Number = 0 Then ok = True: Exit For\n'
+        '  Err.Clear\n'
+        '  WScript.Sleep 1000\n'
+        'Next\n'
+        'If ok Then\n'
+        '  sh.Run Chr(34) & "' + target + '" & Chr(34), 1, False\n'
+        'End If\n'
+        'On Error GoTo 0\n'
+    )
+    with open(vbs, "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write(script)
+    return vbs
 
 
 def trigger_replace():
-    """立即执行替换脚本（在退出前调用，用 CREATE_NEW_PROCESS_GROUP 不弹窗）"""
-    bat = os.path.join(tempfile.gettempdir(), "hotnews_update.bat")
-    if not os.path.exists(bat):
+    """立即执行替换脚本（主程序退出前调用）。wscript.exe 跑 VBS，GUI 宿主无黑窗。"""
+    vbs = os.path.join(tempfile.gettempdir(), "hotnews_update.vbs")
+    if not os.path.exists(vbs):
         return False
     try:
-        CREATE_NEW_PROCESS_GROUP = 0x00000200
-        DETACHED_PROCESS = 0x00000008
+        CREATE_NO_WINDOW = 0x08000000     # wscript 本身是 GUI 子系统无控制台；此标志双保险
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0                # SW_HIDE
         subprocess.Popen(
-            ["cmd.exe", "/c", bat],
-            creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
-            shell=False,
+            ["wscript.exe", vbs],
+            creationflags=CREATE_NO_WINDOW,
+            startupinfo=si, shell=False,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         return True
     except Exception:
