@@ -1,9 +1,3 @@
 {
-  "version": "1.2.1",
-  "notes": "修复：自动更新替换 exe 时弹黑窗、检查更新卡住不动",
-  "launcher": {
-    "url": "https://gitee.com/kele551/hotnews/releases/download/v1.2.1/hotnews-v1.2.1.exe",
-    "sha256": "2531A7E5B083DDCC78CF938F8A2B4A738A7F3A4238C41787BDFCBC31EC23B333",
-    "size": 14236500
-  }
+  "version": "1.4.0"
 }

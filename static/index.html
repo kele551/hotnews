@@ -63,10 +63,15 @@
   button.act.quit:hover{background:#fdf2ee;border-color:var(--accent);color:var(--accent)}
   .meta{color:var(--muted);font-size:15px}
   main{padding:26px 32px 60px}
+  #grid{display:block}
   .grid{
     display:grid;gap:22px;
     grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
   }
+  /* 区块标题（实时热榜 / 更多新闻） */
+  .sech{font-size:22px;font-weight:700;color:var(--text);margin:4px 0 16px;
+    padding-left:11px;border-left:4px solid var(--accent)}
+  .sech:not(:first-child){margin-top:34px}
   .card{
     background:var(--card);border:1px solid var(--line);border-radius:14px;
     overflow:hidden;display:flex;flex-direction:column;
@@ -98,12 +103,49 @@
   .desc{font-size:16px;color:var(--muted);line-height:1.6;flex:1}
   .time{font-size:14px;color:#9aa4b2}
   .empty{padding:90px 0;text-align:center;color:var(--muted);font-size:19px}
+  /* 国际板块译文补齐进度提示：说明「为什么还有英文」并给出一键解决办法 */
+  .transbar{
+    background:#fff7f2;border:1px solid #f6d9c7;border-left:4px solid var(--accent);
+    border-radius:9px;padding:11px 16px;color:#8a4a24;font-size:15px;line-height:1.6;
+    margin-bottom:18px;
+  }
+  .transbar b{color:#6d3717}
   #toast{
     position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(20px);
     background:#1c2430;color:#fff;padding:12px 24px;border-radius:10px;font-size:16px;
     opacity:0;pointer-events:none;transition:.25s;z-index:99;
   }
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .ft{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);
+    text-align:center;color:var(--muted);font-size:14px;line-height:1.9}
+  .ft a{color:var(--primary);text-decoration:none}
+  .ft a:hover{text-decoration:underline}
+  /* 实时热点：排名列表（文本榜，带热度），前 3 名用强调色 */
+  .hotlist{list-style:none;display:flex;flex-direction:column;gap:10px;max-width:900px}
+  .hotrow{display:flex;gap:18px;align-items:center;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;padding:14px 20px;transition:transform .14s ease,box-shadow .14s ease}
+  .hotrow:hover{transform:translateX(3px);box-shadow:0 6px 18px rgba(26,77,143,.10)}
+  .rank{font-size:25px;font-weight:800;color:var(--muted);min-width:40px;text-align:center;
+    font-variant-numeric:tabular-nums}
+  .hotrow:nth-child(1) .rank{color:var(--accent)}
+  .hotrow:nth-child(2) .rank{color:#e8975a}
+  .hotrow:nth-child(3) .rank{color:#e8b95a}
+  .hmain{flex:1;display:flex;flex-direction:column;gap:7px;min-width:0}
+  .htitle{font-size:20px;font-weight:700;color:var(--text);text-decoration:none;line-height:1.5;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .htitle:hover{color:var(--primary)}
+  .hmeta{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}
+  .heat{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
+  /* 多平台热榜：按平台分组 + 平台标 */
+  .plat{margin-bottom:8px}
+  .sub{font-size:16px;font-weight:700;color:var(--text);margin:18px 0 12px;
+    display:flex;align-items:center;gap:8px}
+  .sub .cnt{font-size:13px;font-weight:600;color:var(--muted);background:var(--line);
+    border-radius:10px;padding:1px 9px}
+  .src{font-size:12px;font-weight:700;padding:1px 9px;border-radius:10px;color:#fff;white-space:nowrap}
+  .src-澎湃新闻{background:#d0021b}
+  .src-红星新闻{background:#c0392b}
+  .src-凤凰网{background:#b8860b}
   @media (max-width:640px){
     header{padding:16px 18px}
     h1{font-size:24px}
@@ -132,12 +174,14 @@
       <option value="old">最早优先</option>
     </select>
     <button class="act primary" id="reload">刷新</button>
+    <button class="act" id="btnWorld" title="用浏览器自带的整页翻译把国际新闻翻成中文" style="display:none">浏览器翻译</button>
     <button class="act" id="checkUpdate" title="检查是否有新版本">检查更新</button>
     <span class="meta" id="meta"></span>
     <button class="act quit" id="quit" title="停止后台服务并退出程序">退出程序</button>
   </div>
 </header>
-<main><div class="grid" id="grid"></div></main>
+<main><div id="grid"></div></main>
+<footer class="ft">热点新闻检索 · v<span id="ftVer">-</span> · 作者 海风 · 联系邮箱 <a href="mailto:75219857@qq.com">75219857@qq.com</a></footer>
 <div id="toast"></div>
 
 <script>
@@ -154,11 +198,18 @@ function fmt(ts){
   else rel = Math.round(diff/86400) + " 天前";
   return rel + " · " + d.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
 }
-const CLS_ORDER = ["要闻","国内","国际","社会","财经","科技","体育","文化"];
+function fmtHeat(n){
+  n = Number(n) || 0;
+  if(n >= 1e8) return (n/1e8).toFixed(1).replace(/\.0$/,"") + "亿";
+  if(n >= 1e4) return (n/1e4).toFixed(1).replace(/\.0$/,"") + "万";
+  return String(n);
+}
+const EXCLUDED_CLS = new Set(["热榜","数码"]);  // 热榜置顶单独展示不入筛选；数码源已移除
+const CLS_ORDER = ["科技","软件","要闻","国内","国际","社会","体育","娱乐"];  // 财经、文化已移除（无源）；娱乐：国内=凤凰娱乐八卦，国际=Variety/Billboard
 function buildClsOptions(){
   const sel = document.getElementById("cls");
   const cur = sel.value;
-  const set = [...new Set(state.items.map(i=>i.cls))].filter(Boolean);
+  const set = [...new Set(state.items.map(i=>i.cls))].filter(Boolean).filter(c=>!EXCLUDED_CLS.has(c));
   set.sort((a,b)=>{
     const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
     return (ia<0?99:ia) - (ib<0?99:ib);
@@ -172,35 +223,144 @@ function toast(msg){
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2200);
 }
 
+function shortLabel(s){
+  s = String(s==null?"":s).trim();
+  if(!s) return "·";
+  if(/^[A-Za-z0-9 .\-_/]+$/.test(s)){
+    const parts = s.split(/[\s\-_/]+/).filter(Boolean);
+    return (parts.length>1 ? parts.slice(0,2).map(p=>p[0]).join("") : s.slice(0,2)).toUpperCase();
+  }
+  return s.slice(0,3);
+}
+// 热度文案：不同平台的口径不一样，显示时要说清是什么数字，别含糊地丢一个整数给用户。
+//   澎湃新闻 → 站方页面上的真实互动数（能在原文页核对）
+//   红星新闻 / 凤凰网 → 只给名次不给热度值，后端置 0，这里不显示
+//   Hacker News → 真实投票点数 + 评论数（都能在页面上一一核对）
+function heatText(it){
+  const h = Number(it.heat) || 0;
+  if(!h) return "";
+  if(it.label === "Hacker News"){
+    return `▲${h}` + (it.comments ? ` · ${it.comments} 评` : "");
+  }
+  return fmtHeat(h);
+}
+
+function hotlistHTML(rows){
+  return `<ol class="hotlist">` + rows.map((it, i) => {
+    const hs = heatText(it);
+    return `
+      <li class="hotrow">
+        <span class="rank">${i + 1}</span>
+        <div class="hmain">
+          <a class="htitle" href="${esc(it.link)}" target="_blank" rel="noopener"
+             title="${esc(it.title_en||it.title)}">${esc(it.title)}</a>
+          <div class="hmeta"><span class="src src-${esc(it.label)}">${esc(it.label)}</span>${hs?`<span class="heat">${esc(hs)}</span>`:""}</div>
+        </div>
+      </li>`;
+  }).join("") + `</ol>`;
+}
+
+function cardHTML(it, showCls){
+  const thumb = it.image
+    ? `<div class="thumb"><img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt=""></div>`
+    : `<div class="thumb ph"><i>${esc(shortLabel(it.label||it.channel))}</i></div>`;
+  return `<article class="card">
+    ${thumb}
+    <div class="body">
+      <div class="tags">${showCls?`<span class="tag cls">${esc(it.cls)}</span>`:""}<span class="tag">${esc(it.label||it.channel)}</span>${it.heat?`<span class="tag hot">${fmtHeat(it.heat)}</span>`:""}</div>
+      <h2><a href="${esc(it.link)}" target="_blank" rel="noopener" title="${esc(it.title_en||it.desc_en||"")}">${esc(it.title)}</a></h2>
+      <p class="desc">${esc(it.desc||"")}</p>
+      <span class="time">${fmt(it.published)}</span>
+    </div></article>`;
+}
+
 function render(){
   const kw = (document.getElementById("q").value||"").trim().toLowerCase();
   const cls = document.getElementById("cls").value;
   const sort = document.getElementById("sort").value;
+  const grid = document.getElementById("grid");
+
+  // 国内：实时热榜置顶（排名列表，无冗余「热榜」标签）+ 其余卡片网格
+  if(state.region === "cn"){
+    // 仅在「全部分类」且无搜索时，把热榜作为首屏置顶展示
+    const hotItems = (cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
+    let cards = state.items.filter(it=>{
+      if(it.cls === "热榜") return false;          // 热榜已置顶，卡片区不再重复
+      if(EXCLUDED_CLS.has(it.cls)) return false;   // 科技/数码不在界面展示
+      if(cls && it.cls !== cls) return false;
+      if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
+      return true;
+    });
+    cards.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
+    if(!hotItems.length && !cards.length){
+      grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
+      document.getElementById("meta").textContent = "共 0 条";
+      return;
+    }
+    let html = "";
+    if(hotItems.length){
+      // 跨平台混合排序由后端完成（各平台热度已归一化成 score）。
+      // 没有给出可信热度数值的平台（凤凰网/红星新闻只有名次），后端会把 heat 置 0 且不显示数字，
+      // 避免拿名次冒充阅读量误导人。
+      const merged = hotItems.slice(0, 60);
+      html += `<h2 class="sech">实时热榜 · 多平台聚合</h2>` + hotlistHTML(merged);
+    }
+    if(cards.length){
+      if(hotItems.length) html += `<h2 class="sech">更多新闻</h2>`;
+      if(cls){
+        // 已选定某分类：分类名在下拉里已知，卡片不再重复标
+        html += `<div class="grid">` + cards.map(it=>cardHTML(it,false)).join("") + `</div>`;
+      }else{
+        // 全部分类：按分类分块，分类名只作为区块标题出现一次（避免满屏重复同一词）
+        const byCls = {};
+        cards.forEach(it=>{ const k = it.cls || "其他"; (byCls[k] = byCls[k] || []).push(it); });
+        const keys = Object.keys(byCls).sort((a,b)=>{
+          const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
+          return (ia<0?99:ia) - (ib<0?99:ib);
+        });
+        html += keys.map(k=>
+          `<h3 class="sub">${esc(k)} <span class="cnt">${byCls[k].length}</span></h3>` +
+          `<div class="grid">` + byCls[k].map(it=>cardHTML(it,false)).join("") + `</div>`
+        ).join("");
+      }
+    }
+    grid.innerHTML = html;
+    document.getElementById("meta").textContent = `共 ${hotItems.length+cards.length} 条 / 源 ${state.items.length} 条`;
+    return;
+  }
+
+  // 国际：实时热榜（Hacker News）置顶 + 其余卡片网格
+  const isWorld = state.region === "intl";
+  document.getElementById("btnWorld").style.display = isWorld ? "" : "none";
+  const hotItems = (isWorld && cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
   let list = state.items.filter(it=>{
+    if(hotItems.length && it.cls === "热榜") return false;   // 热榜已置顶，卡片区不再显示
     if(cls && it.cls !== cls) return false;
     if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
     return true;
   });
   list.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
-  const grid = document.getElementById("grid");
-  if(!list.length){
+  if(!hotItems.length && !list.length){
     grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
-  } else {
-    grid.innerHTML = list.map(it=>{
-      const thumb = it.image
-        ? `<div class="thumb"><img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt=""></div>`
-        : `<div class="thumb ph"><i>${esc(it.cls||"新闻")}</i></div>`;
-      return `<article class="card">
-        ${thumb}
-        <div class="body">
-          <div class="tags"><span class="tag cls">${esc(it.cls)}</span><span class="tag">${esc(it.label||it.channel)}</span></div>
-          <h2><a href="${esc(it.link)}" target="_blank" rel="noopener">${esc(it.title)}</a></h2>
-          <p class="desc">${esc(it.desc||"")}</p>
-          <span class="time">${fmt(it.published)}</span>
-        </div></article>`;
-    }).join("");
+    document.getElementById("meta").textContent = `共 ${hotItems.length+list.length} 条 / 源 ${state.items.length} 条`;
+    return;
   }
-  document.getElementById("meta").textContent = `共 ${list.length} 条 / 源 ${state.items.length} 条`;
+  let html2 = hotItems.length ? `<h2 class="sech">国际实时热榜 · Hacker News</h2>` + hotlistHTML(hotItems) : "";
+  if(!list.length){
+    grid.innerHTML = html2;
+  } else {
+    const done = list.filter(it=>it.translated).length;
+    // 抓取不等翻译（否则国际板块要多等 1~2 分钟），译文是后台补齐的。
+    // 还没译完时给个明确说法 + 一键入口，别让用户以为是坏了。
+    const tipBar = (isWorld && !cls && done < list.length)
+      ? `<div class="transbar">中文译文后台补齐中（${done}/${list.length}）·
+           想立刻看全中文，点右上角 <b>浏览器翻译</b>，用 Edge/Chrome 自带的整页翻译，
+           不受机翻额度影响。</div>`
+      : "";
+    if(hotItems.length) html2 += `<h2 class="sech">更多国际新闻</h2>`;
+    grid.innerHTML = html2 + tipBar + `<div class="grid">` + list.map(it=>cardHTML(it, !cls)).join("") + `</div>`;
+  }
+  document.getElementById("meta").textContent = `共 ${hotItems.length+list.length} 条 / 源 ${state.items.length} 条`;
 }
 
 async function load(showToast){
@@ -209,7 +369,9 @@ async function load(showToast){
     const r = await fetch(`/api/news?region=${state.region}&limit=200`);
     const js = await r.json();
     state.items = js.items || [];
+    LAST_SIG = sig(state.items);
     document.getElementById("ver").textContent = js.version || SSR.version;
+    document.getElementById("ftVer").textContent = js.version || SSR.version;
     buildClsOptions();
     render();
     if(showToast) toast(`已刷新 ${state.items.length} 条`);
@@ -217,6 +379,28 @@ async function load(showToast){
     document.getElementById("meta").textContent = "抓取失败：" + e.message;
   }
 }
+
+// 国际板块的中文译文由后台线程渐进补齐（抓取不等翻译，否则国际板块要慢 90 秒以上）。
+// 这里定期静默重拉：只有内容真的变了才重绘，避免闪烁，也把补上的译文刷出来。
+let LAST_SIG = "";
+function sig(items){
+  return (items||[]).map(x=>`${x.id}|${x.translated?1:0}`).join(",");
+}
+async function silentRefresh(){
+  if(document.getElementById("q").value.trim()) return;      // 正在搜索，别打扰
+  if(document.getElementById("cls").value) return;           // 正在看某个分类
+  try{
+    const r = await fetch(`/api/news?region=${state.region}&limit=200`);
+    const js = await r.json();
+    const s = sig(js.items || []);
+    if(s === LAST_SIG) return;                               // 没变化就不重绘
+    LAST_SIG = s;
+    state.items = js.items || [];
+    buildClsOptions();
+    render();
+  }catch(e){}
+}
+setInterval(()=>silentRefresh(), 15000);
 
 async function checkVersion(){
   try{
@@ -229,25 +413,34 @@ async function checkVersion(){
 }
 
 document.getElementById("reload").onclick = ()=>load(true);
+document.getElementById("btnWorld").onclick = ()=>{
+  // 打开纯英文版世界页（<html lang="en">），由浏览器自带的整页翻译接管成中文。
+  // 走的是浏览器自己的翻译服务，速度快、无额度限制，也不占我们后台的抓取时间。
+  window.open("/world", "_blank");
+};
 document.getElementById("checkUpdate").onclick = async ()=>{
   const btn = document.getElementById("checkUpdate");
   btn.disabled = true; const old = btn.textContent; btn.textContent = "检查中…";
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), 15000);  // 15 秒超时，避免卡死
   try{
-    const r = await fetch("/api/update/check");
+    const r = await fetch("/api/update/check", {signal: ctrl.signal});
     const js = await r.json();
     if(js.status === "update"){
       const notes = js.notes ? "\n\n更新内容：\n" + js.notes : "";
       toast(`发现新版本 v${js.remote}，正在后台下载…`);
-      // 轮询等待下载就绪，再提示安装
       setTimeout(()=>promptInstall(js.remote, notes), 3000);
     } else if(js.status === "latest"){
       toast(`已是最新版本 v${js.current}`);
+    } else if(js.status === "checking"){
+      toast("正在检查，请稍候…");
     } else {
       toast(js.message || "检查失败，请稍后重试");
     }
   }catch(e){
-    toast("检查更新失败：" + e.message);
+    toast(e.name === "AbortError" ? "检查超时，请稍后重试" : "检查更新失败：" + e.message);
   }finally{
+    clearTimeout(timer);
     btn.disabled = false; btn.textContent = old;
   }
 };
@@ -290,6 +483,7 @@ document.getElementById("regionSeg").addEventListener("click", e=>{
   load(false);
 });
 document.getElementById("ver").textContent = SSR.version;
+document.getElementById("ftVer").textContent = SSR.version;
 if(state.items.length) buildClsOptions();
 render();
 load(false);
