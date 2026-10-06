@@ -1,0 +1,11 @@
+# 构建产物与本地运行时，不入库
+build_tmp/
+runtime/
+dist/
+*.exe
+*.zip
+*.log
+__pycache__/
+*.pyc
+uvicorn.log
+pyi.log

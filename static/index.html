@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>热点新闻检索</title>
+<style>
+  :root{
+    --primary:#1a4d8f;
+    --accent:#e8632f;
+    --bg:#f4f6fa;
+    --card:#ffffff;
+    --line:#e3e8f0;
+    --text:#1c2430;
+    --muted:#6b7789;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;
+    background:var(--bg);color:var(--text);
+    font-size:19px;line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+  }
+  header{
+    background:var(--card);border-bottom:1px solid var(--line);
+    padding:22px 32px;position:sticky;top:0;z-index:50;
+  }
+  .hd-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  h1{font-size:30px;font-weight:700;letter-spacing:1px}
+  h1 span{color:var(--accent)}
+  .badge{
+    background:#eaf0fa;color:var(--primary);border-radius:999px;
+    padding:4px 14px;font-size:15px;font-weight:600;
+  }
+  .spacer{flex:1}
+  .seg{display:flex;background:#eef1f6;border-radius:10px;padding:4px}
+  .seg button{
+    border:0;background:transparent;color:var(--muted);
+    font-size:17px;font-weight:600;padding:7px 20px;border-radius:8px;cursor:pointer;
+    font-family:inherit;transition:.15s;
+  }
+  .seg button.on{background:var(--card);color:var(--primary);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .toolbar{
+    display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+    margin-top:16px;
+  }
+  input[type=search],select{
+    font-family:inherit;font-size:17px;padding:9px 14px;
+    border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--text);
+    outline:none;
+  }
+  input[type=search]{min-width:300px;flex:0 1 360px}
+  input[type=search]:focus,select:focus{border-color:var(--primary)}
+  button.act{
+    font-family:inherit;font-size:17px;font-weight:600;cursor:pointer;
+    padding:9px 20px;border-radius:9px;border:1px solid var(--line);
+    background:var(--card);color:var(--text);transition:.15s;
+  }
+  button.act:hover{border-color:var(--primary);color:var(--primary)}
+  button.act.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+  button.act.primary:hover{background:#153f74}
+  button.act.quit{color:#9c5237;border-color:#eed6cc;padding:9px 16px;margin-left:auto}
+  button.act.quit:hover{background:#fdf2ee;border-color:var(--accent);color:var(--accent)}
+  .meta{color:var(--muted);font-size:15px}
+  main{padding:26px 32px 60px}
+  .grid{
+    display:grid;gap:22px;
+    grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
+  }
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;display:flex;flex-direction:column;
+    transition:transform .16s ease, box-shadow .16s ease;
+  }
+  .card:hover{transform:translateY(-3px);box-shadow:0 8px 22px rgba(26,77,143,.12)}
+  .thumb{height:190px;background:#eceff4;position:relative;overflow:hidden}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  /* 无题图的条目：不摆「缺失」占位，改用品牌色块 + 分类字，视觉上仍是完整卡片 */
+  .thumb.ph{
+    height:104px;background:linear-gradient(118deg,#16406f 0%,#2b6bb0 58%,#3f83c9 100%);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .thumb.ph i{
+    font-style:normal;font-size:25px;font-weight:800;color:rgba(255,255,255,.94);
+    letter-spacing:9px;text-indent:9px;white-space:nowrap;
+  }
+  .thumb.ph::after{
+    content:"";position:absolute;left:16px;bottom:12px;width:26px;height:3px;
+    background:var(--accent);border-radius:2px;
+  }
+  .body{padding:16px 18px 18px;display:flex;flex-direction:column;gap:9px;flex:1}
+  .tags{display:flex;gap:8px;align-items:center;font-size:14px}
+  .tag{background:#eef1f6;color:var(--muted);border-radius:5px;padding:2px 9px}
+  .tag.cls{background:#fdeee5;color:var(--accent);font-weight:600}
+  .card h2{font-size:20px;font-weight:700;line-height:1.5}
+  .card h2 a{color:inherit;text-decoration:none}
+  .card h2 a:hover{color:var(--primary)}
+  .desc{font-size:16px;color:var(--muted);line-height:1.6;flex:1}
+  .time{font-size:14px;color:#9aa4b2}
+  .empty{padding:90px 0;text-align:center;color:var(--muted);font-size:19px}
+  #toast{
+    position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(20px);
+    background:#1c2430;color:#fff;padding:12px 24px;border-radius:10px;font-size:16px;
+    opacity:0;pointer-events:none;transition:.25s;z-index:99;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  @media (max-width:640px){
+    header{padding:16px 18px}
+    h1{font-size:24px}
+    main{padding:18px}
+    .grid{grid-template-columns:1fr}
+    input[type=search]{min-width:0;width:100%}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="hd-top">
+    <h1>热点新闻<span>检索</span></h1>
+    <span class="badge" id="verBadge">v<span id="ver">-</span></span>
+    <div class="spacer"></div>
+    <div class="seg" id="regionSeg">
+      <button data-r="cn" class="on">国内</button>
+      <button data-r="intl">国际</button>
+    </div>
+  </div>
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="搜索标题或摘要关键词…" autocomplete="off">
+    <select id="cls"><option value="">全部分类</option></select>
+    <select id="sort">
+      <option value="new">最新优先</option>
+      <option value="old">最早优先</option>
+    </select>
+    <button class="act primary" id="reload">刷新</button>
+    <button class="act" id="checkUpdate" title="检查是否有新版本">检查更新</button>
+    <span class="meta" id="meta"></span>
+    <button class="act quit" id="quit" title="停止后台服务并退出程序">退出程序</button>
+  </div>
+</header>
+<main><div class="grid" id="grid"></div></main>
+<div id="toast"></div>
+
+<script>
+const SSR = __SSR_DATA__;
+let state = { region: SSR.region || "cn", items: SSR.items || [], timer: null };
+
+function fmt(ts){
+  if(!ts) return "";
+  const d = new Date(ts*1000);
+  const diff = (Date.now() - ts*1000) / 1000;
+  let rel;
+  if(diff < 3600) rel = Math.max(1, Math.round(diff/60)) + " 分钟前";
+  else if(diff < 86400) rel = Math.round(diff/3600) + " 小时前";
+  else rel = Math.round(diff/86400) + " 天前";
+  return rel + " · " + d.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+}
+const CLS_ORDER = ["要闻","国内","国际","社会","财经","科技","体育","文化"];
+function buildClsOptions(){
+  const sel = document.getElementById("cls");
+  const cur = sel.value;
+  const set = [...new Set(state.items.map(i=>i.cls))].filter(Boolean);
+  set.sort((a,b)=>{
+    const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
+    return (ia<0?99:ia) - (ib<0?99:ib);
+  });
+  sel.innerHTML = '<option value="">全部分类</option>' + set.map(c=>`<option>${esc(c)}</option>`).join("");
+  sel.value = set.includes(cur) ? cur : "";
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function toast(msg){
+  const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2200);
+}
+
+function render(){
+  const kw = (document.getElementById("q").value||"").trim().toLowerCase();
+  const cls = document.getElementById("cls").value;
+  const sort = document.getElementById("sort").value;
+  let list = state.items.filter(it=>{
+    if(cls && it.cls !== cls) return false;
+    if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
+    return true;
+  });
+  list.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
+  const grid = document.getElementById("grid");
+  if(!list.length){
+    grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
+  } else {
+    grid.innerHTML = list.map(it=>{
+      const thumb = it.image
+        ? `<div class="thumb"><img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt=""></div>`
+        : `<div class="thumb ph"><i>${esc(it.cls||"新闻")}</i></div>`;
+      return `<article class="card">
+        ${thumb}
+        <div class="body">
+          <div class="tags"><span class="tag cls">${esc(it.cls)}</span><span class="tag">${esc(it.label||it.channel)}</span></div>
+          <h2><a href="${esc(it.link)}" target="_blank" rel="noopener">${esc(it.title)}</a></h2>
+          <p class="desc">${esc(it.desc||"")}</p>
+          <span class="time">${fmt(it.published)}</span>
+        </div></article>`;
+    }).join("");
+  }
+  document.getElementById("meta").textContent = `共 ${list.length} 条 / 源 ${state.items.length} 条`;
+}
+
+async function load(showToast){
+  document.getElementById("meta").textContent = "抓取中…";
+  try{
+    const r = await fetch(`/api/news?region=${state.region}&limit=200`);
+    const js = await r.json();
+    state.items = js.items || [];
+    document.getElementById("ver").textContent = js.version || SSR.version;
+    buildClsOptions();
+    render();
+    if(showToast) toast(`已刷新 ${state.items.length} 条`);
+  }catch(e){
+    document.getElementById("meta").textContent = "抓取失败：" + e.message;
+  }
+}
+
+async function checkVersion(){
+  try{
+    const r = await fetch("/api/version");
+    const js = await r.json();
+    if(js.version && js.version !== SSR.version && !sessionStorage.getItem("skipVer")){
+      toast(`检测到新版本 v${js.version}，前端需刷新`);
+    }
+  }catch(e){}
+}
+
+document.getElementById("reload").onclick = ()=>load(true);
+document.getElementById("checkUpdate").onclick = async ()=>{
+  const btn = document.getElementById("checkUpdate");
+  btn.disabled = true; const old = btn.textContent; btn.textContent = "检查中…";
+  try{
+    const r = await fetch("/api/update/check");
+    const js = await r.json();
+    if(js.status === "update"){
+      const notes = js.notes ? "\n\n更新内容：\n" + js.notes : "";
+      toast(`发现新版本 v${js.remote}，正在后台下载…`);
+      // 轮询等待下载就绪，再提示安装
+      setTimeout(()=>promptInstall(js.remote, notes), 3000);
+    } else if(js.status === "latest"){
+      toast(`已是最新版本 v${js.current}`);
+    } else {
+      toast(js.message || "检查失败，请稍后重试");
+    }
+  }catch(e){
+    toast("检查更新失败：" + e.message);
+  }finally{
+    btn.disabled = false; btn.textContent = old;
+  }
+};
+
+async function promptInstall(remote, notes){
+  if(!confirm(`已下载新版本 v${remote}。\n\n是否立即更新并重启？\n${notes||""}`)) return;
+  try{
+    const r = await fetch("/api/update/install", {method:"POST"});
+    const js = await r.json();
+    if(js.ok){
+      document.getElementById("grid").innerHTML =
+        '<div class="empty">正在更新并重启，请稍候…</div>';
+    } else {
+      toast(js.message || "更新失败");
+    }
+  }catch(e){}
+}
+
+document.getElementById("quit").onclick = async ()=>{
+  if(!confirm("停止服务并退出程序？退出后此页面将无法继续访问。")) return;
+  const btn = document.getElementById("quit");
+  btn.disabled = true; btn.textContent = "正在退出…";
+  try{ await fetch("/api/quit", {method:"POST"}); }catch(e){}
+  document.getElementById("grid").innerHTML =
+    '<div class="empty">服务已停止。<br>可以关闭此页面，或重新双击程序启动。</div>';
+  document.getElementById("meta").textContent = "";
+  document.getElementById("q").disabled = true;
+  document.getElementById("reload").disabled = true;
+};
+document.getElementById("q").addEventListener("input", ()=>{
+  clearTimeout(window._deb); window._deb = setTimeout(render, 260);
+});
+document.getElementById("cls").onchange = render;
+document.getElementById("sort").onchange = render;
+document.getElementById("regionSeg").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  document.querySelectorAll("#regionSeg button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");
+  state.region = b.dataset.r;
+  load(false);
+});
+document.getElementById("ver").textContent = SSR.version;
+if(state.items.length) buildClsOptions();
+render();
+load(false);
+setInterval(()=>checkVersion(), 60000);
+</script>
+</body>
+</html>

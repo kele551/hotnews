@@ -1,0 +1,16 @@
+{
+  "update": {
+    "enabled": true
+  },
+  "translate": {
+    "enabled": true,
+    "backend": "mymemory",
+    "baidu": {
+      "appid": "",
+      "secret": ""
+    },
+    "deepl": {
+      "auth_key": ""
+    }
+  }
+}
