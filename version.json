@@ -1,1 +1,9 @@
-{"version": "1.2.0"}
+{
+  "version": "1.2.0",
+  "notes": "新增自动更新（Gitee 国内下载源）+ 图片质量修复",
+  "launcher": {
+    "url": "https://gitee.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
+    "sha256": "CE845DEF8D93F84A47ADF471B955C5F56D2890BC81557FDF2F560EBB0AFB2C69",
+    "size": 14234876
+  }
+}
