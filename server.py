@@ -4,6 +4,8 @@ hotnews —— 热点新闻检索（国内 / 国际）
 FastAPI 后端：抓取 RSS、解析题图、图片代理、翻译、SSR 首屏
 """
 import sys
+import tempfile          # 【2026-10-07 修】第 3244 行用了 tempfile.gettempdir()，
+                         # 但一直没 import —— Windows 上 LOCALAPPDATA 有值走短路不炸，Linux 上必崩。
 import os
 import re
 import time
