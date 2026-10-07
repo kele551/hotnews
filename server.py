@@ -50,6 +50,10 @@ if getattr(sys, "frozen", False):
     sys.stdout = _LOG_FP
     sys.stderr = _LOG_FP
 
+# 【2026-10-07 教训】这里曾经把 httpx / feedparser 做成"懒加载代理"想省启动时间，
+# 结果 **RSS 全部抓不到**（feedparser 内部依赖模块级状态，代理包装后解析静默失败），
+# 科技栏目整个消失；而实测启动只快了 0.07 秒（4.70s → 4.63s）。
+# 收益为零、代价是整个栏目没了 —— 已回退，别再这么干。
 import httpx  # noqa: E402
 import feedparser  # noqa: E402
 from fastapi import FastAPI, Query, Request, Response  # noqa: E402
@@ -2754,6 +2758,23 @@ def _looks_ent_foreign(title):
     t = title or ""
     return any(k in t for k in ENT_FOREIGN_MARKERS)
 
+# 【2026-10-07】国际大奖 / 国际赛事类关键词 —— 这类**优先判国际**，
+# 即使标题里同时出现「中国科学家」「中国影片」也不改判。
+# 起因：把「中国」加进国内特征词后，「诺贝尔物理学奖将揭晓，中国科学家薛其坤受关注」
+# 被锁在国内要闻/热榜里，用户反馈"国内还是有国际新闻"。
+STRONG_INTL_MARKERS = (
+    "诺贝尔", "诺奖", "奥斯卡", "格莱美", "艾美奖", "金球奖", "戛纳", "柏林电影节",
+    "威尼斯电影节", "普利策", "图灵奖", "菲尔兹奖",
+    "奥运会", "冬奥会", "世界杯", "欧洲杯", "亚洲杯", "世乒赛", "世锦赛",
+    "欧冠", "英超", "西甲", "意甲", "德甲", "法甲", "NBA", "F1",
+)
+
+
+def _strong_intl(title):
+    """国际大奖/赛事 → 一律算国际，不受国内特征词影响。"""
+    t = title or ""
+    return any(k in t for k in STRONG_INTL_MARKERS)
+
 def _looks_domestic(title):
     """粗判一条新闻是不是「国内新闻」（含中国官方表态、国内事务）。
 
@@ -2858,6 +2879,10 @@ def _split_cn_scope(items):
         # 站方说国内 → 国内；其余按关键词兜底。
         if _sec in FOREIGN_SECTIONS:
             _is_intl = True
+        elif _strong_intl(_title):
+            # 国际大奖/赛事优先判国际（诺贝尔、奥斯卡、奥运会…），
+            # 哪怕标题里有「中国科学家」「中国影片」也不改判。
+            _is_intl = True
         elif _looks_foreign(_title) and not _looks_domestic(_title):
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
@@ -2924,6 +2949,10 @@ def _split_hot_by_scope(items):
         # 现在顺序是：站方说国际 → 国际；关键词明显是国际（且无强国内特征）→ 国际；
         # 站方说国内 → 国内；其余按关键词兜底。
         if _sec in FOREIGN_SECTIONS:
+            _is_intl = True
+        elif _strong_intl(_title):
+            # 国际大奖/赛事优先判国际（诺贝尔、奥斯卡、奥运会…），
+            # 哪怕标题里有「中国科学家」「中国影片」也不改判。
             _is_intl = True
         elif _looks_foreign(_title) and not _looks_domestic(_title):
             _is_intl = True
