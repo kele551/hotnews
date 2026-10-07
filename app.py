@@ -79,11 +79,24 @@ def wait_and_open(url, port, tries=80):
 
 def main():
     # 1) 已有实例 → 直接把它调到前台（开浏览器），自己退出，避免起第二个
+    # 【2026-10-07 修「升级后不自启」】升级时的时序是：
+    #   旧进程把 exe 换掉 → 立刻拉起新进程 → 自己 0.6 秒后才退出。
+    # 于是新进程起来时**旧进程还占着端口**，被这里判成"已有实例"，开个浏览器就退了
+    # —— 用户看到的现象就是"升级完了程序没起来"。
+    # 所以端口被占时先**等一等再重试**（最多 12 秒）：升级场景下旧实例马上就会退出，
+    # 等到了就正常启动；真的已有实例（不是升级）等完仍占用，才走"打开浏览器"的老路。
     running = find_running()
     if running:
-        print(f"[ok] 已有实例在 {running} 端口运行，直接打开浏览器")
-        webbrowser.open(f"http://127.0.0.1:{running}")
-        return
+        for i in range(30):
+            time.sleep(0.4)
+            if not find_running():
+                running = None
+                break
+        if running:
+            print(f"[ok] 已有实例在 {running} 端口运行，直接打开浏览器")
+            webbrowser.open(f"http://127.0.0.1:{running}")
+            return
+        print("[ok] 上一实例正在退出（升级），本实例接管")
 
     # 2) 没有实例 → 启动
     port = pick_port()

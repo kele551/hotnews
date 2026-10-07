@@ -2643,8 +2643,8 @@ def _notify_news(items):
             title = it.get("title_en") or title
         entries.append((f"热点新闻更新 · {tag} · {label}", title[:72], False, it.get("link") or ""))
     if len(added) > len(entries):
-        _t, _m, _w = entries[-1]
-        entries[-1] = (_t, _m + f"　（本次共新增 {len(added)} 条）", _w)
+        _e = entries[-1]
+        entries[-1] = (_e[0], _e[1] + f"　（本次共新增 {len(added)} 条）") + tuple(_e[2:])
     print("[ok] 更新提醒：滚动播放 %d 条（国际 %d / 国内 %d / 热榜 %d）"
           % (len(entries),
              sum(1 for x in picked if x.get("region") == "intl"),
@@ -2728,6 +2728,9 @@ DOMESTIC_MARKERS = (
     "解放军", "东部战区", "南部战区", "火箭军", "驻华", "中国队", "国足", "中超", "CBA",
     "春晚", "央视", "人民日报", "新华社", "光明日报", "中国影片", "华语片", "国产片",
     "申报奥斯卡", "国内", "全省", "全市", "我县", "村民", "社区",
+    # 【2026-10-07 补】标题里出现「中国」的，对国内热榜来说就是国内新闻
+    #（「中国拟推候选人角逐世卫总干事」这类不该跑到国际去）
+    "中国", "中方", "我国", "国产",
 )
 
 
@@ -2847,7 +2850,15 @@ def _split_cn_scope(items):
     for it in items:
         _sec = (it.get("section") or "").strip()
         _title = it.get("title") or ""
+        # 【2026-10-07 用户反馈「国内热榜还是混进国际新闻」】关键改动：
+        # **关键词很明确时以关键词为准，不再被站方栏目压住**。
+        # 原因是凤凰把外交新闻归在「大陆」栏目里，而「大陆」在我的国内白名单中，
+        # 于是「俄罗斯总统助理…将访华」这种标题被判成国内 —— 用户一眼就看出是国际。
+        # 现在顺序是：站方说国际 → 国际；关键词明显是国际（且无强国内特征）→ 国际；
+        # 站方说国内 → 国内；其余按关键词兜底。
         if _sec in FOREIGN_SECTIONS:
+            _is_intl = True
+        elif _looks_foreign(_title) and not _looks_domestic(_title):
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
@@ -2906,7 +2917,15 @@ def _split_hot_by_scope(items):
     for it in items:
         _sec = (it.get("section") or "").strip()
         _title = it.get("title") or ""
+        # 【2026-10-07 用户反馈「国内热榜还是混进国际新闻」】关键改动：
+        # **关键词很明确时以关键词为准，不再被站方栏目压住**。
+        # 原因是凤凰把外交新闻归在「大陆」栏目里，而「大陆」在我的国内白名单中，
+        # 于是「俄罗斯总统助理…将访华」这种标题被判成国内 —— 用户一眼就看出是国际。
+        # 现在顺序是：站方说国际 → 国际；关键词明显是国际（且无强国内特征）→ 国际；
+        # 站方说国内 → 国内；其余按关键词兜底。
         if _sec in FOREIGN_SECTIONS:
+            _is_intl = True
+        elif _looks_foreign(_title) and not _looks_domestic(_title):
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
@@ -3062,8 +3081,8 @@ def _notify_major(items):
         label = it.get("label") or it.get("cls") or "要闻"
         entries.append((f"⚠ 新闻大事 · {label}", (it.get("title") or "")[:72], True, it.get("link") or ""))
     if len(fresh) > len(entries):
-        _t, _m, _w = entries[-1]
-        entries[-1] = (_t, _m + f"　（另有 {len(fresh) - len(entries)} 条同类）", _w)
+        _e = entries[-1]
+        entries[-1] = (_e[0], _e[1] + f"　（另有 {len(fresh) - len(entries)} 条同类）") + tuple(_e[2:])
     print(f"[ok] 大事提醒：滚动播放 {len(entries)} 条")
     _show_toast_list(entries)
 
@@ -3072,7 +3091,11 @@ def _notify_major(items):
 @app.on_event("startup")
 def _warmup():
     """后台预热两个 Region + 静默检查更新"""
-    _load_trans_cache()          # 载入历史译文缓存，避免重复消耗免费翻译额度
+    _load_trans_cache()
+    try:
+        updater.cleanup_leftovers()   # 清理上次升级留下的 .old/.new
+    except Exception:
+        pass          # 载入历史译文缓存，避免重复消耗免费翻译额度
     TRAY.start()                 # 右下角托盘图标（非 Windows 静默降级）
     BALLOON.start()              # 右下角自绘气泡（系统通知被关也照样弹）
     def run():
@@ -3124,8 +3147,26 @@ def _warmup():
                     threading.Thread(target=_enrich_quality_bg, args=(region,), daemon=True).start()
                 _notify_news(items)   # 首次仅建立基线，不弹通知
                 _notify_my_software(items)
+                # 【2026-10-07 用户反馈「小气泡没有弹出」】开机后**主动弹一次今日热点**。
+                # 原来只有"有新增条目"才弹，而启动时只建基线不弹 —— 于是刚开机那 10 分钟
+                # 里用户什么都看不见，以为气泡坏了。这里补一次播报，也顺便验证气泡通路。
+                if region == "cn":
+                    try:
+                        _hot3 = [x for x in items if x.get("cls") == "热榜"][:3]
+                        if _hot3:
+                            _ents = [("今日热点 · " + (x.get("label") or ""),
+                                      (x.get("title") or "")[:72], False, x.get("link") or "")
+                                     for x in _hot3]
+                            print(f"[ok] 启动气泡：播报今日热点 {len(_ents)} 条")
+                            _show_toast_list(_ents)
+                        else:
+                            print("[warn] 启动气泡：热榜为空，跳过")
+                    except Exception as _ex:
+                        print(f"[warn] 启动气泡失败: {type(_ex).__name__}")
             except Exception as ex:
-                print(f"[warn] 预热 {region} 失败: {type(ex).__name__}")
+                print(f"[warn] 预热 {region} 失败: {type(ex).__name__}: {ex}")
+                import traceback as _tb
+                print(_tb.format_exc())
 
         # 国内抓完再抓国际 —— 这样「国内要闻里剔出的国际新闻」已经就绪，
         # 能顺手并进国际板块（见 _spill_from_cn）。
