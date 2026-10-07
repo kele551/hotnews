@@ -1,3 +1,9 @@
 {
-  "version": "1.5.0"
+  "version": "1.5.0",
+  "launcher": {
+    "url": "https://gitee.com/kele551/hotnews/releases/download/v1.5.0/hotnews-v1.5.0.exe",
+    "sha256": "65F06285CAB5236A36A78D3AE47981462D2AFBF5444D050BC2535C8213669F8D",
+    "size": 14331165
+  },
+  "notes": "v1.5.0：以当天为主 + 栏目不再单一 + 首屏秒开\n\n【时效】所有栏目以「当天」为主，常看常新\n- 要闻 / 热榜严格当天；垂类（科技/软件/娱乐）按栏目窗口，绝不拿旧闻充数\n- 修掉一个严重 bug：红星新闻解析不出时间时**凭空伪造「刚刚」**，导致两天前的旧闻\n  排到热榜第一条。已删除伪造逻辑，改去文章页读真实发布时间。\n- 澎湃热榜原来 published 写死 0（接口其实给了 pubTimeLong），同样混进旧闻。\n\n【国内 / 国际严格区分】\n- 用**站方自己的栏目分类**判定（凤凰文章页 JSON-LD 的 articleSection 白名单），\n  关键词黑名单仅作兜底 —— 黑名单必漏，比如「乌征兵人员将1岁幼儿父亲沿地拖行」\n  是国际新闻，标题里却没有「乌克兰」三个字。\n- 国内「要闻」「热榜」「娱乐」里判为国际的条目**全部转给国际板块**，不丢弃。\n- 国际热榜因此从 2 家增至 5 家（中新社国际 / Hacker News / 凤凰 / 澎湃 / 红星）。\n\n【栏目不再单一（每栏多家）】\n- 科技 6 源：IT之家、快科技、爱范儿、雷峰网、极客公园、NotebookCheck\n- 软件 4 源：mefcl、小众软件、少数派、果核剥壳\n- 娱乐：国内 凤凰娱乐 + 新浪娱乐；国际 NME / Stereogum / Consequence / Variety / Billboard\n- 国际要闻 8 源：France24 / NPR / Sky News / UN News / CGTN / ABC News / Variety / Billboard\n- 以上每个源都是**实测连通 + 带图**后才加入的，实测失败的（BBC/CNN/NYT 被墙、\n  CBS 无图、人民网停更一年多）一律没有采用。\n\n【每条必须有高清大图】\n- 门槛提到短边 300；无图一律不上\n- 无图源（少数派/新浪娱乐）自动去文章页补 og:image\n- mefcl 站方图本身就是 220x150，开豁免（否则整个软件栏目消失）\n\n【首屏 2~3 秒】\n- 原来完整抓一轮要 30~50 秒（热榜和补图都要逐个抓文章页），首屏一直空着等\n- 改为两阶段：先只跑 RSS 源立刻发布，慢活在后台补完再覆盖\n\n【右下角气泡】\n- 自绘窗口，不依赖系统通知（Win11 + 通知总开关关闭时系统气泡会被静默丢弃）\n- 一条气泡滚动播放 3 条，必定含国际 1 条\n- 三类提醒：新闻更新 / 新闻大事 / ★我的软件被发布\n\n【修的致命 bug】\n- 托盘和气泡**从来没工作过**：_Tray 用了三个 ctypes 里根本不存在的名字\n  （wchar / LRESULT / WNDCLASS），__init__ 直接抛异常且静默降级\n- GetModuleHandleW 写在 user32（实际在 kernel32）、GetStockObject 写在 user32（实际在 gdi32）\n- 文字毛刺：进程未声明 DPI 感知，125% 缩放下窗口被整块放大\n- 补 import tempfile（Linux 上 LOCALAPPDATA 缺失会 NameError）\n- 接口不再同步阻塞（国际冷启动 40 秒，切分区像卡死）\n\n【抓取提速】\n- 全局共享 httpx 连接池（原来每个请求都新建，等于每次重做 TCP+TLS 握手）\n- 只读文件头：og:image 取前 96KB、测图片尺寸取前 256KB\n- 文章页元数据永久缓存；HN 专项从 26.8s 降到约 6s\n\n【署名】exe 属性 CompanyName=HaiFeng (kele551)、\nCopyright=Copyright (C) 2026 HaiFeng (kele551)、Comments=仓库地址；\n私人邮箱已从 exe 属性和页面页脚全部清除。"
 }
