@@ -876,15 +876,24 @@ def _hot_thepaper():
                                             "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST).timestamp())
             except Exception:
                 pub = 0
+        # 【2026-10-07 修】图片直接取自接口的 pic 字段。
+        # 原来 image 写死 ""，只能靠 _fill_missing_images 去抓文章页 —— 但澎湃的
+        # newsDetail_forward_<contId> 是个 **17KB 的空壳页**（正文由 JS/接口加载），
+        # 里面根本没有 og:image，于是 20 条全被「没图不要」剔除，澎湃从国内热榜
+        # 整个消失。而接口的 pic 就是原图（smallPic 才是 332px 缩略图）。
+        _pic = (it.get("pic") or it.get("sharePic") or it.get("smallPic") or "").strip()
+        if _pic.startswith("//"):
+            _pic = "https:" + _pic
         out.append({
             "id": hashlib.md5(("hot-thepaper-" + str(cid)).encode("utf-8")).hexdigest()[:12],
             "region": "hot", "channel": "thepaper-hot", "label": "澎湃新闻",
             "cls": "热榜", "title": title, "desc": "",
-            "link": f"https://www.thepaper.cn/newsDetail_forward_{cid}", "image": "",
+            "link": f"https://www.thepaper.cn/newsDetail_forward_{cid}", "image": _pic,
             "published": pub, "heat": heat, "rank": idx, "translated": False,
         })
-    print("[ok] hot/澎湃新闻: %d 条（其中有时间的 %d 条）"
-          % (len(out), sum(1 for x in out if x["published"])))
+    print("[ok] hot/澎湃新闻: %d 条（有时间的 %d 条，带图的 %d 条）"
+          % (len(out), sum(1 for x in out if x["published"]),
+             sum(1 for x in out if x["image"])))
     return out
 
 
