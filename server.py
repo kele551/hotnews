@@ -786,6 +786,16 @@ def _parse_hot_intl():
         _HN_CACHE["ts"], _HN_CACHE["items"] = now, hn
     if hn:
         parts.extend(hn)
+    # 【2026-10-07 用户建议】「灵活一点，国际板块的热榜也可以用凤凰、澎湃、红星的
+    # 国际新闻来体现」—— 国内热榜里被剔掉的国际新闻**不丢**，转来充实国际热榜。
+    # 好处：国际热榜从 2 家（中新社/HN）变成最多 5 家，且都是中文，不用等翻译。
+    try:
+        _, _intl_from_cn = _split_hot_by_scope(_parse_hot())
+        if _intl_from_cn:
+            print(f"[ok] hot-intl: 并入国内综合源的国际新闻 {len(_intl_from_cn)} 条")
+            parts.extend(_intl_from_cn)
+    except Exception as ex:
+        print(f"[warn] 并入国内源国际新闻失败: {type(ex).__name__}")
     if not parts:
         return parts
     # 与国内热榜一致：按平台(label)内归一化百分位跨平台混合排序
@@ -2562,16 +2572,31 @@ def _looks_foreign(title):
 HOT_FILTER_FOREIGN_LABELS = {"凤凰网"}
 
 
-def _filter_hot_domestic(items):
-    """国内热榜专用：把凤凰网里的国际新闻挑出去，只留国内条目。"""
-    kept, dropped = [], 0
+def _split_hot_by_scope(items):
+    """把热榜条目分成「国内」「国际」两拨（用户建议的灵活做法）。
+
+    凤凰网/澎湃 这类综合源的热榜里混着国际新闻。国内热榜要纯国内，
+    但这些国际条目**不该丢掉** —— 转手拿去充实国际热榜（那边原来只有
+    中新社国际 + Hacker News 两家）。
+    返回 (国内条目, 国际条目)；国际条目的 region 改成 intl。
+    """
+    dom, intl = [], []
     for it in items:
-        if it.get("label") in HOT_FILTER_FOREIGN_LABELS and _looks_foreign(it.get("title")):
-            dropped += 1
-            continue
-        kept.append(it)
+        if _looks_foreign(it.get("title")):
+            d = dict(it)
+            d["region"] = "intl"
+            d["channel"] = "cn-intl-hot"      # 标明「来自国内综合源的国际条目」
+            intl.append(d)
+        else:
+            dom.append(it)
+    return dom, intl
+
+
+def _filter_hot_domestic(items):
+    """国内热榜专用：只留国内条目（国际的那些由 _split_hot_by_scope 转给国际热榜）。"""
+    kept, dropped = _split_hot_by_scope(items)
     if dropped:
-        print(f"[ok] hot: 国内热榜过滤掉 {dropped} 条国际新闻（凤凰网综合源）")
+        print(f"[ok] hot: 国内热榜剔出 {len(dropped)} 条国际新闻（转给国际热榜）")
     return kept
 
 
