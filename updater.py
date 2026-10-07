@@ -152,34 +152,54 @@ def download_and_prepare(remote):
         return False, "远端未提供下载地址"
 
     tmp_exe = os.path.join(tempfile.gettempdir(), "hotnews_update.exe")
+    total = int(launcher.get("size", 0) or 0)
+    expect = (launcher.get("sha256") or "").upper()
+
+    # 【2026-10-07 修 严重 bug】本地已有且校验通过的包，**直接复用，绝不重下**。
+    # 原实现每次 check 都用 "wb" 打开目标文件重新下载 —— "wb" 会**先把已下好的包清空**，
+    # 一旦这次下载中途被打断（或用户在下载途中点了安装），留下的是一个残缺文件，
+    # 而替换脚本会把它原样覆盖到正在用的 exe 上，**整个程序当场报废**（真实发生过：
+    # 14.4MB 的程序被 1.2MB 的半个包覆盖，版本号还显示新的，但根本启动不了）。
+    if os.path.exists(tmp_exe):
+        same_size = (not total) or os.path.getsize(tmp_exe) == total
+        same_sha = (not expect) or _sha256(tmp_exe) == expect
+        if same_size and same_sha:
+            _state.update(status="ready", message="新版本已下载，退出程序时自动安装",
+                          latest=remote)
+            _write_replace_vbs(tmp_exe)
+            return True, "新版本已就绪"
+
+    # 下载到 .part，**校验全部通过后才原子改名** —— 中途任何失败都不会碰已有的包
+    part = tmp_exe + ".part"
     try:
+        try:
+            os.remove(part)
+        except Exception:
+            pass
         with httpx.stream("GET", url, timeout=60, follow_redirects=True,
                           headers={"User-Agent": "hotnews-updater"}) as r:
             if r.status_code != 200:
                 return False, f"下载失败 HTTP {r.status_code}"
-            total = int(launcher.get("size", 0) or 0)
             got = 0
-            with open(tmp_exe, "wb") as f:
+            with open(part, "wb") as f:
                 for chunk in r.iter_bytes(65536):
                     f.write(chunk)
                     got += len(chunk)
             if total and got != total:
-                os.remove(tmp_exe)
+                os.remove(part)
                 return False, f"下载不完整 {got}/{total} 字节"
+        if expect:
+            actual = _sha256(part)
+            if actual != expect:
+                os.remove(part)
+                return False, "校验失败，文件可能被篡改"
+        os.replace(part, tmp_exe)          # 原子替换，Windows 上是同盘改名
     except Exception as ex:
         try:
-            os.remove(tmp_exe)
+            os.remove(part)
         except Exception:
             pass
         return False, f"下载失败: {type(ex).__name__}"
-
-    # 校验 sha256
-    expect = (launcher.get("sha256") or "").upper()
-    if expect:
-        actual = _sha256(tmp_exe)
-        if actual != expect:
-            os.remove(tmp_exe)
-            return False, "校验失败，文件可能被篡改"
 
     # 写替换脚本：等待主程序退出 → 覆盖 → 重启（VBS 由 wscript 跑，无黑窗）
     _write_replace_vbs(tmp_exe)
@@ -268,6 +288,23 @@ def trigger_replace():
             argv, creationflags=CREATE_NO_WINDOW, startupinfo=si, shell=False,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+
+    # 【2026-10-07】替换前**再校验一次升级包**：尺寸对不上或 sha256 不符就拒绝替换。
+    # 这是最后一道闸 —— 宁可不升级，也绝不能把残缺文件覆盖到正在用的程序上。
+    pkg = os.path.join(tempfile.gettempdir(), "hotnews_update.exe")
+    # 注意：_state["remote"] 存的是**版本号字符串**，远端字典在 latest 里
+    _rm = _state.get("latest") or {}
+    _lau = _rm.get("launcher") or {}
+    exp_sha = (_lau.get("sha256") or "").upper()
+    exp_size = int(_lau.get("size", 0) or 0)
+    if not os.path.exists(pkg):
+        return False
+    if exp_size and os.path.getsize(pkg) != exp_size:
+        _state.update(status="error", message="升级包不完整，已放弃替换")
+        return False
+    if exp_sha and _sha256(pkg) != exp_sha:
+        _state.update(status="error", message="升级包校验失败，已放弃替换")
+        return False
 
     vbs = os.path.join(tempfile.gettempdir(), "hotnews_update.vbs")
     if os.path.exists(vbs):
