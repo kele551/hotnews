@@ -92,6 +92,12 @@ def main():
         return
 
     url = f"http://127.0.0.1:{port}"
+    # 把真实访问地址告诉 server，供右下角通知点击跳转
+    try:
+        import server
+        server.APP_URL = url
+    except Exception:
+        pass
     print("=" * 52)
     print(f"  热点新闻检索  v{VERSION}")
     print(f"  访问地址:  {url}")
