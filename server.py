@@ -1853,11 +1853,16 @@ def _collect(region):
         # 为什么必须做：少数派(4条)、开源中国的 RSS **完全没有图**，直接按「没图不要」
         # 剔除会让「软件」栏目只剩 mefcl 一家 —— 正是用户反馈的
         # 「软件栏目怎么只有一个网站的」。它们的文章页其实都有 og:image，抓得到。
-        _noimg = [it for it in items if not it.get("image")]
-        if _noimg:
-            # 上限放到 60：新浪娱乐一个源就贡献 30 条无图条目（列表页没图没时间），
-            # 上限太低会被少数派/开源中国占满，娱乐栏就补不到图。
-            _fill_missing_images(_noimg, "cn-noimg", max_fetch=60)
+        # 【2026-10-07 修 bug】这里原来只挑「没有图的」条目（`not it.get("image")`），
+        # 结果**网易娱乐永远进不来** —— 它的图是首页缩略图改写尺寸得到的、本身就有图，
+        # 于是不会被传进补图函数，发布时间就永远补不上（published=0）→ 被时效规则丢掉。
+        # 正确的条件是「缺图的 + 需要补时间的（TIME_FIX_CHANNELS）都要过一遍」。
+        _needmeta = [it for it in items
+                     if not it.get("image")
+                     or it.get("channel") in BIG_IMAGE_CHANNELS
+                     or (it.get("channel") in TIME_FIX_CHANNELS and not it.get("published"))]
+        if _needmeta:
+            _fill_missing_images(_needmeta, "cn-noimg", max_fetch=80)
         before = len(items)
         cn_only = [it for it in items if it.get("image")]
         print(f"[ok] {region}: 补图后仍无图 {before - len(cn_only)} 条已剔除，剩 {len(cn_only)} 条（低质图后台异步剔除）")
