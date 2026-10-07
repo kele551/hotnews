@@ -200,7 +200,6 @@ def _write_replace_vbs(new_exe):
     vbs = os.path.join(tempfile.gettempdir(), "hotnews_update.vbs")
     target = EXE_PATH
     # VBS 字符串用双引号；Windows 路径是反斜杠，与 VBS 字符串不冲突，直接拼入即可。
-    # 路径可能含中文（如 热点新闻.exe），故写 utf-8-sig(BOM)，wscript 才能正确识别。
     script = (
         'On Error Resume Next\n'
         'Set fso = CreateObject("Scripting.FileSystemObject")\n'
@@ -218,27 +217,70 @@ def _write_replace_vbs(new_exe):
         'End If\n'
         'On Error GoTo 0\n'
     )
-    with open(vbs, "w", encoding="utf-8-sig", newline="\r\n") as f:
+    # 【2026-10-07 修 严重 bug】原来这里写的是 utf-8-sig（带 BOM），注释还写着
+    # 「wscript 才能正确识别」—— 恰好写反了：**Windows Script Host 不认带 BOM 的 UTF-8**，
+    # 会直接报「无效字符（1,1）800A0408」，脚本根本不执行 → 在线升级从来没成功过，
+    # 用户每次都会看到那个 Windows Script Host 错误弹窗。
+    # 实测（cscript 逐种编码跑）：utf-8-sig ✗ / utf-16 ✓ / ansi(gbk) ✓ / utf-8无BOM 中文会乱。
+    # WSH 原生支持 UTF-16 的 .vbs，且中文路径也正确，所以用 utf-16。
+    with open(vbs, "w", encoding="utf-16", newline="\r\n") as f:
         f.write(script)
     return vbs
 
 
+def _write_replace_bat(new_exe):
+    """兜底方案：.bat（GBK 编码，cmd 按 OEM 代码页读，中文路径不会乱）。
+
+    只在 .vbs 那条路走不通时使用。用 CREATE_NO_WINDOW 拉起，不会闪黑窗。
+    """
+    bat = os.path.join(tempfile.gettempdir(), "hotnews_update.bat")
+    target = EXE_PATH
+    script = (
+        "@echo off\r\n"
+        "ping -n 3 127.0.0.1 >nul\r\n"
+        "for /l %%i in (1,1,30) do (\r\n"
+        '  copy /y "' + new_exe + '" "' + target + '" >nul 2>&1 && goto done\r\n'
+        "  ping -n 2 127.0.0.1 >nul\r\n"
+        ")\r\n"
+        "goto :eof\r\n"
+        ":done\r\n"
+        'start "" "' + target + '"\r\n'
+    )
+    enc = "mbcs" if os.name == "nt" else "utf-8"
+    with open(bat, "w", encoding=enc, newline="") as f:
+        f.write(script)
+    return bat
+
+
 def trigger_replace():
-    """立即执行替换脚本（主程序退出前调用）。wscript.exe 跑 VBS，GUI 宿主无黑窗。"""
-    vbs = os.path.join(tempfile.gettempdir(), "hotnews_update.vbs")
-    if not os.path.exists(vbs):
-        return False
-    try:
-        CREATE_NO_WINDOW = 0x08000000     # wscript 本身是 GUI 子系统无控制台；此标志双保险
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 0                # SW_HIDE
+    """立即执行替换脚本（主程序退出前调用）。wscript.exe 跑 VBS，GUI 宿主无黑窗。
+
+    【2026-10-07】加了 .bat 兜底：万一 .vbs 那条路走不通（脚本缺失/被占用/wscript 不可用），
+    就用 cmd /c + CREATE_NO_WINDOW 跑 .bat，同样不会闪黑窗，保证升级一定能落地。
+    """
+    CREATE_NO_WINDOW = 0x08000000
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0                # SW_HIDE
+
+    def _spawn(argv):
         subprocess.Popen(
-            ["wscript.exe", vbs],
-            creationflags=CREATE_NO_WINDOW,
-            startupinfo=si, shell=False,
+            argv, creationflags=CREATE_NO_WINDOW, startupinfo=si, shell=False,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        return True
-    except Exception:
-        return False
+
+    vbs = os.path.join(tempfile.gettempdir(), "hotnews_update.vbs")
+    if os.path.exists(vbs):
+        try:
+            _spawn(["wscript.exe", vbs])
+            return True
+        except Exception:
+            pass
+    bat = os.path.join(tempfile.gettempdir(), "hotnews_update.bat")
+    if os.path.exists(bat):
+        try:
+            _spawn(["cmd.exe", "/c", bat])
+            return True
+        except Exception:
+            pass
+    return False
