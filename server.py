@@ -2482,9 +2482,6 @@ class _Balloon:
                 # 【2026-10-07 用户要求「鼠标指向，显示退出和打开的字样」】
                 # 鼠标悬停在气泡上时，右下角浮出两个胶囊按钮；移开就消失。
                 if self.hover:
-                    if not getattr(self, "_dbg_paint", False):
-                        self._dbg_paint = True
-                        print("[dbg] 悬停状态下重绘：正在画「打开/退出」两个按钮")
                     bw, bh = int(56 * s), int(26 * s)
                     gap = int(8 * s)
                     by = rc.bottom - int(36 * s)
@@ -2541,9 +2538,6 @@ class _Balloon:
                         u.KillTimer(hwnd, 3)
                 return 0
             if msg == 0x0200:                      # WM_MOUSEMOVE —— 悬停
-                if not getattr(self, "_dbg_mm", False):
-                    self._dbg_mm = True
-                    print("[dbg] 收到 WM_MOUSEMOVE（鼠标已进入气泡区域）")
                 # 【2026-10-07 用户要求「鼠标指向，显示退出和打开的字样」】
                 if not self.hover:
                     self.hover = True
