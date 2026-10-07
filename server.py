@@ -3380,11 +3380,21 @@ def api_update_check():
 @app.post("/api/update/install")
 def api_update_install():
     """已下载就绪则触发替换脚本，随后退出服务让脚本完成覆盖+重启"""
+    print("[ok] 收到安装请求，开始替换")
     if not updater.trigger_replace():
+        print("[warn] 替换未执行（没有待安装的更新或校验没过）")
         return {"ok": False, "message": "没有待安装的更新"}
+    print("[ok] 替换已触发，准备退出让新版本接管端口")
+
+    # 【2026-10-07 修「升级后不自动重启」】
+    # 原来延迟 0.6 秒才退，而新进程这时已经起来抢端口了，被判成"已有实例"→ 开个浏览器就退，
+    # 用户看到的现象就是"装完了程序没起来"。现在改成**立刻退出**（0.15 秒留给 HTTP 响应写完），
+    # 端口马上释放，新进程等待重试后就能接管。
     def _die():
-        time.sleep(0.6)
+        print("[ok] 进程即将退出（为升级让出端口）")
+        sys.stdout.flush()
         os._exit(0)
+    threading.Timer(0.15, _die).start()
     threading.Thread(target=_die, daemon=True).start()
     return {"ok": True, "message": "正在更新并重启"}
 

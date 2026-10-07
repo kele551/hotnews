@@ -91,7 +91,7 @@ def main():
     # 等到了就正常启动；真的已有实例（不是升级）等完仍占用，才走"打开浏览器"的老路。
     running = find_running()
     if running:
-        for i in range(30):
+        for i in range(75):        # 最多等 30 秒（原来 12 秒，遇到慢退的旧进程不够）
             time.sleep(0.4)
             if not find_running():
                 running = None
