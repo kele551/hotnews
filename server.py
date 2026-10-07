@@ -178,7 +178,7 @@ SOURCES = {
         {"id": "cn-oschina", "label": "开源中国", "url": "https://www.oschina.net/news/rss", "base": "https://www.oschina.net", "region": "cn", "cls": "软件"},
         {"id": "cn-sspai",   "label": "少数派",   "url": "https://sspai.com/feed",           "base": "https://sspai.com",       "region": "cn", "cls": "软件"},
         # 娱乐栏目：凤凰娱乐首页（明星/绯闻/八卦）。首页内联 JSON 带标题+题图+newsTime，量大。
-        {"id": "cn-ent", "label": "凤凰娱乐", "url": "https://ent.ifeng.com/", "base": "https://ent.ifeng.com", "region": "cn", "cls": "娱乐", "parser": "ifeng"},
+        {"id": "cn-ent", "label": "凤凰娱乐", "url": "https://ent.ifeng.com/", "base": "https://ent.ifeng.com", "region": "cn", "cls": "娱乐", "parser": "ifeng"},
         # 【2026-10-07 补源】用户要求「娱乐栏目的新闻太少，增加新闻源头」。
         # 实测国内娱乐 RSS 全废（网易/中新网无条目、搜狐无图、人民网停更、时光网连不上），
         # 只能用新浪娱乐的 SSR HTML；它的列表页无图无时间，靠 _fill_missing_images 补。
@@ -232,30 +232,46 @@ PRELOAD_ALL = {"cn": [], "intl": [], "hot": []}
 
 
 def _load_config():
-    path = _res("config.json")
     default = {
         "update": {"enabled": True},
         # contact：MyMemory 用邮箱标识身份，带上可把免费额度从 5k/天 提到 50k/天。
-        # 【2026-10-07 改动】原来是写死的假邮箱（kele551@example.com），既拿不到提额，
-        # 又会被一起打进 exe 分发出去。现在留空，需要提额时自己在 exe 同级的
-        # config.json 里填一个真实邮箱即可（不必改代码、也不会进版本库）。
+        # 【2026-10-07 改动】原来写死的是假邮箱（kele551@example.com），既拿不到提额，
+        # 又会被一起打进 exe 分发出去。
+        # 现在怎么填真实邮箱：**不要**改仓库里的 config.json（那会进版本库、公开仓库里
+        # 就露出私人邮箱了），而是写本机私有覆盖文件（见下面 _LOCAL_CONFIG）。
         "translate": {"backend": "mymemory", "contact": "",
                       "baidu": {"appid": "", "secret": ""}, "deepl": {"auth_key": ""}, "enabled": True},
     }
-    if not os.path.exists(path):
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        data.setdefault("update", default["update"])
-        data["update"].setdefault("enabled", True)
-        data.setdefault("translate", default["translate"])
-        for k, v in default["translate"].items():
-            data["translate"].setdefault(k, v)
-        return data
-    except Exception:
-        return default
+    # 配置读取顺序（后者覆盖前者）：
+    #   1) 程序自带/同级的 config.json（在版本库里，**不要往这里写私人信息**）
+    #   2) %LOCALAPPDATA%\hotnews\config.local.json（本机私有，不进版本库、不随程序分发）
+    # 有了第 2 个，提额度、换翻译后端都不必改代码、也不会把邮箱提交到公开仓库。
+    data = {}
+    for path in (_res("config.json"), _LOCAL_CONFIG):
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                cfg = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(cfg, dict):
+            continue
+        for k, v in cfg.items():
+            if isinstance(v, dict) and isinstance(data.get(k), dict):
+                data[k].update(v)
+            else:
+                data[k] = v
+    data.setdefault("update", dict(default["update"]))
+    data["update"].setdefault("enabled", True)
+    data.setdefault("translate", dict(default["translate"]))
+    for k, v in default["translate"].items():
+        data["translate"].setdefault(k, v)
+    return data
 
+
+# 本机私有配置路径（不进版本库、不随程序分发）：
+# 提额/换翻译后端写在这里，别改仓库里的 config.json。
+_LOCAL_CONFIG = os.path.join(os.getenv("LOCALAPPDATA") or os.path.expanduser("~"),
+                             "hotnews", "config.local.json")
 
 CONFIG = _load_config()
 
@@ -2644,6 +2660,9 @@ def _split_hot_by_scope(items):
             d = dict(it)
             d["region"] = "intl"
             d["channel"] = "cn-intl-hot"      # 标明「来自国内综合源的国际条目」
+            # 【2026-10-07 修】这些条目本来就是中文（凤凰/澎湃/红星是国内媒体），
+            # 标成「待翻译」既白占 MyMemory 额度，界面也会把它算进「未中文化」。
+            d["translated"] = True
             intl.append(d)
         else:
             dom.append(it)
@@ -3158,11 +3177,16 @@ def _translate_items(items, max_items=200):
     if not todo:
         return items
     _TRANS_BREAK[0] = False       # 新一批从干净状态开始（额度可能已跨天恢复）
+    # 【2026-10-07 修「国际娱乐一部分变英文」】原来 title 和 desc 交替入队，
+    # 摘要（200 字≈40 词）是标题的 4 倍长，161 条一起译要 8000+ 词，
+    # 直接把 MyMemory 免费额度（匿名 5k 词/天）打爆 → 连标题都没译出来。
+    # 改成**两轮：先把所有标题译完，再译摘要**。额度不够时，最显眼的标题一定全中文。
     jobs = []
     for it in todo:
         it["title_en"] = it.get("title") or ""
         if it.get("title"):
             jobs.append((it, "title", (it["title"] or "")[:300]))
+    for it in todo:
         if it.get("desc"):
             it["desc_en"] = it.get("desc") or ""
             jobs.append((it, "desc", (it["desc"] or "")[:300]))
