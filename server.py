@@ -2184,7 +2184,7 @@ class _Balloon:
         self.q = []                 # 队列里每一项是「一组要滚动播放的条目」[(title,msg,warn), ...]
         self.lock = threading.Lock()
         self.hwnd = None
-        self.cur = ("", "", False)
+        self.cur = ("", "", False, "")
         self.showing = False
         self.playlist = []          # 当前正在播放的那一组
         self.idx = 0                # 播到第几条
@@ -2335,7 +2335,7 @@ class _Balloon:
                 hdc = u.BeginPaint(hwnd, ctypes.byref(ps))
                 rc = self.RECT()
                 u.GetClientRect(hwnd, ctypes.byref(rc))
-                title, text, warn = self.cur
+                title, text, warn = self.cur[0], self.cur[1], self.cur[2]
                 s = self.scale
                 # 卡片底色：明快浅色（跟程序网页风格一致，不用黑底）。
                 # 大事样式用暖白底 + 橙条区分，一眼能看出"这条不一样"。
@@ -2405,9 +2405,18 @@ class _Balloon:
                     else:
                         u.KillTimer(hwnd, 3)
                 return 0
-            if msg == 0x0201:                      # WM_LBUTTONDOWN → 打开应用
+            if msg == 0x0201:                      # WM_LBUTTONDOWN
+                # 【2026-10-07 用户反馈「气泡的新闻无法点开」】原来点哪里都只打开程序首页，
+                # 看不到那一条新闻。现在优先打开**当前正在播放的这条**的原文链接；
+                # 没有链接（比如"我的软件发布"是纯提示、没有跳转目标）才回落到首页。
+                _link = ""
                 try:
-                    webbrowser.open(APP_URL)
+                    if isinstance(self.cur, (tuple, list)) and len(self.cur) > 3:
+                        _link = self.cur[3] or ""
+                except Exception:
+                    _link = ""
+                try:
+                    webbrowser.open(_link or APP_URL)
                 except Exception:
                     pass
                 u.ShowWindow(hwnd, 0)
@@ -2424,13 +2433,14 @@ class _Balloon:
         """把当前播放到的那一条装进 self.cur，并在标题尾巴标出 (第几条/共几条)。"""
         pl = self.playlist
         if not pl:
-            self.cur = ("", "", False)
+            self.cur = ("", "", False, "")
             return
         i = max(0, min(self.idx, len(pl) - 1))
-        title, text, warn = pl[i]
+        title, text, warn = pl[i][0], pl[i][1], pl[i][2]
+        link = pl[i][3] if len(pl[i]) > 3 else ""
         if len(pl) > 1:
             title = f"{title}    ({i + 1}/{len(pl)})"
-        self.cur = (title, text, warn)
+        self.cur = (title, text, warn, link)
 
     def _place(self):
         """放到工作区右下角（避开任务栏）。"""
@@ -2521,10 +2531,16 @@ def _show_toast_list(entries):
     用户要求「滚动播放气泡新闻，三条左右」：一组最多 BALLOON_PLAY_COUNT 条，
     每条停留 BALLOON_PER_ITEM_MS，标题尾部带 (1/3) 这样的进度。
     """
-    entries = [e for e in (entries or []) if e and (e[0] or e[1])]
+    # 统一成 4 元组 (title, msg, warn, link)；调用方可能只给 3 个元素
+    norm = []
+    for e in (entries or []):
+        if not e or not (e[0] or e[1]):
+            continue
+        norm.append((e[0], e[1], bool(e[2]) if len(e) > 2 else False,
+                     e[3] if len(e) > 3 else ""))
+    entries = norm[:BALLOON_PLAY_COUNT]
     if not entries:
         return
-    entries = entries[:BALLOON_PLAY_COUNT]
     if BALLOON.ok:
         with BALLOON.lock:
             BALLOON.q.append(list(entries))
@@ -2533,7 +2549,7 @@ def _show_toast_list(entries):
                 del BALLOON.q[:-2]
         return
     # 自绘不可用时的兜底：系统气泡只能显示第一条
-    title, msg, warn = entries[0]
+    title, msg, warn = entries[0][0], entries[0][1], entries[0][2]
     if not TRAY.ok or TRAY.nid is None:
         return
     try:
@@ -2625,7 +2641,7 @@ def _notify_news(items):
         title = it.get("title") or ""
         if it.get("region") == "intl" and not it.get("translated") and it.get("title_en"):
             title = it.get("title_en") or title
-        entries.append((f"热点新闻更新 · {tag} · {label}", title[:72], False))
+        entries.append((f"热点新闻更新 · {tag} · {label}", title[:72], False, it.get("link") or ""))
     if len(added) > len(entries):
         _t, _m, _w = entries[-1]
         entries[-1] = (_t, _m + f"　（本次共新增 {len(added)} 条）", _w)
@@ -2689,6 +2705,31 @@ FOREIGN_MARKERS = (
     "迪拜", "韩娱", "日娱", "欧美", "韩团", "日漫", "美剧", "英剧", "韩剧",
 )
 
+
+# 【2026-10-07 用户反馈「国际版要闻还是充次着国内新闻」】
+# 光判断"像不像国际"不够 —— 「外交部：美方应慎重处理台湾问题」「法德要求欧盟…商务部回应」
+# 这类标题里有外国名，但其实是**中国官方表态/国内新闻**，被误判成国际后塞进了国际要闻。
+# 所以再加一层「强国内特征」排除：命中这些词就是国内新闻，不给国际板块。
+DOMESTIC_MARKERS = (
+    "我国", "中方", "中国内地", "外交部", "商务部", "国防部", "国台办", "国务院",
+    "发改委", "教育部", "公安部", "文旅部", "财政部", "工信部", "住建部", "农业农村部",
+    "全国人大", "全国政协", "中央", "省委", "市委", "县委", "区政府", "两岸", "台海",
+    "解放军", "东部战区", "南部战区", "火箭军", "驻华", "中国队", "国足", "中超", "CBA",
+    "春晚", "央视", "人民日报", "新华社", "光明日报", "中国影片", "华语片", "国产片",
+    "申报奥斯卡", "国内", "全省", "全市", "我县", "村民", "社区",
+)
+
+
+def _looks_domestic(title):
+    """粗判一条新闻是不是「国内新闻」（含中国官方表态、国内事务）。
+
+    用途：国内板块往国际板块转条目时，先过这一关 —— 只要有强国内特征就不转。
+    """
+    t = title or ""
+    for k in DOMESTIC_MARKERS:
+        if k in t:
+            return True
+    return False
 
 def _looks_foreign(title):
     """粗判一条新闻是不是国际新闻（用于国内热榜过滤）。"""
@@ -2774,12 +2815,15 @@ def _split_cn_scope(items):
     dom, intl = [], []
     for it in items:
         _sec = (it.get("section") or "").strip()
+        _title = it.get("title") or ""
         if _sec in FOREIGN_SECTIONS:
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
         else:
-            _is_intl = _looks_foreign(it.get("title"))
+            # 像国际 **且** 不像国内，才算国际 —— 只判前者会把
+            # 「外交部：美方应慎重处理台湾问题」这类中国官方表态误转过去。
+            _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
         if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
             d["region"] = "intl"
@@ -2827,12 +2871,15 @@ def _split_hot_by_scope(items):
     dom, intl = [], []
     for it in items:
         _sec = (it.get("section") or "").strip()
+        _title = it.get("title") or ""
         if _sec in FOREIGN_SECTIONS:
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
         else:
-            _is_intl = _looks_foreign(it.get("title"))
+            # 像国际 **且** 不像国内，才算国际 —— 只判前者会把
+            # 「外交部：美方应慎重处理台湾问题」这类中国官方表态误转过去。
+            _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
         if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
             d["region"] = "intl"
@@ -2898,7 +2945,7 @@ def _notify_my_software(items):
         entries.append((
             "🎉 你的软件被发布了",
             "[%s] %s" % (it.get("label") or it.get("channel") or "", (it.get("title") or "")[:60]),
-            True))
+            True, it.get("link") or ""))
     print(f"[ok] ★ 我的软件提醒：{len(fresh)} 条")
     _show_toast_list(entries)
 
@@ -2976,7 +3023,7 @@ def _notify_major(items):
     entries = []
     for it in sample:
         label = it.get("label") or it.get("cls") or "要闻"
-        entries.append((f"⚠ 新闻大事 · {label}", (it.get("title") or "")[:72], True))
+        entries.append((f"⚠ 新闻大事 · {label}", (it.get("title") or "")[:72], True, it.get("link") or ""))
     if len(fresh) > len(entries):
         _t, _m, _w = entries[-1]
         entries[-1] = (_t, _m + f"　（另有 {len(fresh) - len(entries)} 条同类）", _w)
