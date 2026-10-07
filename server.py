@@ -183,6 +183,9 @@ SOURCES = {
         # 实测国内娱乐 RSS 全废（网易/中新网无条目、搜狐无图、人民网停更、时光网连不上），
         # 只能用新浪娱乐的 SSR HTML；它的列表页无图无时间，靠 _fill_missing_images 补。
         {"id": "cn-sina-ent", "label": "新浪娱乐", "url": "https://ent.sina.com.cn/", "base": "https://ent.sina.com.cn", "region": "cn", "cls": "娱乐", "parser": "sina_ent"},
+        # 【2026-10-07 再挖网易娱乐】首页 415 条带标题条目，图片靠改写 thumbnail 参数放大到 660x440，
+        # 时间由文章页补（TIME_FIX_CHANNELS）。
+        {"id": "cn-163-ent", "label": "网易娱乐", "url": "https://ent.163.com/", "base": "https://ent.163.com", "region": "cn", "cls": "娱乐", "parser": "163_ent"},
     ],
     "intl": [
         {"id": "f24-main",    "label": "France24", "url": "https://www.france24.com/en/rss",         "base": "https://www.france24.com", "region": "intl", "cls": "要闻"},
@@ -545,6 +548,8 @@ def _parse_one(src):
     # 新浪娱乐：首页 HTML 列表（无 RSS 可用，实测网易/中新网/时光网的娱乐 RSS 全废）
     if src.get("parser") == "sina_ent":
         return _parse_sina_ent(src)
+    if src.get("parser") == "163_ent":
+        return _parse_163_ent(src)
     # GitHub curated 软件集合仓库（awesome 列表）：抓 README raw 解析软件条目
     if src.get("parser") == "github_readme":
         return _parse_github_readme(src)
@@ -1541,6 +1546,8 @@ BIG_IMAGE_CHANNELS = {"cn-mefcl"}
 # 只能开豁免，否则整个栏目会消失。目前只有 mefcl（站方图固定 220x150）。
 # 注意：豁免只免「短边门槛」，**仍必须有图**（没图的照样剔除）。
 MIN_IMG_EXEMPT_CHANNELS = {"cn-mefcl"}
+# 需要去文章页「取发布时间」的源（它们的图已经有了，只是为了时间才抓一次）
+TIME_FIX_CHANNELS = {"cn-163-ent"}
 
 
 def _day_start_cutoff():
@@ -1710,7 +1717,11 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14):
         return items
 
     def needs(it):
-        return it.get("channel") in BIG_IMAGE_CHANNELS or not it.get("image")
+        # 网易娱乐的图由首页缩略图改写尺寸得到、不必抓文章页，
+        # 但它的**发布时间**必须去文章页取，所以这类条目仍然要抓一次。
+        return (it.get("channel") in BIG_IMAGE_CHANNELS
+                or not it.get("image")
+                or (it.get("channel") in TIME_FIX_CHANNELS and not it.get("published")))
 
     need = [it for it in items if needs(it)][:max_fetch]
     if not need:
@@ -1720,7 +1731,12 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14):
         got = list(ex.map(lambda it: _article_meta(it.get("link") or ""), need))
     filled = fixed_time = 0
     for it, (img, ts) in zip(need, got):
-        if img and img != it.get("image"):
+        # 【2026-10-07】只为「取发布时间」才抓文章页的源（网易娱乐），
+        # **不要用文章页的图覆盖已有的图** —— 网易号文章页的 og:image 是站方
+        # 自己的「下载App」横幅（common_nav/topapp.jpg，150x178，每篇都一样），
+        # 会把首页那张改写放大得到的 660x440 好图顶掉。
+        _time_only = it.get("channel") in TIME_FIX_CHANNELS and it.get("image")
+        if img and img != it.get("image") and not _time_only:
             it["image"] = img
             filled += 1
         # 【时间校准 2026-10-07】文章页自己的发布时间才是权威的：
@@ -1768,6 +1784,17 @@ def _collect(region):
         seen.add(it["title"])
         items.append(it)
     items = _drop_shared_images(items)
+    if region != "cn":
+        # 【2026-10-07】接收国内板块剔出来的国际新闻（国内「要闻」里的国际内容）。
+        # 国内先抓（见 _warmup 顺序调整），所以这里能拿到；拿不到就下一轮补。
+        _spill = _spill_from_cn()
+        if _spill:
+            _seen_t = {it["title"] for it in items}
+            _add = [s for s in _spill if s["title"] not in _seen_t]
+            if _add:
+                print(f"[ok] {region}: 并入国内板块转来的国际新闻 {len(_add)} 条")
+                items.extend(_add)
+                items = _drop_shared_images(items)
     if region == "cn":
         before = len(items)
         # 用户要求「没图的就不要上」：豁免源已取消，无图一律剔除
@@ -1821,7 +1848,11 @@ def _collect(region):
         cn_only.sort(key=lambda x: x["published"], reverse=True)
         _merged_all = list(hot) + cn_only
         PRELOAD_ALL[region] = _merged_all
-        return _select_fresh(_merged_all, region)
+        # 用户要求：国内「要闻」里的国际新闻全部移到国际板块
+        _dom, _intl = _split_cn_scope(_merged_all)
+        if _intl:
+            print(f"[ok] {region}: 要闻里剔出 {len(_intl)} 条国际新闻 → 转给国际板块")
+        return _select_fresh(_dom, region)
     items.sort(key=lambda x: x["published"], reverse=True)
 
     # 国际实时热榜置顶，其后国际 RSS 卡片按时间倒序
@@ -2646,6 +2677,88 @@ def _parse_sina_ent(src):
     return out
 
 
+# 国内板块里要做「国内 / 国际」内容分流的栏目（用户 2026-10-07 要求）：
+#   · 热榜：原来就分流了
+#   · 要闻：「国内板块里的要闻充次着国际新闻，全部移到国际板块」
+# 科技 / 软件 / 娱乐**不做分流** —— 这两栏里的国际内容（AMD、马斯克、欧美乐坛…）
+# 本来就属于该栏目本身，分流会把它们搬空。
+CN_SPLIT_CLS = {"要闻", "热榜"}
+
+
+def _split_cn_scope(items):
+    """按内容把国内板块的条目分成「国内」「国际」两拨，国际的那拨转给国际板块。"""
+    dom, intl = [], []
+    for it in items:
+        if it.get("cls") in CN_SPLIT_CLS and _looks_foreign(it.get("title")):
+            d = dict(it)
+            d["region"] = "intl"
+            d["channel"] = "cn-intl-news"     # 标明「国内媒体报的国际新闻」
+            d["translated"] = True            # 国内媒体发的，本来就是中文
+            intl.append(d)
+        else:
+            dom.append(it)
+    return dom, intl
+
+
+def _spill_from_cn():
+    """国内板块剔出来的国际新闻（供国际板块并入）。
+
+    读的是国内刚抓好的完整池子 PRELOAD_ALL['cn']，**不再发任何网络请求**。
+    国内没抓好时返回空（下一轮补上），绝不因此阻塞或报错。
+    """
+    try:
+        return _split_cn_scope(PRELOAD_ALL.get("cn") or [])[1]
+    except Exception:
+        return []
+
+def _parse_163_ent(src):
+    """网易娱乐：ent.163.com 首页的图文列表。
+
+    【为什么值得挖】国内娱乐源实测几乎全废，只有新浪娱乐能用；网易娱乐首页有
+    **415 条带标题的条目**，内容量和新鲜度都很好。
+
+    【关键技巧】它的图是 190x120 缩略图，但 URL 带 `thumbnail=WyH` 参数 ——
+    **把它改写成 thumbnail=660y440，实测直接返回 660x440 的高清图**，
+    所以不必去文章页抓图。
+    （注意：网易号文章页的 og:image 是站方自己的「下载App」横幅 common_nav/topapp.jpg，
+      150x178、每篇都一样，完全没有参考价值，别用它。）
+
+    【时间】首页区块里没有发布时间，所以 published 先留 0，
+    由 _fill_missing_images 去文章页取（见 TIME_FIX_CHANNELS）。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 网易娱乐抓取失败")
+        return []
+    page = raw.decode("utf-8", "ignore")
+    # 同一个 data_row 里：先 <a><img 缩略图></a>，紧跟着 news_title 下的 <h3><a>标题</a>
+    pat = (r'<img[^>]+src="(https?://nimg\.ws\.126\.net/\?url=[^"]+)"[\s\S]{0,420}?'
+           r'<h3>\s*<a[^>]+href="(https?://www\.163\.com/dy/article/[^"#]+)[^"]*"[^>]*>'
+           r'([^<]{8,80})</a>')
+    out, seen = [], set()
+    for m in re.finditer(pat, page):
+        img = _clean(m.group(1))
+        # 190x120 -> 660x440（实测有效；改不动就退回原图，交给高清门槛判断）
+        img = re.sub(r"thumbnail=\d+y\d+", "thumbnail=660y440", img)
+        url = _norm_url(m.group(2), src["base"])
+        title = _clean(m.group(3))
+        if not title or len(title) < 8 or url in seen:
+            continue
+        seen.add(url)
+        out.append({
+            "id": hashlib.md5(("163ent-" + url).encode("utf-8")).hexdigest()[:12],
+            "region": "cn", "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": url, "image": img, "published": 0,
+            "heat": 0, "translated": False,
+        })
+        if len(out) >= 40:
+            break
+    print(f"[ok] {src['id']}: 网易娱乐解析 {len(out)} 条（图已放大到 660x440，时间待文章页补）")
+    return out
+
 def _split_hot_by_scope(items):
     """把热榜条目分成「国内」「国际」两拨（用户建议的灵活做法）。
 
@@ -2815,8 +2928,11 @@ def _warmup():
     TRAY.start()                 # 右下角托盘图标（非 Windows 静默降级）
     BALLOON.start()              # 右下角自绘气泡（系统通知被关也照样弹）
     def run():
-        # 国际源在国外 + 还要后台翻译，实测 RSS 就要 11s；以前把它排在 cn 后面串行执行，
-        # 首屏要等它。现在国际单独开线程，cn（国内首屏）不受影响先就绪。
+        # 【2026-10-07 调整顺序】原来国际单独开线程和国内**并发**抓，本意是别拖慢国内首屏；
+        # 但国内是在同一个线程里紧跟着抓的，并发并没有让国内更快。反而导致
+        # 「国内剔出来的国际新闻转给国际板块」拿不到国内数据。
+        # 现在改成：国内（hot/cn）先抓完 → 再抓国际。国内首屏速度不变，
+        # 国际慢一些但它不是默认页，且接口已非阻塞（会先返回"正在抓取"）。
         def do_intl():
             try:
                 items = _collect("intl")
@@ -2843,7 +2959,6 @@ def _warmup():
             except Exception:
                 pass
 
-        threading.Thread(target=do_intl, daemon=True).start()
         for region in ("hot", "cn"):
             try:
                 items = _collect(region)
@@ -2856,6 +2971,10 @@ def _warmup():
                 _notify_my_software(items)
             except Exception as ex:
                 print(f"[warn] 预热 {region} 失败: {type(ex).__name__}")
+
+        # 国内抓完再抓国际 —— 这样「国内要闻里剔出的国际新闻」已经就绪，
+        # 能顺手并进国际板块（见 _spill_from_cn）。
+        do_intl()
 
     def refresh_loop():
         # 用户要求：所有栏目统一每 10 分钟自动刷新（不分国内/国际），无需手动。
