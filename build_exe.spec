@@ -85,7 +85,11 @@ a = Analysis(
     pathex=[BASE],
     binaries=[],
     datas=datas,
-    hiddenimports=["uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
+    # 【必须列在这里】_ed25519 是在函数里 import 的，PyInstaller 静态分析扫不到，
+    # 不列进来打包后就会 ModuleNotFoundError，验签会失败（fail-closed 会直接拒绝升级）。
+    # 同理 feedparser 必须保持模块级 import，别再改成懒加载。
+    hiddenimports=["_ed25519",
+                   "uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
                    "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on"],
     hookspath=[],
     runtime_hooks=[],

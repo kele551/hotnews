@@ -2739,7 +2739,7 @@ BALLOON = _Balloon()
 def _show_toast_list(entries):
     """一条气泡里滚动播放多条：entries = [(title, msg, warn), ...]。
 
-    用户要求「滚动播放气泡新闻，三条左右」：一组最多 BALLOON_PLAY_COUNT 条，
+    用户要求「滚动播放气泡新闻」：一组最多 BALLOON_PLAY_COUNT 条（现为 6 条），
     每条停留 BALLOON_PER_ITEM_MS，标题尾部带 (1/3) 这样的进度。
     """
     # 统一成 4 元组 (title, msg, warn, link)；调用方可能只给 3 个元素
