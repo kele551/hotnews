@@ -330,13 +330,24 @@ def _fast_swap(pkg):
             pass
         return False, f"就地替换失败: {type(ex).__name__}"
     # 拉起新版本（分离进程：本进程随后退出不会带走它）
+    #
+    # 【2026-10-07 关键修复】必须**剥掉 PyInstaller 自己的环境变量**。
+    # 单文件版靠 _MEIPASS2 / _PYI_* 让子进程复用父进程已经解包好的 _MEIxxxx 临时目录。
+    # 我们从"正在运行的程序里"拉起新版本时，这些变量会被继承过去 ——
+    # 新进程于是**复用老进程马上要删掉的那个临时目录**，证书等数据文件被删掉，
+    # 新进程在 import 阶段就崩：ssl.create_default_context → FileNotFoundError。
+    # 现象就是"替换成功、程序却不重启"（老进程退了、新的没起来）。
+    # 手动双击没问题，是因为那时环境里没有这些变量。
+    env = {k: v for k, v in os.environ.items()
+           if k != "_MEIPASS2" and not k.startswith("_PYI")}
     try:
         DETACHED = 0x00000008 | 0x08000000        # DETACHED_PROCESS | CREATE_NO_WINDOW
-        subprocess.Popen([exe], cwd=folder, creationflags=DETACHED, shell=False,
+        subprocess.Popen([exe], cwd=folder, env=env, creationflags=DETACHED, shell=False,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, close_fds=True)
     except Exception as ex:
         return False, f"新版本已就位但启动失败: {type(ex).__name__}"
+    print("[ok] 就地替换完成：已改名旧文件、写入新文件、并拉起新进程")
     return True, "已就地替换并重启"
 
 def trigger_replace():
