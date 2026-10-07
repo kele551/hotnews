@@ -42,6 +42,11 @@ except ImportError:
 REMOTE_VERSION_URL = "https://raw.giteeusercontent.com/kele551/hotnews/raw/master/version.json"
 REMOTE_VERSION_URL_ALT = "https://gitee.com/kele551/hotnews/raw/master/version.json"
 
+# 【2026-10-07 升级通道加固】离线生成的 Ed25519 公钥；私钥只存在作者机器的
+# F:\Harness\secrets 里，绝不进仓库。客户端用它验证 version.json 的签名，
+# 这样即便 Gitee 账号被盗也推不了恶意版本（详见 fetch_remote）。
+UPDATE_PUBKEY = "f6931bd24749559c36fc14aa8fcdedd638502fec39bb010ef505a120f9a2dfbd"
+
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
     EXE_PATH = os.path.abspath(sys.executable)
@@ -70,7 +75,15 @@ def _sha256(path):
 
 
 def fetch_remote():
-    """拉远端 version.json，返回 dict 或 None（失败静默）"""
+    """拉远端 version.json，**验签通过**才返回 dict；失败/被篡改返回 None。
+
+    【2026-10-07 升级通道加固】原来只校验 exe 的 sha256，而 sha256 和文件
+    放在同一个地方 —— Gitee 账号一旦被盗，攻击者可以同时替换 exe 和 sha256，
+    客户端会乖乖下载并执行恶意程序（供应链投毒）。
+    现在 version.json 必须带一份用**离线私钥**做的 Ed25519 签名
+    （同目录的 version.json.sig），客户端用内置公钥验签：
+    没有私钥就签不出合法签名，账号被盗也推不了恶意版本。
+    """
     if httpx is None:
         return None
     for url in (REMOTE_VERSION_URL, REMOTE_VERSION_URL_ALT):
@@ -78,11 +91,36 @@ def fetch_remote():
             # trust_env=False：不走系统/环境代理，直连 Gitee 更快更稳（同 server._fetch）
             r = httpx.get(url, timeout=5, follow_redirects=True, trust_env=False,
                           headers={"User-Agent": "hotnews-updater"})
-            if r.status_code == 200:
-                return r.json()
+            if r.status_code != 200:
+                continue
+            raw = r.content                      # 验签必须用**原始字节**，不能用重新序列化的
+            ok, why = _verify_sig(raw, url + ".sig")
+            if not ok:
+                print(f"[warn] 升级源验签失败（{why}），已忽略这次更新信息")
+                continue
+            return json.loads(raw.decode("utf-8"))
         except Exception:
             continue
     return None
+
+
+def _verify_sig(raw, sig_url):
+    """校验 version.json 的 Ed25519 签名。返回 (是否通过, 原因)。"""
+    try:
+        import _ed25519
+    except Exception:
+        return False, "验签模块缺失"    # fail-closed：宁可不让升级，也绝不放行未验签的更新
+    try:
+        s = httpx.get(sig_url, timeout=5, follow_redirects=True, trust_env=False,
+                      headers={"User-Agent": "hotnews-updater"})
+        if s.status_code != 200:
+            return False, f"拿不到签名 HTTP {s.status_code}"
+        sig = bytes.fromhex(s.text.strip())
+        if _ed25519.checkvalid(sig, raw, bytes.fromhex(UPDATE_PUBKEY)):
+            return True, ""
+        return False, "签名不匹配"
+    except Exception as ex:
+        return False, f"{type(ex).__name__}"
 
 
 def check(silent=True):
