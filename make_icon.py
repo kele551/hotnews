@@ -71,17 +71,21 @@ def main():
     px0, py0 = int(S * 0.145), int(S * 0.115)      # 主纸左上
     radius = int(S * 0.045)
 
-    # ---------- 1) 整体投影（立体感的关键）----------
+    # ---------- 1) 极淡的中性投影 ----------
+    # 【2026-10-07 用户反馈「图标不要有黑色的透明壳」】
+    # 原来画的是深蓝黑投影（RGB 12,30,58 且 alpha 高），在深色桌面/深色主题下
+    # 会变成一圈脏兮兮的黑边 —— 看着就像图标外面套了个黑色透明壳。
+    # 现在改成**很淡的中性灰**，只留一点点"离开桌面"的感觉，绝不再发黑。
     shadow = Image.new("L", (S, S), 0)
     sd = ImageDraw.Draw(shadow)
-    for i, off in enumerate(((10, 16), (16, 24), (22, 32))):     # 三层做实投影
+    for i, off in enumerate(((6, 10), (10, 16))):
         sd.rounded_rectangle([px0 + off[0], py0 + off[1],
                               px0 + pw + off[0], py0 + ph + off[1]],
-                             radius=radius, fill=110 - i * 30)
-    shadow = shadow.filter(ImageFilter.GaussianBlur(int(S * 0.022)))
+                             radius=radius, fill=34 - i * 14)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(int(S * 0.016)))
     canvas = Image.alpha_composite(canvas, Image.merge("RGBA", (
-        Image.new("L", (S, S), 12), Image.new("L", (S, S), 30),
-        Image.new("L", (S, S), 58), shadow)))
+        Image.new("L", (S, S), 120), Image.new("L", (S, S), 124),
+        Image.new("L", (S, S), 130), shadow)))
 
     # ---------- 2) 堆叠的纸页边（后方两层，错位）----------
     for k, (dx, dy, tone) in enumerate((
@@ -97,6 +101,13 @@ def main():
 
     # ---------- 3) 主纸（浅渐变 + 斜面）----------
     canvas = paste_grad(canvas, (px0, py0, pw, ph), radius, PAPER_TOP, PAPER_BOT)
+    # 浅灰细描边：保证在**深色桌面**上也有清晰边界（用户要求"不要黑色壳"，那就用浅色描边）
+    _rim = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    ImageDraw.Draw(_rim).rounded_rectangle(
+        [px0, py0, px0 + pw, py0 + ph], radius=radius,
+        outline=(176, 186, 202, 235), width=max(3, S // 220))
+    _rim = _rim.filter(ImageFilter.GaussianBlur(S // 700))
+    canvas = Image.alpha_composite(canvas, _rim)
 
     # 斜面：左上亮边、右下暗边
     bevel = Image.new("RGBA", (S, S), (0, 0, 0, 0))
