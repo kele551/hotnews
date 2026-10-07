@@ -141,5 +141,13 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 3. 替换脚本 `hotnews_update.vbs` 必须写成 **UTF-16**。
    写成 `utf-8-sig`（带 BOM）会让 Windows Script Host 报
    「无效字符 (1,1) 800A0408」，脚本不执行、还弹错误框，**在线升级会整个失效**。
+4. ⚠ **往 Gitee 推代码会覆盖远端 `version.json`** —— 本地那份必须是精简版
+   （只写 `version`），推上去就把远端的完整版（带 `launcher`）冲掉了，
+   **在线升级会因此失效**。所以：**每次 `git push gitee` 之后，必须再跑一次
+   `tools/publish.py <版本号>` 把完整版写回远端。**
+5. 升级包必须**原子下载**：先下到 `.part`、校验 sha256、再改名；
+   替换前再校验一次尺寸与 sha。曾经因为重复「检查更新」用 `"wb"` 截断了已下好的包，
+   把一个 14MB 的程序覆盖成 1.2MB 的残缺文件，**程序当场报废**。
 
-发布脚本：`tools/publish.py <版本号>`（同时发 Gitee 与 GitHub 并回下载核对）。
+发布脚本：`tools/publish.py <版本号>`（同时发 Gitee 与 GitHub，替换附件、
+写远端完整版 `version.json`，并回下载核对 sha256）。
