@@ -153,6 +153,20 @@
     .grid{grid-template-columns:1fr}
     input[type=search]{min-width:0;width:100%}
   }
+
+/* 退出程序的整页提示（用户反馈"点了退出没反应"，其实是后台退了但页面没反馈） */
+#quitMask{position:fixed;inset:0;background:rgba(248,250,252,.94);z-index:999;
+  display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)}
+#quitMask .qm-card{background:#fff;border:1px solid #e6eaf0;border-radius:16px;
+  padding:38px 46px;text-align:center;box-shadow:0 12px 40px rgba(20,30,50,.10);max-width:460px}
+#quitMask .qm-ico{width:56px;height:56px;border-radius:50%;background:#e8f6ee;color:#2f9e5f;
+  font-size:30px;line-height:56px;margin:0 auto 16px}
+#quitMask h3{margin:0 0 12px;font-size:20px;color:#1a202c}
+#quitMask p{margin:6px 0;color:#4a5568;font-size:14px;line-height:1.7}
+#quitMask .qm-sub{color:#8896ab;font-size:13px;margin-top:12px}
+#quitMask button{margin-top:20px;padding:10px 26px;border:1px solid #cfd8e3;background:#fff;
+  border-radius:9px;font-size:14px;color:#2b6cb0;cursor:pointer}
+#quitMask button:hover{background:#f2f7fd;border-color:#2b6cb0}
 </style>
 </head>
 <body>
@@ -173,7 +187,8 @@
       <option value="new">最新优先</option>
       <option value="old">最早优先</option>
     </select>
-    <button class="act primary" id="reload">刷新</button>
+    <label class="autostart" title="开机后在后台自动启动，这样点「打开」时页面是现成的、秒开"><input type="checkbox" id="autostart">开机启动</label>
+  <button class="act primary" id="reload">刷新</button>
     <button class="act" id="checkUpdate" title="检查是否有新版本">检查更新</button>
     <span class="meta" id="meta"></span>
     <button class="act quit" id="quit" title="停止后台服务并退出程序">退出程序</button>
@@ -292,24 +307,6 @@ function metaText(shown){
   return `共 ${shown} 条 / 源 ${state.items.length} 条 · 最新 ${nt} · 页面更新于 ${st}`;
 }
 
-// 【2026-10-07 用户要求「网页打开必须定位在热榜」】
-// 关键：不能只在启动时调一次 —— render() 会重建 innerHTML，滚动位置会被重置；
-// 而 load() 又是异步的，数据回来后才重绘。所以**每次 render 之后都重新锚定一次**。
-function anchorToHotList(){
-  try{ if("scrollRestoration" in history) history.scrollRestoration = "manual"; }catch(e){}
-  const sel = document.getElementById("cls");
-  const q = document.getElementById("q");
-  if(sel) sel.value = "";
-  if(q) q.value = "";
-  window.scrollTo(0, 0);
-  const sech = document.querySelector("main .sech");
-  if(sech && (sech.textContent||"").indexOf("热榜") >= 0){
-    try{ sech.scrollIntoView({block:"start"}); }catch(e){ window.scrollTo(0,0); }
-  }
-}
-let ANCHOR_LOCK = true;                     // 数据加载期间保持锚定
-setTimeout(()=>{ ANCHOR_LOCK = false; }, 8000);
-
 function render(){
   const kw = (document.getElementById("q").value||"").trim().toLowerCase();
   const cls = document.getElementById("cls").value;
@@ -380,7 +377,6 @@ function render(){
   if(!hotItems.length && !list.length){
     grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
     document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
-  if(ANCHOR_LOCK) anchorToHotList();   // 数据回来重绘后重新锚定到热榜
     return;
   }
   let html2 = hotItems.length ? `<h2 class="sech">国际实时热榜 · Hacker News</h2>` + hotlistHTML(hotItems) : "";
@@ -402,7 +398,6 @@ function render(){
   // 用户几次反馈"热榜还有两天前的新闻"，**实测根因是后端把红星新闻解析不出时间的
   // 条目伪造成了"刚刚"**（已修）。这个显示能让人一眼判断是"数据旧"还是"页面旧"。
   document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
-  if(ANCHOR_LOCK) anchorToHotList();   // 数据回来重绘后重新锚定到热榜
 }
 
 // 【2026-10-07】请求序号：切换分区时可能有两个请求在飞，
@@ -553,9 +548,69 @@ render();
 load(false);
 setInterval(()=>checkVersion(), 60000);
 
-// 启动就锚定一次（render 里也有，这里兜住 SSR 首屏那一帧）
+// 【2026-10-07 用户要求「网页打开必须定位在热榜」】
+// 浏览器默认会恢复上次的滚动位置和表单状态，结果打开时可能停在页面中间，
+// 甚至因为上次选中了某个分类（比如"科技"）而把热榜整块藏起来
+//（热榜只在「全部分类 + 无搜索」时才显示）。
+// 所以每次打开都强制：清掉分类与搜索 → 关掉滚动恢复 → 锚定到热榜标题。
+function anchorToHotList(){
+  try{ if("scrollRestoration" in history) history.scrollRestoration = "manual"; }catch(e){}
+  const sel = document.getElementById("cls");
+  const q = document.getElementById("q");
+  if(sel) sel.value = "";
+  if(q) q.value = "";
+  window.scrollTo(0, 0);                     // 先回到顶部（热榜就在首屏最上面）
+  const sech = document.querySelector("main .sech");
+  if(sech && (sech.textContent||"").indexOf("热榜") >= 0){
+    try{ sech.scrollIntoView({block:"start"}); }catch(e){ window.scrollTo(0,0); }
+  }
+}
 anchorToHotList();
 window.addEventListener("load", anchorToHotList);
+// 分区切换后同样回到热榜（新分区的内容还没到，先别停在旧位置）
+
+/* ================= 开机自启开关（用户要求"第一次使用时给个开关让用户选"） ================= */
+async function refreshAutoStart(){
+  try{
+    const r = await fetch("/api/autostart");
+    const j = await r.json();
+    const cb = document.getElementById("autostart");
+    if(cb) cb.checked = !!j.enabled;
+  }catch(e){}
+}
+document.addEventListener("DOMContentLoaded", ()=>{
+  const cb = document.getElementById("autostart");
+  if(!cb) return;
+  refreshAutoStart();
+  cb.onchange = async ()=>{
+    cb.disabled = true;
+    try{
+      const r = await fetch("/api/autostart", {method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({enabled: cb.checked})});
+      const j = await r.json();
+      cb.checked = !!j.enabled;
+      cb.title = j.message || "";
+    }catch(e){}
+    cb.disabled = false;
+  };
+});
+
+/* ================= 首屏加载提示（用户反馈"打开页面什么都没有"） ================= */
+let _bootTry = 0;
+function bootWatch(){
+  try{
+    if((state.items.length || hotItems.length) || _bootTry > 40) return;
+    _bootTry++;
+    const g = document.getElementById("grid");
+    if(g && !g.querySelector(".card")){
+      g.innerHTML = '<div class="empty">正在加载今天的新闻…<br>' +
+        '<span style="color:#8896ab;font-size:13px">首次启动约需 10 秒，稍等一下就好</span></div>';
+    }
+    setTimeout(async ()=>{ try{ await load(false); }catch(e){} bootWatch(); }, 1500);
+  }catch(e){}
+}
+bootWatch();
 </script>
 </body>
 </html>

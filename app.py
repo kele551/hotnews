@@ -82,6 +82,10 @@ def wait_and_open(url, port, tries=200):
 
 
 def main():
+    # 【2026-10-07 用户要求「设置成开机启动，自动加载，需要看时点右键打开」】
+    # 带 --silent 启动时**不开浏览器**，只在后台把服务跑起来、把第一屏数据抓好。
+    # 这样用户任何时候右键点「打开热点新闻」，页面都是现成的，秒开。
+    _silent = ("--silent" in sys.argv) or (os.environ.get("HOTNEWS_SILENT") == "1")
     # 1) 已有实例 → 直接把它调到前台（开浏览器），自己退出，避免起第二个
     # 【2026-10-07 修「升级后不自启」】升级时的时序是：
     #   旧进程把 exe 换掉 → 立刻拉起新进程 → 自己 0.6 秒后才退出。
@@ -97,6 +101,9 @@ def main():
                 running = None
                 break
         if running:
+            if _silent:
+                print(f"[ok] 已有实例在 {running} 端口运行（静默模式，不弹浏览器）")
+                return
             print(f"[ok] 已有实例在 {running} 端口运行，直接打开浏览器")
             webbrowser.open(f"http://127.0.0.1:{running}")
             return
@@ -119,7 +126,10 @@ def main():
     print("=" * 52)
     print()
 
-    threading.Thread(target=wait_and_open, args=(url, port), daemon=True).start()
+    if not _silent:
+        threading.Thread(target=wait_and_open, args=(url, port), daemon=True).start()
+    else:
+        print("[ok] 静默模式：后台预热数据，不打开浏览器")
 
     try:
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

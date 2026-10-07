@@ -1972,6 +1972,72 @@ def _enrich_quality_bg(region):
 
 # ===================== Windows 右下角气泡通知（纯 ctypes，无第三方依赖） =====================
 # 非 Windows / 创建失败均静默降级，不影响主程序。点击气泡打开 APP_URL。
+_AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_AUTOSTART_NAME = "hotnews"
+
+
+def _autostart_enabled():
+    """开机自启是否已开（读当前用户的 Run 项，不需要管理员权限）。"""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY) as k:
+            v, _ = winreg.QueryValueEx(k, _AUTOSTART_NAME)
+            return bool(v)
+    except Exception:
+        return False
+
+
+def _autostart_set(enable):
+    """开/关开机自启。返回 (是否成功, 说明)。
+
+    【2026-10-07 用户要求「第一次使用时界面给个开关让用户选」】
+    开启时用 --silent 启动：开机只在后台把服务和第一屏数据准备好，不弹浏览器；
+    用户想看时点托盘右键「打开热点新闻」就是秒开。
+    """
+    try:
+        import winreg
+        import sys as _sys
+        exe = _sys.executable if getattr(_sys, "frozen", False) else ""
+        if enable and not exe:
+            return False, "非打包环境，无法设置开机启动"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY) as k:
+            if enable:
+                winreg.SetValueEx(k, _AUTOSTART_NAME, 0, winreg.REG_SZ,
+                                  f'"{exe}" --silent')
+            else:
+                try:
+                    winreg.DeleteValue(k, _AUTOSTART_NAME)
+                except FileNotFoundError:
+                    pass
+        print(f"[ok] 开机自启已{'开启' if enable else '关闭'}")
+        return True, "已开启开机启动" if enable else "已关闭开机启动"
+    except Exception as ex:
+        return False, f"设置失败: {type(ex).__name__}"
+
+
+def _open_app_window():
+    """把程序页面打开（托盘菜单、气泡点击都用它）。
+    优先 ShellExecuteW —— Windows 上打开 URL 最可靠；失败退回 webbrowser。"""
+    url = APP_URL or "http://127.0.0.1:8000"
+    try:
+        import ctypes as _ct
+        if _ct.windll.shell32.ShellExecuteW(None, "open", url, None, None, 1) > 32:
+            return
+    except Exception:
+        pass
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _quit_app_now():
+    """退出程序（跟网页上「退出程序」按钮同一条路）。"""
+    def _die():
+        time.sleep(0.2)
+        os._exit(0)
+    threading.Thread(target=_die, daemon=True).start()
+
 class _Tray:
     def __init__(self):
         self.ok = False
@@ -2076,14 +2142,46 @@ class _Tray:
         user32 = self.user32
         if msg == self.WM_TRAY:
             # lp 低字为通知码；用户点击气泡 → 打开应用（APP_URL 由 app.py 写入真实端口）
-            if (lp & 0xFFFF) == self.NIN_BALLOONUSERCLICK:
-                try:
-                    webbrowser.open(APP_URL)
-                except Exception:
-                    pass
+            _low = lp & 0xFFFF
+            if _low == self.NIN_BALLOONUSERCLICK:
+                _open_app_window()
+            elif _low == 0x0205:
+                # 【2026-10-07 用户要求「右下角图标右键弹出退出和打开软件的菜单」】
+                # WM_RBUTTONUP：在托盘图标上点右键 → 弹出菜单
+                self._popup_menu(hwnd)
         if msg == 0x2:  # WM_DESTROY
             user32.PostQuitMessage(0)
         return user32.DefWindowProcW(hwnd, msg, wp, lp)
+
+    def _popup_menu(self, hwnd):
+        """托盘图标右键菜单：打开热点新闻 / 退出程序。
+
+        两个坑：
+        1) 弹菜单前必须先 SetForegroundWindow，否则菜单点完不消失（Windows 的老规矩）；
+        2) 用 TPM_RETURNCMD 让 TrackPopupMenu 直接返回选中的命令号，比等 WM_COMMAND 简单可靠。
+        """
+        u = self.user32
+        wintypes = self.wintypes
+        try:
+            hmenu = u.CreatePopupMenu()
+            u.AppendMenuW(hmenu, 0x00000000, 1, "打开热点新闻")
+            u.AppendMenuW(hmenu, 0x00000800, 0, None)          # 分隔线
+            u.AppendMenuW(hmenu, 0x00000000, 2, "退出程序")
+            pt = wintypes.POINT()
+            u.GetCursorPos(self.ctypes.byref(pt))   # ctypes 在这个类里是 self.ctypes
+            u.SetForegroundWindow(hwnd)
+            cmd = u.TrackPopupMenu(hmenu, 0x0002 | 0x0100,      # RIGHTALIGN | RETURNCMD
+                                   pt.x, pt.y, 0, hwnd, None)
+            u.PostMessageW(hwnd, 0, 0, 0)                       # 让菜单正常收起
+            u.DestroyMenu(hmenu)
+            if cmd == 1:
+                print("[ok] 托盘菜单：打开热点新闻")
+                _open_app_window()
+            elif cmd == 2:
+                print("[ok] 托盘菜单：退出程序")
+                _quit_app_now()
+        except Exception as ex:
+            print(f"[warn] 托盘菜单失败: {type(ex).__name__}: {ex}")
 
     def _load_icon(self):
         """取一个能显示的通知区图标。
@@ -2178,8 +2276,10 @@ TRAY = _Tray()
 #   所以这里自绘一个置顶小窗：不经过通知中心，关掉通知也一定看得见。
 #   点击气泡 → 打开应用；9 秒后自动消失；多条通知排队依次显示。
 BALLOON_W, BALLOON_H = 400, 118
-BALLOON_PER_ITEM_MS = 5200   # 每条新闻停留多久（毫秒）
-BALLOON_PLAY_COUNT = 3       # 一条气泡里滚动播放几条（用户定 3 条；再多就嫌长）
+# 【2026-10-07 用户要求「三行不过瘾，显示六行，间隔延长两秒」】
+# 停留 5200 → 7200 毫秒；一组 3 条 → 6 条。
+BALLOON_PER_ITEM_MS = 7200   # 每条新闻停留多久（毫秒）
+BALLOON_PLAY_COUNT = 6       # 一条气泡里滚动播放几条
 
 
 class _Balloon:
@@ -2190,7 +2290,12 @@ class _Balloon:
         self.hwnd = None
         self.cur = ("", "", False, "")
         self.showing = False
-        self.playlist = []          # 当前正在播放的那一组
+        self.playlist = []
+        self.hover = False            # 鼠标是否停在气泡上（悬停才显示「打开/退出」)
+        self.paused = False           # 悬停期间暂停自动关闭（否则来不及点按钮）
+        self._btn_open = None         # 两个按钮的位置，点击时做命中判断
+        self._btn_close = None
+        self._tracking = False        # 是否已登记 WM_MOUSELEAVE
         self.idx = 0                # 播到第几条
         if sys.platform != "win32":
             return
@@ -2373,6 +2478,32 @@ class _Balloon:
                 m = self.RECT(x0, int(47 * s), right, rc.bottom - int(10 * s))
                 u.DrawTextW(hdc, text, -1, ctypes.byref(m),
                             0x10 | 0x800)                    # WORDBREAK|NOPREFIX
+
+                # 【2026-10-07 用户要求「鼠标指向，显示退出和打开的字样」】
+                # 鼠标悬停在气泡上时，右下角浮出两个胶囊按钮；移开就消失。
+                if self.hover:
+                    if not getattr(self, "_dbg_paint", False):
+                        self._dbg_paint = True
+                        print("[dbg] 悬停状态下重绘：正在画「打开/退出」两个按钮")
+                    bw, bh = int(56 * s), int(26 * s)
+                    gap = int(8 * s)
+                    by = rc.bottom - int(36 * s)
+                    ex = rc.right - int(14 * s)
+                    self._btn_close = (ex - bw, by, ex, by + bh)
+                    self._btn_open = (ex - bw - gap - bw, by, ex - bw - gap, by + bh)
+                    for _r, _fill, _txt, _fg in (
+                            (self._btn_open, self.br_btn_open, "打开", 0xFFFFFF),
+                            (self._btn_close, self.br_btn_close, "退出", 0x2C201A)):
+                        _br = g.SelectObject(hdc, _fill)
+                        _pn = g.SelectObject(hdc, self.pen_border)
+                        g.RoundRect(hdc, _r[0], _r[1], _r[2], _r[3], bh, bh)
+                        g.SelectObject(hdc, _br)
+                        g.SelectObject(hdc, _pn)
+                        g.SelectObject(hdc, self.font_btn)
+                        g.SetTextColor(hdc, _fg)
+                        _tr = self.RECT(_r[0], _r[1], _r[2], _r[3])
+                        u.DrawTextW(hdc, _txt, -1, ctypes.byref(_tr),
+                                    0x1 | 0x4 | 0x800)       # CENTER|VCENTER|NOPREFIX
                 u.EndPaint(hwnd, ctypes.byref(ps))
                 return 0
             if msg == 0x0113:                      # WM_TIMER
@@ -2409,22 +2540,99 @@ class _Balloon:
                     else:
                         u.KillTimer(hwnd, 3)
                 return 0
+            if msg == 0x0200:                      # WM_MOUSEMOVE —— 悬停
+                if not getattr(self, "_dbg_mm", False):
+                    self._dbg_mm = True
+                    print("[dbg] 收到 WM_MOUSEMOVE（鼠标已进入气泡区域）")
+                # 【2026-10-07 用户要求「鼠标指向，显示退出和打开的字样」】
+                if not self.hover:
+                    self.hover = True
+                    u.InvalidateRect(hwnd, None, True)
+                    # 【2026-10-07 用户反馈「没有过」】关键修复：鼠标移上来就**暂停自动关闭**。
+                    # 原来气泡每条只停 5.2 秒，用户根本来不及把鼠标移过去点按钮。
+                    try:
+                        u.KillTimer(hwnd, 2)      # 整组停留计时器
+                        u.KillTimer(hwnd, 3)      # 轮换计时器
+                        self.paused = True
+                    except Exception:
+                        pass
+                if not self._tracking:
+                    # 登记一次 WM_MOUSELEAVE，鼠标移开时把按钮收起来。
+                    # （Windows 不会主动发 leave，必须先 TrackMouseEvent 登记，且每次移入都要重登记。）
+                    try:
+                        class _TME(ctypes.Structure):
+                            _fields_ = [("cbSize", wintypes.DWORD),
+                                        ("dwFlags", wintypes.DWORD),
+                                        ("hwndTrack", wintypes.HWND),
+                                        ("dwHoverTime", wintypes.DWORD)]
+                        _t = _TME()
+                        _t.cbSize = ctypes.sizeof(_TME)
+                        _t.dwFlags = 0x00000002          # TME_LEAVE
+                        _t.hwndTrack = hwnd
+                        _t.dwHoverTime = 0
+                        if u.TrackMouseEvent(ctypes.byref(_t)):
+                            self._tracking = True
+                    except Exception:
+                        pass
+                return 0
+            if msg == 0x02A3:                      # WM_MOUSELEAVE —— 鼠标移开
+                self.hover = False
+                if getattr(self, "paused", False):
+                    # 移开就恢复计时，重新给一整组的时间，别立刻消失
+                    try:
+                        u.SetTimer(hwnd, 2, BALLOON_PER_ITEM_MS * max(1, len(self.playlist)), None)
+                        if len(self.playlist) > 1:
+                            u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)
+                        self.paused = False
+                    except Exception:
+                        pass
+                self._tracking = False
+                self._btn_open = None
+                self._btn_close = None
+                u.InvalidateRect(hwnd, None, True)
+                return 0
             if msg == 0x0201:                      # WM_LBUTTONDOWN
                 # 【2026-10-07 用户反馈「气泡的新闻无法点开」】原来点哪里都只打开程序首页，
                 # 看不到那一条新闻。现在优先打开**当前正在播放的这条**的原文链接；
                 # 没有链接（比如"我的软件发布"是纯提示、没有跳转目标）才回落到首页。
+                # 先看是不是点在两个按钮上（坐标来自上一次绘制）
+                def _in(r):
+                    return bool(r) and r[0] <= wp <= r[2] and r[1] <= lp <= r[3]
+                if _in(self._btn_close):
+                    # 「退出」= 收起这条气泡，不打开任何东西
+                    u.ShowWindow(hwnd, 0)
+                    self.showing = False
+                    self.hover = False
+                    self._tracking = False
+                    u.KillTimer(hwnd, 2)
+                    u.KillTimer(hwnd, 3)
+                    return 0
                 _link = ""
                 try:
                     if isinstance(self.cur, (tuple, list)) and len(self.cur) > 3:
                         _link = self.cur[3] or ""
                 except Exception:
                     _link = ""
+                # 【2026-10-07】原来只用 webbrowser.open，在打包环境里偶尔不生效
+                # （用户反馈"气泡点不开"）。改用 ShellExecuteW —— 这是 Windows 上
+                # 打开 URL 最直接、最可靠的方式；失败再退回 webbrowser。
+                _url = _link or APP_URL
+                _done = False
                 try:
-                    webbrowser.open(_link or APP_URL)
+                    if ctypes.windll.shell32.ShellExecuteW(
+                            None, "open", _url, None, None, 1) > 32:
+                        _done = True
                 except Exception:
-                    pass
+                    _done = False
+                if not _done:
+                    try:
+                        webbrowser.open(_url)
+                    except Exception:
+                        pass
                 u.ShowWindow(hwnd, 0)
                 self.showing = False
+                self.hover = False
+                self._tracking = False
                 return 0
             if msg == 0x0002:                      # WM_DESTROY
                 u.PostQuitMessage(0)
@@ -2488,6 +2696,9 @@ class _Balloon:
             self.br_bg_warn = g.CreateSolidBrush(0xF1F8FF)   # 暖白      #FFF8F1
             self.br_info = g.CreateSolidBrush(0xB06C2B)      # 蓝        #2B6CB0
             self.br_warn = g.CreateSolidBrush(0x206BDD)      # 橙        #DD6B20
+            # 【2026-10-07 用户要求「鼠标指向显示打开/退出」】两个胶囊按钮的底色
+            self.br_btn_open = g.CreateSolidBrush(0xB06C2B)   # 蓝 #2B6CB0
+            self.br_btn_close = g.CreateSolidBrush(0xF0E8E2)  # 浅灰 #E2E8F0
             self.pen_border = g.CreatePen(0, max(1, int(s)), 0xF0E8E2)   # 浅灰描边 #E2E8F0
             self.null_brush = g.GetStockObject(5)            # NULL_BRUSH（只描边不填充）
             # 字体：字体加粗（weight 700 走真粗体，不用 GDI 合成，避免发糊），
@@ -2495,6 +2706,8 @@ class _Balloon:
             # 原来的 iQuality=0(DEFAULT) 在缩放屏上会出现锯齿/毛刺。
             self.font_title = g.CreateFontW(-int(19 * s), 0, 0, 0, 700, 0, 0, 0,
                                             134, 5, 0, 5, 0, "Microsoft YaHei UI")
+            self.font_btn = g.CreateFontW(-int(14 * s), 0, 0, 0, 700, 0, 0, 0,
+                                          134, 5, 0, 5, 0, "Microsoft YaHei UI")
             self.font_msg = g.CreateFontW(-int(16 * s), 0, 0, 0, 700, 0, 0, 0,
                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
             # 小图标（取不到就算了，标题会自动左移）
@@ -2579,9 +2792,17 @@ NEWS_LAST_TOAST = 0.0
 # 但普通「更新提醒」气泡没必要每轮都弹 —— 那一天最多 144 次，太吵。
 # 改成 30 分钟最多一次（3 轮里最多打扰 1 次，内容照样是最新的）。
 # 注意：「新闻大事」和「我的软件发布」两条**不受这个节流限制**，仍然即时。
-NEWS_TOAST_MIN = 30 * 60
+# 【2026-10-07 用户要求「气泡提示缩短到10分钟轮播，轮播内容不能重复」】
+NEWS_TOAST_MIN = 10 * 60        # 原来 30 分钟，改成跟刷新周期一致
 NEWS_LOCK = threading.Lock()
 
+
+def _has_cjk(s):
+    """标题里有没有汉字 —— 用来保证气泡只播中文（用户看不懂英文）。"""
+    for ch in (s or ""):
+        if "\u4e00" <= ch <= "\u9fff":
+            return True
+    return False
 
 def _notify_news(items):
     """刷新后调用：对比基线找出新增条目，若有则弹一条「新增 N 条」右下角通知。
@@ -2607,6 +2828,24 @@ def _notify_news(items):
         return
     NEWS_LAST_TOAST = now
     fresh = [it for it in items if it.get("id") in added]
+    # 【2026-10-07 用户反馈「还是有英文新闻播报」】气泡里**只留中文条目**。
+    # 国际热榜里有 Hacker News 这种英文源，之前"优先中文"只是排序、挡不住它
+    # 从热榜那 2 个名额挤进来。这里直接按"标题有没有汉字"过滤，最干脆。
+    fresh = [x for x in fresh if _has_cjk(x.get("title"))]
+    if not fresh:
+        return
+    # 【2026-10-07 用户要求「轮播内容不能重复」】优先播没播过的条目；
+    # 全都播过一遍了才清空记录、开新一轮。这样连续几轮不会反复看到同几条。
+    try:
+        _seen = _BALLOON_SHOWN
+        _unseen = [x for x in fresh if (x.get("id") or x.get("title")) not in _seen]
+        if _unseen:
+            fresh = _unseen + [x for x in fresh if x not in _unseen]
+        else:
+            _seen.clear()
+            print("[ok] 气泡轮播：上一轮已播完，开始新一轮")
+    except Exception:
+        pass
     if not fresh:
         return
     # 【2026-10-07 用户要求：气泡提醒还要包含国际版块】
@@ -2615,27 +2854,55 @@ def _notify_news(items):
     # 还有空位才按时间补。这样一轮气泡里必定能看见国际。
     picked, used = [], set()
 
-    def take(cands, maxn=1):
+    _labels = []          # 已经选中的来源，用来避免"同一家刷屏"
+
+    def take(cands, maxn=1, no_repeat_src=True):
+        """从 cands 里取最多 maxn 条。
+
+        【2026-10-07 用户反馈「快科技不停推送」】默认**同一来源只取一条**：
+        快科技这类更新极勤的站点原来会把 6 个位置全占掉，别的源永远轮不到。
+        实在没有别的来源可选时才允许重复（第二遍 no_repeat_src=False）。
+        """
         for it in cands:
             if len(picked) >= BALLOON_PLAY_COUNT or maxn <= 0:
                 return
             if id(it) in used:
                 continue
+            _lb = it.get("label") or ""
+            if no_repeat_src and _lb and _lb in _labels:
+                continue
             used.add(id(it))
+            if _lb:
+                _labels.append(_lb)
             picked.append(it)
             maxn -= 1
 
     sort_key = lambda x: x.get("published", 0)          # noqa: E731
-    intl = sorted([it for it in fresh if it.get("region") == "intl"], key=sort_key, reverse=True)
+    # 【2026-10-07 用户反馈「气泡轮播国际新闻都是英文的，我怎么看得懂」】
+    # 国际板块里混着两类：①国内媒体报的国际新闻（澎湃/凤凰/红星，**中文**）；
+    # ②France24/NPR/Sky 这些外媒（英文，翻译额度用完时就是英文原文）。
+    # 气泡优先推第①类 —— 既是国际大事，又是中文，用户能直接看懂。
+    _intl_all = sorted([it for it in fresh if it.get("region") == "intl"],
+                       key=sort_key, reverse=True)
+    _is_cn_src = lambda x: str(x.get("channel") or "").startswith("cn-intl") or bool(x.get("translated"))  # noqa: E731
+    intl = [x for x in _intl_all if _is_cn_src(x)] + [x for x in _intl_all if not _is_cn_src(x)]
     cn = sorted([it for it in fresh if it.get("region") == "cn"
                  and it.get("cls") != "热榜"], key=sort_key, reverse=True)
     hot = sorted([it for it in fresh if it.get("cls") == "热榜"], key=sort_key, reverse=True)
-    take(intl, 1)          # 国际必占一席
-    take(cn, 1)            # 国内一席
-    take(hot, 1)           # 热榜一席
-    # 剩余空位按时间补（不挑版块）
+    # 【2026-10-07 用户要求「气泡也要有国际板块的新闻播报」+「快科技不停推送」】
+    # 原来国际只保证 1 席、剩下 5 席按时间补 —— 结果被更新最勤的国内源刷屏。
+    # 现在**按板块平分**（6 席 → 国际 2 / 国内 2 / 热榜 2），并且同来源只取一条。
+    _quota = max(1, BALLOON_PLAY_COUNT // 3)
+    take(intl, _quota)     # 国际 2 席
+    take(cn, _quota)       # 国内 2 席
+    take(hot, _quota)      # 热榜 2 席
+    # 还有空位：先补没露过面的板块/来源，最后才允许同来源重复
     if len(picked) < BALLOON_PLAY_COUNT:
-        take(sorted(fresh, key=sort_key, reverse=True), BALLOON_PLAY_COUNT - len(picked))
+        take(sorted(fresh, key=sort_key, reverse=True),
+             BALLOON_PLAY_COUNT - len(picked), no_repeat_src=True)
+    if len(picked) < BALLOON_PLAY_COUNT:
+        take(sorted(fresh, key=sort_key, reverse=True),
+             BALLOON_PLAY_COUNT - len(picked), no_repeat_src=False)
     # 用户要求「滚动播放气泡新闻，三条左右」：一条气泡里依次滚这几条
     entries = []
     for it in picked[:BALLOON_PLAY_COUNT]:
@@ -2649,6 +2916,14 @@ def _notify_news(items):
     if len(added) > len(entries):
         _e = entries[-1]
         entries[-1] = (_e[0], _e[1] + f"　（本次共新增 {len(added)} 条）") + tuple(_e[2:])
+    # 记录已播，保证"轮播内容不能重复"
+    try:
+        for _it in picked:
+            _BALLOON_SHOWN.add(_it.get("id") or _it.get("title"))
+        if len(_BALLOON_SHOWN) > 3000:
+            _BALLOON_SHOWN.clear()
+    except Exception:
+        pass
     print("[ok] 更新提醒：滚动播放 %d 条（国际 %d / 国内 %d / 热榜 %d）"
           % (len(entries),
              sum(1 for x in picked if x.get("region") == "intl"),
@@ -2714,12 +2989,12 @@ FOREIGN_MARKERS = (
     "温网", "美网", "法网", "澳网", "大师赛", "大满贯", "世界杯", "欧洲杯",
     "GPT", "ChatGPT", "Claude", "Gemini", "OpenAI", "Copilot", "Llama",
     "英伟达", "特斯拉", "SpaceX", "谷歌", "OpenAI", "Anthropic", "Meta",
-    "苹果公司", "微软公司", "亚马逊", "奈飞", "Netflix", "迪士尼",
-    # 【2026-10-07 再补】只写「苹果公司」不够 —— 实测漏了
-    # 「苹果一号电脑或拍出80万美元…主板上有苹果联合创始人签名」（美国苹果首台电脑拍卖）。
-    # 所以把大厂简称也登记上；这些公司的事就是国际新闻。
-    "苹果", "微软", "谷歌", "亚马逊公司", "特斯拉", "英伟达", "高通", "英特尔",
-    "三星", "索尼", "任天堂", "Meta", "甲骨文", "波音", "空客", "大众", "丰田",
+    "奈飞", "Netflix", "迪士尼",
+    # 【2026-10-07 回退】这里曾把大厂简称（苹果/微软/谷歌/英伟达/三星/索尼…）也登记成
+    # 国际特征词，想拦住「苹果一号电脑拍卖」这类。结果**过头了**：中国科技媒体几乎每条
+    # 都会提到这些公司，国内科技被整个划走、栏目清空（实测 0 条）。
+    # 教训：判断"是不是国际"要看**事情发生在哪 / 主体是谁**，不能看"提到了哪家公司"。
+    # 所以这里只留外国机构/奖项，公司名一律不放（华为报苹果、小米报高通都是国内科技新闻）。
     "推特", "X平台", "脸书", "Instagram", "TikTok", "YouTube",
     "纳斯达克", "道琼斯", "标普", "华尔街", "美联储", "欧洲央行", "日本央行",
     "哈佛", "耶鲁", "斯坦福", "麻省理工", "牛津", "剑桥",
@@ -2767,6 +3042,41 @@ def _looks_ent_foreign(title):
 # 即使标题里同时出现「中国科学家」「中国影片」也不改判。
 # 起因：把「中国」加进国内特征词后，「诺贝尔物理学奖将揭晓，中国科学家薛其坤受关注」
 # 被锁在国内要闻/热榜里，用户反馈"国内还是有国际新闻"。
+# 【2026-10-07 用户反馈「气泡里快科技播的是国际新闻」】
+# 科技栏目必须按**品牌归属**判，不能只看国家名：
+#   「DLSS 5 体验：英伟达怎么让它以假乱真」没有国家名，但讲的是美国公司 → 国际
+#   「华为徐直军：昇腾950超节点」讲的是中国公司 → 国内
+# 先看是不是中国品牌（是就留国内），再看是不是外国品牌（是就走国际），
+# 两者都没有才退回原来的关键词判定。
+CN_TECH_BRANDS = (
+    "华为", "小米", "OPPO", "oppo", "vivo", "荣耀", "一加", "真我", "realme", "红米",
+    "比亚迪", "蔚来", "小鹏", "理想", "吉利", "长安", "奇瑞", "五菱", "极氪", "问界",
+    "中兴", "联想", "大疆", "紫光", "京东方", "中芯国际", "长江存储", "寒武纪", "地平线",
+    "摩尔线程", "龙芯", "飞腾", "统信", "麒麟", "鸿蒙", "澎湃", "玄戒",
+    "阿里", "阿里巴巴", "腾讯", "百度", "字节", "抖音", "京东", "美团", "拼多多",
+    "宁德时代", "海康", "科大讯飞", "商汤", "旷视", "月之暗面", "智谱", "DeepSeek",
+    "宇树", "大模型", "国产", "我国", "中国", "国内",
+)
+
+FOREIGN_TECH_BRANDS = (
+    "谷歌", "苹果", "微软", "英伟达", "OpenAI", "ChatGPT", "Claude", "Gemini", "Copilot",
+    "三星", "索尼", "任天堂", "特斯拉", "马斯克", "高通", "英特尔", "AMD", "Meta",
+    "亚马逊", "台积电", "ASML", "诺基亚", "爱立信", "波音", "空客", "NASA", "SpaceX",
+    "Netflix", "奈飞", "迪士尼", "丰田", "大众", "宝马", "奔驰", "保时捷", "现代",
+    "DLSS", "GeForce", "Radeon", "Ryzen", "骁龙", "Exynos", "iOS", "macOS", "Windows",
+)
+
+
+def _tech_scope(title):
+    """科技栏目的归属判定：返回 'cn' / 'intl' / None（判不出来）。"""
+    t = title or ""
+    if any(k in t for k in CN_TECH_BRANDS):
+        return "cn"
+    if any(k in t for k in FOREIGN_TECH_BRANDS):
+        return "intl"
+    return None
+
+
 STRONG_INTL_MARKERS = (
     "诺贝尔", "诺奖", "奥斯卡", "格莱美", "艾美奖", "金球奖", "戛纳", "柏林电影节",
     "威尼斯电影节", "普利策", "图灵奖", "菲尔兹奖",
@@ -2897,6 +3207,16 @@ def _split_cn_scope(items):
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
+        elif it.get("cls") == "科技":
+            # 科技栏按品牌归属判（见 _tech_scope）：先看中国品牌，再看外国品牌，
+            # 都判不出来才退回通用关键词规则。
+            _ts = _tech_scope(_title)
+            if _ts == "cn":
+                _is_intl = False
+            elif _ts == "intl":
+                _is_intl = True
+            else:
+                _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
         elif it.get("cls") == "娱乐":
             # 娱乐栏目单独判定：中国明星出国不算国际（见 _looks_ent_foreign）
             _is_intl = _looks_ent_foreign(_title) and not _looks_domestic(_title)
@@ -2968,6 +3288,16 @@ def _split_hot_by_scope(items):
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
+        elif it.get("cls") == "科技":
+            # 科技栏按品牌归属判（见 _tech_scope）：先看中国品牌，再看外国品牌，
+            # 都判不出来才退回通用关键词规则。
+            _ts = _tech_scope(_title)
+            if _ts == "cn":
+                _is_intl = False
+            elif _ts == "intl":
+                _is_intl = True
+            else:
+                _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
         elif it.get("cls") == "娱乐":
             # 娱乐栏目单独判定：中国明星出国不算国际（见 _looks_ent_foreign）
             _is_intl = _looks_ent_foreign(_title) and not _looks_domestic(_title)
@@ -3007,6 +3337,9 @@ MY_SOFTWARE_KEYWORDS = (
 MY_SOFTWARE_CHANNELS = {"cn-mefcl", "cn-ghpym", "cn-iplay", "cn-soft"}   # 软件发布类站点
 _MY_SOFT_SEEN = set()
 _MY_SOFT_READY = [False]
+# 已经播过气泡的条目 id —— 用户要求「轮播内容不能重复」。
+# 每轮优先挑没播过的；全都播过了才清空重来（保证一直有新内容可播）。
+_BALLOON_SHOWN = set()
 
 
 def _notify_my_software(items):
@@ -3171,7 +3504,9 @@ def _warmup():
             except Exception:
                 pass
             try:
-                _notify_news(items)   # 首次仅建立基线，不弹通知
+                # 【2026-10-07】气泡要按板块分配名额（国际/国内/热榜各 2 席），
+                # 所以**不能按板块分别调用** —— 那样每次都只看到半边，国际永远是 0。
+                # 这里先只管"我的软件"提醒，新闻提醒等两个板块都抓好后合并调用。
                 _notify_my_software(items)
             except Exception:
                 pass
@@ -3184,24 +3519,58 @@ def _warmup():
                 # 国内源：后台异步剔除低质图（下载测尺寸），不阻塞首屏
                 if region == "cn" and items:
                     threading.Thread(target=_enrich_quality_bg, args=(region,), daemon=True).start()
-                _notify_news(items)   # 首次仅建立基线，不弹通知
+                # 【2026-10-07】气泡要按板块分配名额（国际/国内/热榜各 2 席），
+                # 所以**不能按板块分别调用** —— 那样每次都只看到半边，国际永远是 0。
+                # 这里先只管"我的软件"提醒，新闻提醒等两个板块都抓好后合并调用。
                 _notify_my_software(items)
                 # 【2026-10-07 用户反馈「小气泡没有弹出」】开机后**主动弹一次今日热点**。
                 # 原来只有"有新增条目"才弹，而启动时只建基线不弹 —— 于是刚开机那 10 分钟
                 # 里用户什么都看不见，以为气泡坏了。这里补一次播报，也顺便验证气泡通路。
                 if region == "cn":
-                    try:
-                        _hot3 = [x for x in items if x.get("cls") == "热榜"][:3]
-                        if _hot3:
-                            _ents = [("今日热点 · " + (x.get("label") or ""),
-                                      (x.get("title") or "")[:72], False, x.get("link") or "")
-                                     for x in _hot3]
-                            print(f"[ok] 启动气泡：播报今日热点 {len(_ents)} 条")
+                    # 【2026-10-07 用户要求「气泡也要有国际板块的新闻播报」】
+                    # 原来只播国内热榜（而且这时候国际还没抓好，想播也没有）。
+                    # 现在起个线程等国际抓完，再拼一条**中外混编**的启动播报：
+                    # 热榜 2 条 + 国际 2 条 + 国内 2 条。
+                    def _boot_balloon():
+                        # 【2026-10-07】不能只等"国际有数据"就弹 —— 快速阶段抓的是外媒（英文），
+                        # 中文的"国内媒体报的国际新闻"要等完整抓取才进来。
+                        # 所以等到**出现中文国际条目**再弹，最多等 120 秒。
+                        for _ in range(120):
+                            time.sleep(1)
+                            _it = PRELOAD.get("intl") or []
+                            if any(_has_cjk(x.get("title"))
+                                   and str(x.get("channel") or "").startswith("cn-intl")
+                                   for x in _it):
+                                break
+                        try:
+                            _all = [x for x in (list(PRELOAD.get("cn") or [])
+                                                + list(PRELOAD.get("intl") or []))
+                                    if _has_cjk(x.get("title"))]   # 只播中文，英文条目不要
+                            _hot = [x for x in _all if x.get("cls") == "热榜"]
+                            # 国际优先取**国内媒体报道的**（中文，用户看得懂）
+                            _intl_raw = [x for x in _all if x.get("region") == "intl" and x.get("cls") != "热榜"]
+                            _intl = ([x for x in _intl_raw
+                                      if str(x.get("channel") or "").startswith("cn-intl")
+                                      or x.get("translated")]
+                                     + [x for x in _intl_raw
+                                        if not (str(x.get("channel") or "").startswith("cn-intl")
+                                                or x.get("translated"))])
+                            _cn = [x for x in _all if x.get("region") == "cn" and x.get("cls") != "热榜"]
+                            _pick = (_hot[:2] + _intl[:2] + _cn[:2])[:BALLOON_PLAY_COUNT]
+                            if not _pick:
+                                print("[warn] 启动气泡：没有可用条目，跳过")
+                                return
+                            _ents = []
+                            for x in _pick:
+                                _tag = "国际 · " if x.get("region") == "intl" else "国内 · "
+                                _ents.append(("今日热点 · " + _tag + (x.get("label") or ""),
+                                              (x.get("title") or "")[:72], False, x.get("link") or ""))
+                            _n_intl = sum(1 for x in _pick if x.get("region") == "intl")
+                            print(f"[ok] 启动气泡：播报 {len(_ents)} 条（含国际 {_n_intl} 条）")
                             _show_toast_list(_ents)
-                        else:
-                            print("[warn] 启动气泡：热榜为空，跳过")
-                    except Exception as _ex:
-                        print(f"[warn] 启动气泡失败: {type(_ex).__name__}")
+                        except Exception as _ex:
+                            print(f"[warn] 启动气泡失败: {type(_ex).__name__}")
+                    threading.Thread(target=_boot_balloon, daemon=True).start()
             except Exception as ex:
                 print(f"[warn] 预热 {region} 失败: {type(ex).__name__}: {ex}")
                 import traceback as _tb
@@ -3398,6 +3767,24 @@ def api_update_install():
     threading.Thread(target=_die, daemon=True).start()
     return {"ok": True, "message": "正在更新并重启"}
 
+
+@app.get("/api/autostart")
+def api_autostart_get():
+    """读开机自启状态（界面上的开关用它回显）。"""
+    return {"enabled": _autostart_enabled()}
+
+
+@app.post("/api/autostart")
+async def api_autostart_set(payload: dict = None):
+    """开关开机自启（写 HKCU 的 Run 项，不需要管理员权限）。
+
+    【2026-10-07 用户要求「第一次使用时界面给个开关让用户选」】
+    开机自启时用 --silent 启动：只后台把服务跑起来、把第一屏数据抓好，不弹浏览器。
+    这样用户想看的时候点托盘右键「打开热点新闻」就是秒开（数据早准备好了）。
+    """
+    want = bool((payload or {}).get("enabled"))
+    ok, msg = _autostart_set(want)
+    return {"enabled": _autostart_enabled(), "ok": ok, "message": msg}
 
 @app.post("/api/quit")
 def api_quit():
