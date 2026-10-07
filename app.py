@@ -66,10 +66,14 @@ def pick_port(prefer=PORT_START, tries=PORT_TRIES):
     return 0
 
 
-def wait_and_open(url, port, tries=80):
-    """等服务端口真正可连上再开浏览器，避免白屏"""
+def wait_and_open(url, port, tries=200):
+    """等服务端口真正可连上再开浏览器，避免白屏。
+
+    轮询间隔 0.4s → 0.12s：原来最坏要多等 0.4 秒才把浏览器叫起来，
+    而用户对"双击之后多久有反应"非常敏感（见 2026-10-07 反馈）。
+    """
     for _ in range(tries):
-        time.sleep(0.4)
+        time.sleep(0.12)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.3)
             if s.connect_ex(("127.0.0.1", port)) == 0:
