@@ -523,6 +523,7 @@ document.getElementById("regionSeg").addEventListener("click", e=>{
   document.getElementById("grid").innerHTML =
     `<div class="empty">正在抓取${state.region === "intl" ? "国际" : "国内"}新闻，请稍候…</div>`;
   document.getElementById("meta").textContent = "抓取中…";
+  window.scrollTo(0, 0);   // 切分区也回到顶部（热榜位置）
   load(false);
 });
 document.getElementById("ver").textContent = SSR.version;
@@ -531,6 +532,27 @@ if(state.items.length) buildClsOptions();
 render();
 load(false);
 setInterval(()=>checkVersion(), 60000);
+
+// 【2026-10-07 用户要求「网页打开必须定位在热榜」】
+// 浏览器默认会恢复上次的滚动位置和表单状态，结果打开时可能停在页面中间，
+// 甚至因为上次选中了某个分类（比如"科技"）而把热榜整块藏起来
+//（热榜只在「全部分类 + 无搜索」时才显示）。
+// 所以每次打开都强制：清掉分类与搜索 → 关掉滚动恢复 → 锚定到热榜标题。
+function anchorToHotList(){
+  try{ if("scrollRestoration" in history) history.scrollRestoration = "manual"; }catch(e){}
+  const sel = document.getElementById("cls");
+  const q = document.getElementById("q");
+  if(sel) sel.value = "";
+  if(q) q.value = "";
+  window.scrollTo(0, 0);                     // 先回到顶部（热榜就在首屏最上面）
+  const sech = document.querySelector("main .sech");
+  if(sech && (sech.textContent||"").indexOf("热榜") >= 0){
+    try{ sech.scrollIntoView({block:"start"}); }catch(e){ window.scrollTo(0,0); }
+  }
+}
+anchorToHotList();
+window.addEventListener("load", anchorToHotList);
+// 分区切换后同样回到热榜（新分区的内容还没到，先别停在旧位置）
 </script>
 </body>
 </html>
