@@ -826,10 +826,15 @@ def _parse_hot_intl():
     # 国际新闻来体现」—— 国内热榜里被剔掉的国际新闻**不丢**，转来充实国际热榜。
     # 好处：国际热榜从 2 家（中新社/HN）变成最多 5 家，且都是中文，不用等翻译。
     try:
-        _, _intl_from_cn = _split_hot_by_scope(_parse_hot())
+        # 优先用 _collect("hot") 里已经抓好文章页、按站方栏目分好类的那批；
+        # 没有时退回关键词判定（首次启动国内还没抓完的情况）。
+        _intl_from_cn = list(_HOT_INTL_SPILL) or _split_hot_by_scope(_parse_hot())[1]
         if _intl_from_cn:
-            print(f"[ok] hot-intl: 并入国内综合源的国际新闻 {len(_intl_from_cn)} 条")
-            parts.extend(_intl_from_cn)
+            _seen_p = {p.get("title") for p in parts}
+            _add = [x for x in _intl_from_cn if x.get("title") not in _seen_p]
+            if _add:
+                print(f"[ok] hot-intl: 并入国内综合源的国际新闻 {len(_add)} 条")
+                parts.extend(_add)
     except Exception as ex:
         print(f"[warn] 并入国内源国际新闻失败: {type(ex).__name__}")
     if not parts:
@@ -1657,10 +1662,10 @@ def _article_meta(url):
       2) 结果放进 _ART_CACHE 永久记住（文章元数据不会变）
     """
     if not url or not url.startswith("http"):
-        return "", 0
+        return "", 0, ""
     cached = _ART_CACHE.get(url)
     if cached is not None:
-        return cached
+        return cached          # (图, 发布时间, 栏目分类)
     # mefcl 的文章页和首页一样有 ge_js_validator JS 挑战，**必须带上同一个 cookie**，
     # 否则抓回来的是挑战页（几百字节），og:image 取不到 → mefcl 只能留在列表页那张
     # 220x150 缩略图上 → 被高清门槛剔除 → 整个「软件」栏目消失（用户实际反馈）。
@@ -1672,16 +1677,16 @@ def _article_meta(url):
     try:
         raw = _fetch(url, timeout=8, max_bytes=ART_PAGE_BYTES, extra_headers=_eh)
     except Exception:
-        return "", 0
+        return "", 0, ""
     if not raw:
-        return "", 0
+        return "", 0, ""
     data = raw[0] if isinstance(raw, tuple) else raw
     if not data:
-        return "", 0
+        return "", 0, ""
     try:
         txt = data.decode("utf-8", "ignore")
     except Exception:
-        return "", 0
+        return "", 0, ""
     img = ""
     for rx in (_OG_RE, _OG_RE_B):
         m = rx.search(txt)
@@ -1697,17 +1702,24 @@ def _article_meta(url):
             if not any(x in u.lower() for x in _IMG_JUNK):
                 img = u
     ts = _parse_article_time(txt)
-    if img or ts:
-        _ART_CACHE[url] = (img, ts)     # 只缓存有结果；失败不缓存，下次还有机会重试
-    return img, ts
+    # 【2026-10-07】再顺手读**站方自己的栏目分类**：凤凰文章页 JSON-LD 里有
+    # "articleSection":"国际" / "社会" / "军事"…，用来判定国内/国际比关键词黑名单可靠得多
+    #（黑名单必漏：实测「乌征兵人员将1岁幼儿父亲沿地拖行」标题里没有"乌克兰"三个字）。
+    sec = ""
+    _sm = re.search(r'"articleSection"\s*:\s*"([^"]{1,12})"', txt)
+    if _sm:
+        sec = _sm.group(1).strip()
+    if img or ts or sec:
+        _ART_CACHE[url] = (img, ts, sec)   # 只缓存有结果；失败不缓存，下次还有机会重试
+    return img, ts, sec
 
 
 def _article_image(url):
     """只要题图（保留旧接口，内部走 _article_meta）。"""
-    return _article_meta(url)[0]
+    return _article_meta(url)[0]   # (图, 时间, 栏目)[0]
 
 
-def _fill_missing_images(items, region, max_fetch=24, workers=14):
+def _fill_missing_images(items, region, max_fetch=24, workers=14, force_all=False):
     """给缺图的条目去文章页补一张图。补不到的由调用方丢弃。
 
     热榜（澎湃/红星/凤凰）是纯文字榜，mefcl 列表页只给 220x150 缩略图，
@@ -1717,6 +1729,13 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14):
         return items
 
     def needs(it):
+        # force_all：热榜必须**每条都抓一次文章页** —— 不是为图，是为了读站方
+        # JSON-LD 里的 articleSection（"国际"/"社会"/"军事"…），用来判定国内/国际。
+        # 凤凰热榜自带缩略图，不强制抓的话这些条目永远不会被访问到，也就拿不到
+        # 栏目分类（实测 section 全空 → 只能退回关键词黑名单 → 必漏，比如
+        # 「乌征兵人员将1岁幼儿父亲沿地拖行」标题里没有"乌克兰"三个字）。
+        if force_all:
+            return True
         # 网易娱乐的图由首页缩略图改写尺寸得到、不必抓文章页，
         # 但它的**发布时间**必须去文章页取，所以这类条目仍然要抓一次。
         return (it.get("channel") in BIG_IMAGE_CHANNELS
@@ -1730,7 +1749,10 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14):
     with ThreadPoolExecutor(max_workers=workers) as ex:
         got = list(ex.map(lambda it: _article_meta(it.get("link") or ""), need))
     filled = fixed_time = 0
-    for it, (img, ts) in zip(need, got):
+    for it, _meta in zip(need, got):
+        img, ts = _meta[0], _meta[1]
+        if len(_meta) > 2 and _meta[2]:
+            it["section"] = _meta[2]      # 站方栏目分类，用于国内/国际判定
         # 【2026-10-07】只为「取发布时间」才抓文章页的源（网易娱乐），
         # **不要用文章页的图覆盖已有的图** —— 网易号文章页的 og:image 是站方
         # 自己的「下载App」横幅（common_nav/topapp.jpg，150x178，每篇都一样），
@@ -1753,26 +1775,54 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14):
     return items
 
 
+def _collect_fast(region):
+    """快速版抓取：**只跑 RSS / HTML 源**（并发，实测国内约 4 秒、国际约 10 秒）。
+
+    为什么需要：用户反馈「抓取时间让我等的焦虑」—— 完整 _collect 要 30~50 秒，
+    因为热榜要逐个抓文章页补图、无图源也要逐个抓文章页补图。首屏一直空着等很难受。
+    所以先把这个快的结果发布出去，慢活交给完整 _collect 在后台补完再覆盖发布。
+
+    代价：这一版里「RSS 本身不带图」的源（澎湃/界面/新浪娱乐/网易娱乐）暂时不出现，
+    等后台补图补时间完成后自动补上（前端每 15 秒轮询会自动重绘）。
+    """
+    out = []
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        for r in ex.map(_parse_one, SOURCES[region]):
+            out.extend(r)
+    seen, items = set(), []
+    for it in out:
+        title = it.get("title")
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        items.append(it)
+    items = _drop_shared_images(items)
+    if region == "cn":
+        # 只留现成有图的（无图的等后台补图那一轮）
+        items = [it for it in items if it.get("image")]
+    return _select_fresh(items, region)
+
 def _collect(region):
     """并发抓取一个 Region 的全部源，去重后按时间倒序。
     国内源在此剔除无图新闻（快，不下载图）；低质图由后台 _enrich_quality_bg 异步剔除，
     避免首屏因下载测尺寸而变慢。"""
     if region == "hot":
-        # 【2026-10-07】国内热榜只留国内新闻：凤凰网抓的是综合首页，
-        # 头条被国际新闻占满（用户反馈「国内实时热榜全是外国新闻」）。
-        raw_hot = _filter_hot_domestic(_parse_hot())
-        # 【加速 2026-10-07】先按时间筛掉旧闻，再去补图 —— 补图要去抓文章页，
-        # 是整段里最贵的一步；给马上要被丢掉的旧条目抓图纯属浪费。
-        # published==0 的保留（时间未知，需要去文章页读真实发布时间）。
+        # 【2026-10-07 重排】顺序改成：按时间筛 → 抓文章页（补图+校准时间+读站方栏目）
+        #   → 才按栏目分流。「先分流」是不行的：凤凰首页 JSON 里**没有栏目信息**
+        #   （channel 字段是空的），必须抓到文章页才能看到 JSON-LD 的 articleSection。
+        #   关键词黑名单必漏——实测「乌征兵人员将1岁幼儿父亲沿地拖行」是国际新闻，
+        #   标题里却没有"乌克兰"三个字（用户反馈「国内热榜第二条还是国际新闻」）。
         _cut = datetime.now(CST).timestamp() - CLS_MAX_AGE_HOURS.get("热榜", 24) * 3600
-        fresh_hot = [it for it in raw_hot
+        fresh_hot = [it for it in _parse_hot()
                      if not it.get("published") or it["published"] >= _cut]
-        hot_items = _fill_missing_images(fresh_hot, "hot", max_fetch=40)
+        hot_items = _fill_missing_images(fresh_hot, "hot", max_fetch=80, force_all=True)
         keep = [it for it in hot_items if it.get("image")]
-        print(f"[ok] hot: 先按时间筛 {len(fresh_hot)}/{len(raw_hot)} 条，"
-              f"补图后带图 {len(keep)}/{len(hot_items)} 条")
-        PRELOAD_ALL["hot"] = list(keep)
-        return _select_fresh(keep, "hot")
+        dom, _intl = _split_hot_by_scope(keep)
+        _HOT_INTL_SPILL[:] = _intl
+        print(f"[ok] hot: 时间筛后 {len(fresh_hot)} 条，补图带图 {len(keep)} 条；"
+              f"按站方栏目分流 国内 {len(dom)} / 国际 {len(_intl)}")
+        PRELOAD_ALL["hot"] = list(dom)
+        return _select_fresh(dom, "hot")
     out = []
     with ThreadPoolExecutor(max_workers=16) as ex:
         for r in ex.map(_parse_one, SOURCES[region]):
@@ -1863,7 +1913,7 @@ def _collect(region):
         hot = [h for h in hot if not h.get("published") or h["published"] >= _icut]
         # 2026-10-07：国际热榜同样是纯文字榜（中新社国际 / Hacker News），
         # 按「每条新闻必须有高清大图」的规矩，必须先补图，补不到的丢掉。
-        hot = _fill_missing_images(hot, f"{region}-hot", max_fetch=40)
+        hot = _fill_missing_images(hot, f"{region}-hot", max_fetch=80, force_all=True)
         hot = [h for h in hot if h.get("image")]
         seen_t = {it["title"] for it in items}
         hot = [h for h in hot if h["title"] not in seen_t]
@@ -2684,12 +2734,33 @@ def _parse_sina_ent(src):
 # 本来就属于该栏目本身，分流会把它们搬空。
 CN_SPLIT_CLS = {"要闻", "热榜"}
 
+# 国内热榜里被判为国际的那批（由 _collect("hot") 填），供国际热榜并入
+_HOT_INTL_SPILL = []
+
 
 def _split_cn_scope(items):
     """按内容把国内板块的条目分成「国内」「国际」两拨，国际的那拨转给国际板块。"""
+    # 站方自己的栏目分类优先（凤凰文章页 JSON-LD 的 articleSection）；
+    # 没有分类信息时才退回关键词黑名单。
+    # 只有**已登记的栏目名**才当分类用；认不出来就退回关键词判定 ——
+    # 凤凰会把 "独家原创" 也塞进 articleSection，那是内容类型不是栏目，
+    # 若一律信它，「特朗普称可让伊朗摧毁洛杉矶」「冲绳县知事：驻日美军…」
+    # 这些会被当成国内新闻留在国内榜里。
+    FOREIGN_SECTIONS = ("国际", "军事", "全球", "海外", "国际新闻", "环球", "国际时局")
+    DOMESTIC_SECTIONS = ("社会", "台湾", "大陆", "国内", "时政", "地方", "法治", "教育",
+                         "健康", "体育", "娱乐", "科技", "财经", "文化", "评论", "要闻",
+                         "新时代", "港澳", "舆论场", "直击现场", "一号专案", "运动家",
+                         "科学湃", "澎湃号", "公益", "智库", "中国政库", "浦江头条")
     dom, intl = [], []
     for it in items:
-        if it.get("cls") in CN_SPLIT_CLS and _looks_foreign(it.get("title")):
+        _sec = (it.get("section") or "").strip()
+        if _sec in FOREIGN_SECTIONS:
+            _is_intl = True
+        elif _sec in DOMESTIC_SECTIONS:
+            _is_intl = False
+        else:
+            _is_intl = _looks_foreign(it.get("title"))
+        if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
             d["region"] = "intl"
             d["channel"] = "cn-intl-news"     # 标明「国内媒体报的国际新闻」
@@ -2767,9 +2838,29 @@ def _split_hot_by_scope(items):
     中新社国际 + Hacker News 两家）。
     返回 (国内条目, 国际条目)；国际条目的 region 改成 intl。
     """
+    # 【2026-10-07】优先用**站方自己的栏目分类**（凤凰文章页 JSON-LD 的 articleSection，
+    # 实测取到 "国际"/"社会"/"军事"/"台湾"…）；只有拿不到分类时才退回关键词黑名单。
+    # 黑名单必漏：实测「乌征兵人员将1岁幼儿父亲沿地拖行」是国际新闻，标题里却没有
+    # "乌克兰"三个字 —— 用户反馈的「国内热榜第二条还是国际新闻」就是它。
+    # 只有**已登记的栏目名**才当分类用；认不出来就退回关键词判定 ——
+    # 凤凰会把 "独家原创" 也塞进 articleSection，那是内容类型不是栏目，
+    # 若一律信它，「特朗普称可让伊朗摧毁洛杉矶」「冲绳县知事：驻日美军…」
+    # 这些会被当成国内新闻留在国内榜里。
+    FOREIGN_SECTIONS = ("国际", "军事", "全球", "海外", "国际新闻", "环球", "国际时局")
+    DOMESTIC_SECTIONS = ("社会", "台湾", "大陆", "国内", "时政", "地方", "法治", "教育",
+                         "健康", "体育", "娱乐", "科技", "财经", "文化", "评论", "要闻",
+                         "新时代", "港澳", "舆论场", "直击现场", "一号专案", "运动家",
+                         "科学湃", "澎湃号", "公益", "智库", "中国政库", "浦江头条")
     dom, intl = [], []
     for it in items:
-        if _looks_foreign(it.get("title")):
+        _sec = (it.get("section") or "").strip()
+        if _sec in FOREIGN_SECTIONS:
+            _is_intl = True
+        elif _sec in DOMESTIC_SECTIONS:
+            _is_intl = False
+        else:
+            _is_intl = _looks_foreign(it.get("title"))
+        if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
             d["region"] = "intl"
             d["channel"] = "cn-intl-hot"      # 标明「来自国内综合源的国际条目」
@@ -2928,11 +3019,18 @@ def _warmup():
     TRAY.start()                 # 右下角托盘图标（非 Windows 静默降级）
     BALLOON.start()              # 右下角自绘气泡（系统通知被关也照样弹）
     def run():
-        # 【2026-10-07 调整顺序】原来国际单独开线程和国内**并发**抓，本意是别拖慢国内首屏；
-        # 但国内是在同一个线程里紧跟着抓的，并发并没有让国内更快。反而导致
-        # 「国内剔出来的国际新闻转给国际板块」拿不到国内数据。
-        # 现在改成：国内（hot/cn）先抓完 → 再抓国际。国内首屏速度不变，
-        # 国际慢一些但它不是默认页，且接口已非阻塞（会先返回"正在抓取"）。
+        # 【2026-10-07 分两阶段】用户反馈「抓取时间让我等的焦虑」。
+        # 完整抓一轮要 30~50 秒（热榜/无图源都要逐个抓文章页），首屏一直空着等。
+        # 阶段一：只跑 RSS/HTML 源，几秒内先发布一次，让页面立刻有东西看。
+        for _rg in ("cn", "intl"):
+            try:
+                PRELOAD[_rg] = _collect_fast(_rg)
+                print(f"[ok] 快速就绪 {_rg}: {len(PRELOAD[_rg])} 条")
+            except Exception as _ex:
+                print(f"[warn] 快速就绪 {_rg} 失败: {type(_ex).__name__}")
+
+        # 阶段二：完整抓取（含热榜合并、逐个文章页补图补时间），做完覆盖发布。
+        # 顺序上国内先做，这样「国内要闻剔出的国际新闻」能顺手并进国际板块。
         def do_intl():
             try:
                 items = _collect("intl")
