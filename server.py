@@ -2731,6 +2731,26 @@ DOMESTIC_MARKERS = (
 )
 
 
+# 【2026-10-07 用户反馈「国际版娱乐还是有国内明星的新闻」】
+# 娱乐栏目不能用通用规则：中国明星出国（「蔡少芬和张晋现身韩国」）会因为"韩国"
+# 两个字被误判成国际娱乐。娱乐栏目要求标题里出现**外国的具体对象**
+# （外国艺人 / 球队 / 奖项 / 作品），光有外国地名不算。
+ENT_FOREIGN_MARKERS = (
+    "好莱坞", "格莱美", "奥斯卡", "艾美", "戛纳", "柏林电影节", "威尼斯", "金球奖",
+    "公告牌", "Billboard", "Netflix", "奈飞", "迪士尼", "漫威", "DC",
+    "C罗", "梅西", "姆巴佩", "内马尔", "本泽马", "贝克汉姆", "泰勒·斯威夫特",
+    "比伯", "卡戴珊", "德约", "纳达尔", "费德勒", "穆雷",
+    "曼联", "皇马", "巴萨", "切尔西", "阿森纳", "利物浦", "曼城", "热刺", "拜仁",
+    "尤文", "国米", "英超", "西甲", "意甲", "德甲", "法甲", "欧冠", "NBA", "F1",
+    "韩娱", "日娱", "韩团", "日漫", "美剧", "英剧", "韩剧", "欧美", "宝莱坞",
+)
+
+
+def _looks_ent_foreign(title):
+    """娱乐栏目专用的「是不是国际」判定：必须有外国具体对象，光有外国地名不算。"""
+    t = title or ""
+    return any(k in t for k in ENT_FOREIGN_MARKERS)
+
 def _looks_domestic(title):
     """粗判一条新闻是不是「国内新闻」（含中国官方表态、国内事务）。
 
@@ -2831,6 +2851,9 @@ def _split_cn_scope(items):
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
+        elif it.get("cls") == "娱乐":
+            # 娱乐栏目单独判定：中国明星出国不算国际（见 _looks_ent_foreign）
+            _is_intl = _looks_ent_foreign(_title) and not _looks_domestic(_title)
         else:
             # 像国际 **且** 不像国内，才算国际 —— 只判前者会把
             # 「外交部：美方应慎重处理台湾问题」这类中国官方表态误转过去。
@@ -2887,6 +2910,9 @@ def _split_hot_by_scope(items):
             _is_intl = True
         elif _sec in DOMESTIC_SECTIONS:
             _is_intl = False
+        elif it.get("cls") == "娱乐":
+            # 娱乐栏目单独判定：中国明星出国不算国际（见 _looks_ent_foreign）
+            _is_intl = _looks_ent_foreign(_title) and not _looks_domestic(_title)
         else:
             # 像国际 **且** 不像国内，才算国际 —— 只判前者会把
             # 「外交部：美方应慎重处理台湾问题」这类中国官方表态误转过去。
