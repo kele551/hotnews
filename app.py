@@ -19,6 +19,7 @@ if getattr(sys, "frozen", False):
 
 import uvicorn  # noqa: E402
 from server import app, VERSION, BASE_DIR, LOG_PATH  # noqa: E402
+import server  # noqa: E402  供启动时写入真实访问地址（通知点击跳转用）
 
 PORT_START = 8000
 PORT_TRIES = 15
@@ -92,12 +93,7 @@ def main():
         return
 
     url = f"http://127.0.0.1:{port}"
-    # 把真实访问地址告诉 server，供右下角通知点击跳转
-    try:
-        import server
-        server.APP_URL = url
-    except Exception:
-        pass
+    server.APP_URL = url   # 供右下角通知点击跳转
     print("=" * 52)
     print(f"  热点新闻检索  v{VERSION}")
     print(f"  访问地址:  {url}")

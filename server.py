@@ -14,9 +14,7 @@ import hashlib
 import threading
 import urllib.parse
 import webbrowser
-import ctypes
 from datetime import datetime, timezone, timedelta
-from math import gcd
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -87,6 +85,7 @@ def _read_version():
 
 
 VERSION = _read_version()
+
 # 由 app.py 在启动时写入真实访问地址（端口可能被自动顺延），供通知点击跳转使用
 APP_URL = "http://localhost:8000"
 
@@ -96,11 +95,37 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 CST = timezone(timedelta(hours=8))
 CACHE_TTL = 300          # RSS 缓存 5 分钟
 IMG_CACHE_TTL = 86400    # 图片缓存 1 天
-MAX_AGE_HOURS = {"cn": 72, "intl": 240}
-# 热榜更紧：超 48h 的旧闻不进榜（常看常新，老新闻不排序）
-MAX_HOT_AGE_HOURS = 48
-# 只保留新鲜条目：源一旦悄悄停更（返 200 但内容陈旧），不会再拿旧闻充数。
-# 国内源更新密集，72 小时足够；国际源条目稀疏（France24 单源跨度可到两周），放宽到 10 天。
+# 【加速】部分下载上限（2026-10-07）：
+#   ART_PAGE_BYTES —— 抓文章页只要 <head> 里的 og:image，96KB 足够，不必下整页
+#   IMG_HEAD_BYTES —— 测图片尺寸只要文件头，256KB 足够覆盖 JPEG 的 SOF 段
+ART_PAGE_BYTES = 96 * 1024
+IMG_HEAD_BYTES = 256 * 1024
+# 用户要求（2026-10-07）：所有板块必须是「当天的」。
+# 采集阶段先用 24 小时窗口（放得够宽，便于凌晨做「当天不足则回退」的兜底），
+# 真正「只留当天」的收紧在 _collect 里由 _select_fresh 统一执行。
+# 国内 24 小时（用户要求「当天」）；国际放宽到 48 小时 ——
+# 实测国际源条目稀疏（CGTN 最新 32 小时前、UN News 23 小时前、France24 跨度可达两天），
+# 按 24 小时收口会把好几个刚加的源直接滤空。
+MAX_AGE_HOURS = {"cn": 24, "intl": 48}
+SAME_DAY = True          # True = 只留当天（当天条目过少时自动回退到 24 小时）
+FALLBACK_MIN = 8         # 当天条目少于这个数 → 放宽到最近 24 小时，避免凌晨打开是空页
+
+# 【栏目分级时效 2026-10-07】用户要求「每个栏目必须有三个以上的网站存在，要不然太单一」。
+# 但「当天」这条硬规则会把更新频率低的垂类源整个饿死 —— 实测 24 小时筛完：
+#   小众软件 0 条 / 少数派 0 条 / 开源中国 0 条 / iplaysoft 1 条 / 极客公园 1 条，
+#   结果「软件」栏目只剩 mefcl 一个源、「科技」只剩 IT之家 —— 正是用户反馈的现象。
+# 所以：要闻/热榜等时效敏感栏目仍只留当天（走 MAX_AGE_HOURS=24h），
+# 垂类（科技/软件/娱乐）各自放宽，保证栏目内至少 3 家不同网站。
+CLS_MAX_AGE_HOURS = {
+    "科技": 96,     # 4 天：IT之家/快科技日更，爱范儿/雷峰网/NotebookCheck 慢一些
+    "软件": 120,    # 5 天：小众软件、开源中国、少数派这类本来就不是日更
+    "娱乐": 72,     # 3 天
+    "热榜": 24,     # 用户反馈「热榜上居然还有两天前的新闻」→ 热榜不再豁免，同样按当天
+}
+# 「当天优先」的两个下限：某栏目当天条目低于这个数、或少于这么多家网站，
+# 才允许补进较旧的条目（详见 _select_fresh）
+FRESH_MIN_PER_CLS = 6
+FRESH_MIN_SITES = 3
 
 # ---------------- 数据源 ----------------
 # 2026-10-06 全量实测后重构：人民网 / 新浪 / 网易 / 央视 / 环球网 / 澎湃 的 RSS
@@ -120,20 +145,29 @@ SOURCES = {
         # 2026-10-06 用户点名要加；同批实测腾讯/网易/新浪的 RSS 全部 404、首页又是 JS 动态渲染
         # （新浪娱乐首页 45 条链接全是「站点地图/好莱坞/排行」这类导航），只有澎湃给出了干净的结构化数据。
         {"id": "cn-thepaper", "label": "澎湃新闻", "url": "https://cache.thepaper.cn/contentapi/wwwIndex/rightSidebar", "base": "https://www.thepaper.cn", "region": "cn", "cls": "要闻", "parser": "thepaper"},
-        # 凤凰资讯（要闻）：news.ifeng.com 首页内联 JSON，自带 975x549 缩略图 + newsTime。
-        # 与热榜的凤凰同源，但归入「要闻」、带高清图；跨栏去重保证不与热榜重复。
-        {"id": "cn-ifeng-news", "label": "凤凰网", "url": "https://news.ifeng.com/", "base": "https://news.ifeng.com", "region": "cn", "cls": "要闻", "parser": "ifeng_news", "max_age_hours": 72},
-        # 红星新闻（要闻）：首页列表项无图（只有站点占位图），真实题图在文章页 <meta name=image>。
-        # _parse_cdsb_news 并发抓文章页取首图（HD，实测 1080x720+），归入「要闻」。
-        {"id": "cn-cdsb", "label": "红星新闻", "url": "https://www.cdsb.com/", "base": "https://www.cdsb.com", "region": "cn", "cls": "要闻", "parser": "cdsb_news", "max_age_hours": 72},
         {"id": "cn-tech",    "label": "IT之家", "url": "https://www.ithome.com/rss/",                     "base": "https://www.ithome.com",   "region": "cn", "cls": "科技"},
         {"id": "cn-geek",    "label": "极客公园", "url": "https://www.geekpark.net/rss",                  "base": "https://www.geekpark.net", "region": "cn", "cls": "科技"},
         # 软件类：小众软件 RSS，条条带图（feed 内 media:content 含图），内容偏软件推荐/效率工具
         {"id": "cn-soft",    "label": "小众软件", "url": "https://www.appinn.com/feed/",                  "base": "https://www.appinn.com",   "region": "cn", "cls": "软件"},
         # 科技/硬件评测：notebookcheck-cn.com 是 TYPO3 站点、无 RSS，走 HTML 解析（parser=nbc）
-        {"id": "cn-nbc",     "label": "NotebookCheck", "url": "https://www.notebookcheck-cn.com/",        "base": "https://www.notebookcheck-cn.com", "region": "cn", "cls": "科技", "parser": "nbc"},
+        # 2026-10-07：改抓「新闻」列表页而不是首页——首页条目少且混着导航，
+        # Notebookcheck-NBC.22034.0.html 才是站方的新闻归档列表（用户指定）。
+        {"id": "cn-nbc",     "label": "NotebookCheck", "url": "https://www.notebookcheck-cn.com/Notebookcheck-NBC.22034.0.html", "base": "https://www.notebookcheck-cn.com", "region": "cn", "cls": "科技", "parser": "nbc"},
+        # 【2026-10-07 补源】用户要求「每个栏目必须有三个以上的网站，要不然太单一」。
+        # 以下三个都是**实测通过**（真连通 + 有题图 + 有当天/近日内容）：
+        #   快科技 100 条 / 99 带图 / 当天 10:44 更新  ← 王牌
+        #   爱范儿  20 条 / 20 带图 / 最新 3 天前
+        #   雷峰网  20 条 / 17 带图 / 最新 3 天前
+        # 实测失败、**未采用**：cnBeta（无条目）、品玩（无条目）
+        {"id": "cn-mydrivers", "label": "快科技", "url": "http://rss.mydrivers.com/rss.aspx?Tid=1", "base": "https://news.mydrivers.com", "region": "cn", "cls": "科技"},
+        {"id": "cn-ifanr",     "label": "爱范儿", "url": "https://www.ifanr.com/feed",   "base": "https://www.ifanr.com",   "region": "cn", "cls": "科技"},
+        {"id": "cn-leiphone",  "label": "雷峰网", "url": "https://www.leiphone.com/feed", "base": "https://www.leiphone.com", "region": "cn", "cls": "科技"},
         # 软件类：iplaysoft（异次元软件世界）RSS 实测 30 条带图、更新活跃
         {"id": "cn-iplay",   "label": "iplaysoft", "url": "https://www.iplaysoft.com/feed/",              "base": "https://www.iplaysoft.com", "region": "cn", "cls": "软件"},
+        # 【2026-10-07 补源】跟 mefcl 同类的软件分享站，实测通过：果核剥壳 10 条 / 10 带图。
+        # 实测失败、**未采用**：423down（连不上）、微当下载（连不上）、
+        #                       大眼仔旭（10 条但 0 张图，会被「没图不要」的规则剔除）
+        {"id": "cn-ghpym",   "label": "果核剥壳", "url": "https://www.ghpym.com/feed", "base": "https://www.ghpym.com", "region": "cn", "cls": "软件"},
         # 软件类：mefcl（用户投稿站点），站方有 JS cookie 验证；抓首页（/feed/ 仍 403），
         # parser 内现取挑战 cookie 回放绕过
         {"id": "cn-mefcl",   "label": "mefcl",     "url": "https://www.mefcl.com/",                       "base": "https://www.mefcl.com",     "region": "cn", "cls": "软件", "parser": "mefcl"},
@@ -143,43 +177,46 @@ SOURCES = {
         {"id": "cn-oschina", "label": "开源中国", "url": "https://www.oschina.net/news/rss", "base": "https://www.oschina.net", "region": "cn", "cls": "软件"},
         {"id": "cn-sspai",   "label": "少数派",   "url": "https://sspai.com/feed",           "base": "https://sspai.com",       "region": "cn", "cls": "软件"},
         # 娱乐栏目：凤凰娱乐首页（明星/绯闻/八卦）。首页内联 JSON 带标题+题图+newsTime，量大。
-        {"id": "cn-ent", "label": "凤凰娱乐", "url": "https://ent.ifeng.com/", "base": "https://ent.ifeng.com", "region": "cn", "cls": "娱乐", "parser": "ifeng", "max_age_hours": 720},
+        {"id": "cn-ent", "label": "凤凰娱乐", "url": "https://ent.ifeng.com/", "base": "https://ent.ifeng.com", "region": "cn", "cls": "娱乐", "parser": "ifeng"},
     ],
     "intl": [
         {"id": "f24-main",    "label": "France24", "url": "https://www.france24.com/en/rss",         "base": "https://www.france24.com", "region": "intl", "cls": "要闻"},
         {"id": "f24-sport",   "label": "France24", "url": "https://www.france24.com/en/sport/rss",   "base": "https://www.france24.com", "region": "intl", "cls": "体育"},
+        # 【2026-10-07 补源】用户要求「国际板块新闻源太少，多加入一些」。
+        # 以下 5 个都是**实测连通且带图**的（条目/带图/最新）：
+        #   CGTN 50/50/10-06、UN News 30/30/10-06、ABC News 25/25/10-07、
+        #   NPR 10/10/10-06、Sky News 6/6/10-07
+        # 实测**连不上、未采用**：BBC、CNN、NYT、Guardian、Al Jazeera、DW、SCMP、
+        #   纽约时报中文、联合早报（本机网络全部 ConnectTimeout）
+        # 实测**无图、未采用**：CBS（30 条但 0 张图，会被「没图不要」的规则剔除）
+        # 实测**停更、未采用**：人民网国际（最新 2025-06-05，停更一年多）
+        {"id": "intl-npr",     "label": "NPR",      "url": "https://feeds.npr.org/1001/rss.xml",                     "base": "https://www.npr.org",    "region": "intl", "cls": "要闻"},
+        {"id": "intl-sky",     "label": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml",          "base": "https://news.sky.com",   "region": "intl", "cls": "要闻"},
+        {"id": "intl-un",      "label": "UN News",  "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",  "base": "https://news.un.org",    "region": "intl", "cls": "要闻"},
+        {"id": "intl-cgtn",    "label": "CGTN",     "url": "https://www.cgtn.com/subscribe/rss/section/world.xml",    "base": "https://www.cgtn.com",   "region": "intl", "cls": "要闻"},
+        {"id": "intl-abc",     "label": "ABC News", "url": "https://abcnews.go.com/abcnews/internationalheadlines",  "base": "https://abcnews.go.com", "region": "intl", "cls": "要闻"},
         # 娱乐栏目（国际）：f24-culture（文化）已按用户要求删除，改用国际娱乐八卦源。
         # Variety 实测 10 条全带图；Billboard 10 条无图（音乐明星向），国际不做无图过滤，占位显示。
-        {"id": "intl-variety",   "label": "Variety",   "url": "https://variety.com/feed/",    "base": "https://variety.com",   "region": "intl", "cls": "娱乐"},
-        {"id": "intl-billboard", "label": "Billboard", "url": "https://www.billboard.com/feed/", "base": "https://www.billboard.com", "region": "intl", "cls": "娱乐"},
+        {"id": "intl-variety",   "label": "Variety",   "url": "https://variety.com/feed/",    "base": "https://variety.com",   "region": "intl", "cls": "娱乐", "max_age_hours": 72},
+        {"id": "intl-billboard", "label": "Billboard", "url": "https://www.billboard.com/feed/", "base": "https://www.billboard.com", "region": "intl", "cls": "娱乐", "max_age_hours": 72},
     ],
     # 实时热点（今日头条热榜）走独立 _parse_hot，不走 RSS，这里仅占位以通过 region 校验
     "hot": [],
 }
 
 # 无题图的集合类源（国内软件类 RSS 无配图）：_collect 豁免无图过滤，前端走渐变块样式
-NOIMG_SOURCES = {"cn-oschina", "cn-sspai"}
+# 用户要求（2026-10-07）：「每条新闻必须有高清大图，没图的就不要上」。
+# 因此原来的 NOIMG_SOURCES 豁免已全部取消——开源中国 / 少数派这类不配图的源，
+# 要么补上图，要么就从列表里消失（不再用渐变色块占位）。
+NOIMG_SOURCES = set()
 
 _CACHE = {}     # url -> (ts, payload)
 _IMG_CACHE = {} # url -> (ts, bytes, ctype)
 PRELOAD = {"cn": [], "intl": [], "hot": []}   # 启动时预热好的条目，API 直接取用
-_IMG_MEASURE = {}   # url -> (ts, (w,h)|None) 尺寸探测结果缓存：同一张图不重复下载
-_IMG_BAD = set()    # 短期判死的图床（超时/非图内容/连不上），别让每张卡都去撞一次墙
-
-# ---------- 题图「高清」门槛（低于此值的一律不要）----------
-# 用户要求：小于 720x480 的图不要。但国内源实测普遍给不到这个尺寸
-# （NotebookCheck 最大就 672x504、iplaysoft 680x425、Appinn 有 804x350），
-# 硬卡会把整个板块清空，所以给一个「容差系数」把门槛按比例放宽。
-MIN_IMG_W = 720
-MIN_IMG_H = 480
-IMG_TOL = 0.90       # 容差 0.90 → 实际门槛 648 x 432（672x504 这类主流图刚好卡在线上）
-IMG_MIN_BYTES = 6144  # 小于 6KB 基本是占位图 / 纯色块 / 破图
-# 明确的「非配图」特征：头像、占位图、像素点、站点 UI 图标
-_IMG_JUNK_RE = re.compile(
-    r"(avatar|gravatar|placeholder|loading|spacer|default[_\-]?(img|image|pic)|"
-    r"no[_\-]?image|noimage|blank\.|1x1|pixel\.|icon[_\-]?\d+|/icons?/|"
-    r"emoji|EmojiPl|Sprites|social[_\-]?(share|icon)|qrcode|qr[_\-]?code)",
-    re.I)
+# 「当天」过滤之前的完整池子（按各源窗口，含最近几天）。
+# 主列表只给当天（用户原则：常看常新、绝不看旧新闻），
+# 但**搜索必须能搜到更早的新闻** —— 程序名叫「热点新闻检索」，这是它的本分。
+PRELOAD_ALL = {"cn": [], "intl": [], "hot": []}
 
 
 def _load_config():
@@ -187,8 +224,10 @@ def _load_config():
     default = {
         "update": {"enabled": True},
         # contact：MyMemory 用邮箱标识身份，带上可把免费额度从 5k/天 提到 50k/天。
-        # 实测不带 contact 会很快 429（额满），导致国际/体育条目译不出→保留英文。
-        "translate": {"backend": "mymemory", "contact": "kele551@example.com",
+        # 【2026-10-07 改动】原来是写死的假邮箱（kele551@example.com），既拿不到提额，
+        # 又会被一起打进 exe 分发出去。现在留空，需要提额时自己在 exe 同级的
+        # config.json 里填一个真实邮箱即可（不必改代码、也不会进版本库）。
+        "translate": {"backend": "mymemory", "contact": "",
                       "baidu": {"appid": "", "secret": ""}, "deepl": {"auth_key": ""}, "enabled": True},
     }
     if not os.path.exists(path):
@@ -209,7 +248,20 @@ def _load_config():
 CONFIG = _load_config()
 
 
-def _fetch(url, timeout=10):
+# 共享 HTTP 连接池（2026-10-07 加速）
+# 【为什么】原来 _fetch 每次调用都 `with httpx.Client(...)`，等于每个请求都重做
+# 一次 TCP + TLS 握手。抓 30 条 HN、给热榜补 100 张图时，光握手就要几十秒。
+# httpx.Client 官方明确支持跨线程复用，所以全局建一个即可（按 host 保活连接）。
+_HTTP_LIMITS = httpx.Limits(max_connections=48, max_keepalive_connections=24,
+                            keepalive_expiry=30.0)
+_CLIENT = httpx.Client(follow_redirects=True, trust_env=False, timeout=10,
+                       limits=_HTTP_LIMITS, headers={"User-Agent": UA})
+
+# 文章页 → 题图 URL。og:image 基本不会变，进程内永久记住，避免每轮刷新重抓一遍。
+_ART_CACHE = {}
+
+
+def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
     # 按「是否图片」决定返回形态：图片返回 (bytes, ctype) 元组；文档/RSS 返回原始字节。
     # 旧逻辑靠 URL 含 "rss" 判断文档，但小众软件(/feed/)、notebookcheck(/) 等源不含
     # "rss" 会被误判成图片 → feedparser 收到元组崩溃。改为按图片扩展名判定，覆盖所有源。
@@ -220,30 +272,47 @@ def _fetch(url, timeout=10):
         or "/img/" in _low
     )
     key = ("img", url) if _is_img else ("doc", url)
+    # 带了额外请求头（如 mefcl 的挑战 cookie）时缓存键要区分开，
+    # 否则先抓到的「挑战页」会把后面带 cookie 的正确结果顶掉。
+    _ck = url
+    if extra_headers:
+        _ck = url + "|" + ",".join(f"{k}={v}" for k, v in sorted(extra_headers.items()))
     now = datetime.now().timestamp()
     cache = _IMG_CACHE if key[0] == "img" else _CACHE
-    hit = cache.get(url)
+    hit = cache.get(_ck)
     if hit and (now - hit[0]) < (IMG_CACHE_TTL if key[0] == "img" else CACHE_TTL):
         return hit[1]
     try:
         # trust_env=False：不走系统/沙箱代理，本机直连国内站点更快更稳
-        hdrs = {"User-Agent": UA}
+        hdrs = {}
         if key[0] == "img":
             # 部分图片 CDN 靠 Referer 防盗链，带上来源站点域名
             try:
                 hdrs["Referer"] = urllib.parse.urlsplit(url).netloc
             except Exception:
                 pass
-        with httpx.Client(follow_redirects=True, timeout=timeout, trust_env=False,
-                          headers=hdrs) as c:
+        if extra_headers:
+            hdrs.update(extra_headers)
+        if max_bytes:
+            # 【加速】只读前 N 字节就断开：og:image 在 <head>、图片尺寸在头部几十字节里，
+            # 整页下载纯属浪费（新闻页常有 100~500KB）。实测这是补图环节最大的一笔开销。
+            buf = bytearray()
+            with _CLIENT.stream("GET", url, timeout=timeout, headers=hdrs) as r:
+                if r.status_code == 200:
+                    for chunk in r.iter_bytes(16384):
+                        buf.extend(chunk)
+                        if len(buf) >= max_bytes:
+                            break
+            data = bytes(buf) if buf else None
+            out = ((data, "image/jpeg") if data else (None, "")) if key[0] == "img" else data
+        else:
+            r = _CLIENT.get(url, timeout=timeout, headers=hdrs)
             if key[0] == "img":
-                r = c.get(url)
                 if r.status_code == 200:
                     out = (r.content, r.headers.get("content-type", "image/jpeg"))
                 else:
                     out = (None, "")
             else:
-                r = c.get(url)
                 # 必须返回原始字节 r.content，而不是 r.text：
                 # httpx 的 r.text 会用它猜的编码（常误判 GBK 源为 utf-8）解码成字符串，
                 # 一旦源字节不是合法 utf-8（如中关村在线 RSS 是 GBK），标题就被换成 U+FFFD 乱码。
@@ -251,7 +320,7 @@ def _fetch(url, timeout=10):
                 out = r.content if r.status_code == 200 else None
     except Exception:
         out = None
-    cache[url] = (now, out)
+    cache[_ck] = (now, out)
     return out
 
 
@@ -264,67 +333,10 @@ _IMG_DATE_PAT = (
 )
 STALE_IMG_DAYS = 180      # 图比文章旧半年以上 → 判定为站方占位图，宁缺毋滥
 DUP_IMG_MIN = 3           # 同一源内被 3 条以上共用的图 → 判定为默认图
-MIN_IMG_SHORT_SIDE = 200  # 题图短边低于此值视为低质图（装饰图/破图），剔除（2026-10-06 新增）
-
-IMG_MIN_BYTES = 8 * 1024  # 小于 8KB 的基本是占位图 / 破图 / 纯色块
-IMG_SIZE_TTL = 86400     # 尺寸探测结果缓存 1 天
-_IMG_SIZE = {}           # url -> (ts, (w,h) | None)
-_IMG_JUNK = set()        # 判定不可用的图（占位图/头像/非图内容），短期不再重试
-
-# URL 特征命中即判「废图」：头像、占位图、1x1 像素点、base64
-_IMG_JUNK_PAT = re.compile(
-    r"(avatar|gravatar|placeholder|default[_\-]?img|no[_\-]?image|blank\.(gif|png)"
-    r"|1x1|pixel\.(gif|png)|spacer|loading\.(gif|svg)|icon[_\-]?\d+|logo\d*\.(png|jpg))",
-    re.I)
-# 长度/宽度都极小（<=160）→ 头像级废图
-IMG_JUNK_SIDE = 160
-
-
-def _img_min_wh():
-    """容差后的实际门槛"""
-    return (int(MIN_IMG_W * IMG_TOL), int(MIN_IMG_H * IMG_TOL))
-
-
-def _img_url_junk(url):
-    """纯 URL 特征判断废图（不联网，抓取阶段先用它挡掉头像/占位图）"""
-    if not url:
-        return True
-    return bool(_IMG_JUNK_PAT.search(url))
-
-
-def _upgrade_img_url(u):
-    """
-    把源给的缩略图 URL 升级成更大的原图。
-    只对明确可推导的规则动手，改不动就原样返回（宁可用小图，不要改错成 404）。
-    """
-    if not u:
-        return u
-    # WordPress / 多数图床的 "-1024x576" 尺寸后缀 → 去掉拿原图
-    s = re.sub(r"-\d{2,4}x\d{2,4}(?=\.[a-zA-Z]{3,4}(?:$|\?))", "", u)
-    # 阿里云 OSS / 百度 BCE 的裁剪参数 → 去掉拿原图
-    if "x-oss-process=" in s or "x-bce-process=" in s:
-        s = re.sub(r"\?x-(oss|bce)-process=[^&]*$", "", s)
-    # /sina/xxx/thumb/ → 新浪微博图床 thumb 版本更小的情况这里不动，避免改错
-    return s
-
-
-def _img_is_upscaled(w, h, min_base=180):
-    """
-    【已弃用，保留仅供排查】原意是识别「小图被等比拉伸」的假高清。
-
-    判据失效的原因：把宽高同除最大公约数后得到的 (bw, bh) 恒为互质小数对，
-    任何 4:3 图（如 672x504 → gcd 168 → (4,3)）都会被判成「拉伸图」。
-    2026-10-06 实测把 NotebookCheck 整站误杀，已在 _img_ok 里摘掉调用。
-    """
-    if w <= 0 or h <= 0:
-        return False
-    g = gcd(w, h)
-    # 公约数很小（比如 1x1 底色、2x2）不算；要找的是"基座本身很小"的情况
-    if g <= 1:
-        return False
-    bw, bh = w // g, h // g
-    return bw <= min_base and bh <= min_base
-_IMG_SUB = ("//", "//s", "//t", "//d")   # 无协议头的 CDN 路径前缀，_fetch 只认 http(s) 开头
+# 题图短边门槛（用户要求「每条新闻必须有高清大图」，2026-10-07 由 200 提到 300）。
+# 定 300 的依据是实测：300 能保住界面新闻(580x330)、NotebookCheck(672x504)、小众软件多数图；
+# 提到 400 会把界面新闻整个板块砍掉（它源站上限就是 580x330），故取 300。
+MIN_IMG_SHORT_SIDE = 300
 
 
 def _norm_url(c, base):
@@ -343,86 +355,38 @@ def _norm_url(c, base):
     return base.rstrip("/") + "/" + c.lstrip("/")
 
 
-def _declared_size(m):
-    """从 media:content / media:thumbnail 的 width/height 属性读声明尺寸"""
-    try:
-        w = int(str(m.get("width") or "0").strip())
-        h = int(str(m.get("height") or "0").strip())
-    except Exception:
-        return (0, 0)
-    return (w, h)
-
-
-def _img_width_hint(u):
-    """URL 里自带像素尺寸线索的（如 -q82-w672-h 里的 w672），提取出来做排序参考"""
-    m = re.search(r"[_-]w(\d{2,4})(?:[_-]|$)", u or "")
-    if m:
-        return int(m.group(1))
-    m = re.search(r"w_(\d{2,4})", u or "")
-    if m:
-        return int(m.group(1))
-    return 0
-
-
 def _img_candidates(entry, base):
-    """
-    列出条目里所有候选题图。返回按「声明尺寸从大到小」排序的 URL 列表，
-    这样 _parse_one 取第一个就能拿到源提供的最高清那张，而不是碰运气取到 480x270 的缩略图。
-    """
-    picks = []   # [(排序键, url)]
+    """列出条目里所有候选题图（已归一化为绝对 URL，按可信度排序）"""
+    cands = []
 
-    def add(u, key=0):
+    def add(u):
         u = _norm_url(u, base)
-        if not u:
-            return
-        if any(u == p[1] for p in picks):
-            return
-        if not key:
-            key = _img_width_hint(u)
-        picks.append((key, u))
+        if u and u not in cands:
+            cands.append(u)
 
-    # media:content / media:thumbnail 可能给多档尺寸，全部收集，按声明宽度排序取最大
     for m in entry.get("media_content") or []:
-        if isinstance(m, dict) and m.get("url"):
-            add(m.get("url"), _declared_size(m)[0] or _img_width_hint(m.get("url")))
+        if isinstance(m, dict):
+            add(m.get("url"))
     t = entry.get("media_thumbnail")
-    if isinstance(t, list):
-        for m in t:
-            if isinstance(m, dict) and m.get("url"):
-                add(m.get("url"), _declared_size(m)[0] or _img_width_hint(m.get("url")))
+    if isinstance(t, list) and t and isinstance(t[0], dict):
+        add(t[0].get("url"))
     for e in entry.get("enclosures") or []:
         if isinstance(e, dict) and str(e.get("type", "")).startswith("image"):
             add(e.get("url"))
     im = entry.get("images")
-    if isinstance(im, list):
-        for m in im:
-            if isinstance(m, dict) and m.get("url"):
-                add(m.get("url"))
-    # summary / description 正文里的 img（通常比缩略图更清晰）
+    if isinstance(im, list) and im and isinstance(im[0], dict):
+        add(im[0].get("url"))
+    # summary / description 正文里的 img
     raw = entry.get("summary") or entry.get("description") or ""
     # 部分源（如小众软件）把题图放在 <content> 全文而非 summary，需一并扫描
     for c in (entry.get("content") or []):
         if isinstance(c, dict):
             raw = raw + "\n" + (c.get("value") or "")
-    # jquery-lazy 之类把真图藏在 data-original，src 是占位图（用户反馈的实际坑）
-    for u in re.findall(r'<img[^>]+data-(?:original|src)=["\']([^"\']+)["\']', raw, re.I):
-        add(u)
-    for u in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', raw, re.I):
+    for u in re.findall(r"<img[^>]+src=[\"']([^\"']+)[\"']", raw, re.I):
         add(u)
     for u in re.findall(r'(?:src|href)=["\']([^"\']+\.(?:jpg|jpeg|png|webp|gif)(?:\?[^"\']*)?)["\']', raw, re.I):
         add(u)
-
-    picks.sort(key=lambda p: (-p[0], p[1]))
-    cands = [u for _, u in picks]
-
-    # 拿来当配图的 URL 再做一层 CDN 升级（只做明确可推导的规则，改不动就原样）
-    out = []
-    for u in cands:
-        # protocol-relative //cdn/xxx.jpg 直接补全
-        if u.startswith("//"):
-            u = "https:" + u
-        out.append(u)
-    return out
+    return cands
 
 
 def _img_is_stale(url, pub_ts):
@@ -504,109 +468,30 @@ def _image_dimensions(data):
     return None
 
 
-def _probe_total(r):
-    """从 Content-Range / Content-Length 推断图片总字节数；推断不出返回 0"""
-    try:
-        cr = r.headers.get("content-range") or ""
-        if "/" in cr:
-            return int(cr.rsplit("/", 1)[1])
-    except Exception:
-        pass
-    try:
-        cl = r.headers.get("content-length")
-        if cl and cl.isdigit():
-            return int(cl)
-    except Exception:
-        pass
-    return 0
-
-
-def _probe_image(url):
-    """
-    探测图片真实像素与字节数。
-
-    只用「头部若干 KB」就够了：宽高写在文件头里（PNG 前 24 字节、JPEG 的 SOF
-    标记通常在几十 KB 内），没必要把整图拉下来。JPEG 有些源（Telegraph、Appinn）
-    会在前面塞十几 KB 的 EXIF/色彩 ICC 分段，所以上限给到 96KB。
-    返回 ((w,h) | None, 总字节数)
-    """
-    now = time.time()
-    hit = _IMG_SIZE.get(url)
-    if hit and now - hit[0] < IMG_SIZE_TTL:
-        return hit[1], hit[2]
-    if url in _IMG_JUNK:
-        return None, 0
-    dims, total = None, 0
-    hdrs = {"User-Agent": UA, "Range": "bytes=0-98303"}
-    try:
-        hdrs["Referer"] = urllib.parse.urlsplit(url).netloc
-    except Exception:
-        pass
-    try:
-        with httpx.Client(follow_redirects=True, timeout=8, trust_env=False, headers=hdrs) as c:
-            with c.stream("GET", url) as r:
-                if r.status_code in (200, 206):
-                    total = _probe_total(r)
-                    buf = b""
-                    for chunk in r.iter_bytes(8192):
-                        buf += chunk
-                        d = _image_dimensions(buf)
-                        if d:
-                            dims = d
-                            break
-                        if len(buf) >= 98304:
-                            break
-                else:
-                    _IMG_JUNK.add(url)
-    except Exception:
-        pass
-    # 流式拿不到（不支持 Range / 非图内容）→ 退回整图抓取，最后一道兜底
-    if dims is None and url not in _IMG_JUNK:
-        try:
-            res = _fetch(url, timeout=10)
-            blob = res[0] if isinstance(res, tuple) else res
-            if blob:
-                dims = _image_dimensions(blob)
-                total = len(blob)
-        except Exception:
-            pass
-    if dims is None:
-        _IMG_JUNK.add(url)
-    _IMG_SIZE[url] = (now, dims, total)
-    return dims, total
-
-
 def _measure_image(url):
-    """兼容旧调用：只要尺寸"""
-    return _probe_image(url)[0]
+    """测题图真实尺寸；失败/非图返回 None（调用方据此保留条目，不因网络误杀好新闻）。
+
+    【加速 2026-10-07】只读前 IMG_HEAD_BYTES 字节：JPEG/PNG/WEBP 的尺寸信息都在
+    文件头部，整张图（常 100KB~1.5MB）根本不用下完。测不出则返回 None，_img_ok 保守放行。
+    """
+    try:
+        res = _fetch(url, timeout=6, max_bytes=IMG_HEAD_BYTES)
+    except Exception:
+        return None
+    if not res:
+        return None
+    data = res[0] if isinstance(res, tuple) else res
+    if not data:
+        return None
+    return _image_dimensions(data)
 
 
 def _img_ok(url):
-    """
-    题图是否够格做高清卡片。判断顺序（任一不过即淘汰）：
-      1. URL 特征就是头像/占位图/站点图标  → 淘汰
-      2. 测不出尺寸（图挂了 / 返回的不是图）→ 淘汰（旧逻辑是"测不出就留着"，
-         结果列表里全是裂图空白，用户反馈强烈，这里改成不配图）
-      3. 长边 <= 224px                    → 头像级废图
-      4. 整图 < 8KB                       → 占位图 / 纯色块
-      5. 低于容差门槛（默认 648x432）      → 不够清晰
-
-    【踩过的坑】曾加过一条「宽高都是某个小数基座的整数倍 → 判定被放大的假高清」，
-    实测是错的：672x504 的最大公约数是 168，化简只剩 (4,3)，于是所有 4:3 的正常图都被误杀
-    （NotebookCheck 整站 672x504 全部躺枪）。这种启发式没有可靠依据，已在 ITER5 摘掉。
-    """
-    if not url or _img_url_junk(url):
-        return False
-    dims, nb = _probe_image(url)
-    if not dims:
-        return False
-    w, h = dims
-    if max(w, h) <= IMG_JUNK_SIDE:
-        return False
-    if nb and 0 < nb < IMG_MIN_BYTES:
-        return False
-    mw, mh = _img_min_wh()
-    return w >= mw and h >= mh
+    """题图是否达标：测不出（网络/格式）→ 保留；短边低于阈值 → 低质，剔除"""
+    s = _measure_image(url)
+    if s is None:
+        return True
+    return min(s) >= MIN_IMG_SHORT_SIDE
 
 
 def _clean(text):
@@ -622,13 +507,9 @@ def _parse_one(src):
     # notebookcheck 走 HTML 解析分支（无 RSS）
     if src.get("parser") == "nbc":
         return _parse_nbc(src)
-    # mefcl 站方有 JS cookie 验证，需带 Cookie 绕过
+    # 凤凰娱乐：首页内联 JSON（newsstream），非 RSS，走专用解析
     if src.get("parser") == "ifeng":
         return _parse_ifeng(src)
-    if src.get("parser") == "ifeng_news":
-        return _parse_ifeng_news(src)
-    if src.get("parser") == "cdsb_news":
-        return _parse_cdsb_news(src)
     if src.get("parser") == "thepaper":
         return _parse_thepaper(src)
     if src.get("parser") == "mefcl":
@@ -646,7 +527,10 @@ def _parse_one(src):
         print(f"[warn] RSS 解析失败: {src['url']} ({type(ex).__name__})")
         return []
     items = []
-    cutoff = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get(src.get("region", "cn"), 72) * 3600
+    max_age = (src.get("max_age_hours")
+               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
+               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
     dropped = 0
     for e in doc.entries[:24]:
         title = _clean(e.get("title"))
@@ -824,27 +708,31 @@ def _hot_hn():
     国际榜单只剩 HN 的 Firebase 官方 API（免 key）。这里 score 是用户真实投票点数、
     descendants 是评论条数，都能在点开的页面上对得上 —— 不像头条那种站内加权值。
     内容偏科技/创投，但也覆盖国际重大事件，符合「国际上现在最热」的语义。"""
+    # 【加速】4 分钟内直接复用上次结果。原来 _HN_CACHE 定义了却从没被用过，
+    # 导致每次刷新都把这 30 条重新抓一遍。
+    if _HN_CACHE["items"] and (time.time() - _HN_CACHE["ts"]) < 240:
+        return _HN_CACHE["items"]
     try:
-        with httpx.Client(timeout=10, trust_env=False, headers={"User-Agent": UA}) as c:
-            r = c.get("https://hacker-news.firebaseio.com/v0/topstories.json")
-            ids = r.json() if r.status_code == 200 else []
+        # 复用全局连接池（同域长连接），不要再 new 一个 Client
+        r = _CLIENT.get("https://hacker-news.firebaseio.com/v0/topstories.json", timeout=8)
+        ids = r.json() if r.status_code == 200 else []
     except Exception as ex:
         print(f"[warn] HN 榜单抓取异常: {type(ex).__name__}")
-        return []
+        return _HN_CACHE["items"]
     ids = [i for i in (ids or []) if isinstance(i, int)][:30]
 
     def one(i):
-        for attempt in range(2):
-            try:
-                with httpx.Client(timeout=10, trust_env=False, headers={"User-Agent": UA}) as c:
-                    r = c.get(f"https://hacker-news.firebaseio.com/v0/item/{i}.json")
-                return r.json() if r.status_code == 200 else None
-            except Exception:
-                time.sleep(0.4)
-        return None
+        # 只试一次：原来失败要 5s + sleep + 5s = 10s，30 条一起就把整轮拖长一倍。
+        # HN 少一条对榜单毫无影响，速度优先。
+        try:
+            r = _CLIENT.get(f"https://hacker-news.firebaseio.com/v0/item/{i}.json", timeout=5)
+            return r.json() if r.status_code == 200 else None
+        except Exception:
+            return None
 
     out = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    # 30 条一次性全放出去：16 线程会分 2 批，等于把超时时间乘 2（实测 19s）。
+    with ThreadPoolExecutor(max_workers=30) as ex:
         for it in ex.map(one, ids):
             if not it:
                 continue
@@ -863,6 +751,8 @@ def _hot_hn():
                 "rank": len(out) + 1, "translated": False,
             })
     print(f"[ok] hot/HN: {len(out)} 条")
+    _HN_CACHE["ts"] = time.time()
+    _HN_CACHE["items"] = out
     return out
 
 
@@ -881,22 +771,40 @@ def _parse_hot_intl():
       - 中新社每次都抓（RSS 轻快，实测 0.1~1.4s）。中文条目已标记 translated=True，
         后台翻译会跳过，不会拿去「中译中」。
       - HN 要逐个 item 请求 Firebase，慢得多，故带 3 分钟本地缓存（榜单变动慢，不必每次请求）。
-    与国内热榜保持同一套逻辑：真实更新时间倒序为主、热度（HN 分）为辅，
-    超 MAX_HOT_AGE_HOURS 的旧闻不进榜（常看常新）。"""
-    items = _hot_cn_intl()
+    中新社排在前面，保证热榜靠前的部分一定是可读的中文。"""
+    parts = []
+    try:
+        parts.extend(_hot_cn_intl())
+    except Exception as ex:
+        print(f"[warn] 国际热榜子源异常: {type(ex).__name__}")
     now = time.time()
+    hn = None
     if _HN_CACHE["items"] and now - _HN_CACHE["ts"] < 180:
-        items = items + _HN_CACHE["items"]
+        hn = _HN_CACHE["items"]
     else:
         hn = _hot_hn()
         _HN_CACHE["ts"], _HN_CACHE["items"] = now, hn
-        items = items + hn
-    cutoff = datetime.now(CST).timestamp() - MAX_HOT_AGE_HOURS * 3600
-    fresh = [it for it in items if (it.get("published") or 0) >= cutoff]
-    fresh.sort(key=lambda x: ((x.get("published") or 0), (x.get("heat") or 0)), reverse=True)
-    for i, it in enumerate(fresh, 1):
-        it["rank"] = i
-    return fresh
+    if hn:
+        parts.extend(hn)
+    if not parts:
+        return parts
+    # 与国内热榜一致：按平台(label)内归一化百分位跨平台混合排序
+    groups = {}
+    for it in parts:
+        groups.setdefault(it.get("label") or "", []).append(it)
+    for group in groups.values():
+        if any(x.get("heat") for x in group):
+            group.sort(key=lambda x: x.get("heat") or 0, reverse=True)
+        else:
+            group.sort(key=lambda x: x.get("rank") or 999)
+            for it in group:
+                it["heat"] = 0
+        n = max(1, len(group))
+        for i, it in enumerate(group, 1):
+            it["score"] = (n - i + 1) / n
+    parts.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    print(f"[ok] hot-intl: 多平台聚合共 {len(parts)} 条（百分位混排）")
+    return parts
 
 
 def _thepaper_data(ttl=120):
@@ -925,12 +833,29 @@ def _thepaper_data(ttl=120):
         return _THEPAPER_CACHE["data"] or {}
 
 
+def _ms_to_ts(v):
+    """把毫秒时间戳（字符串/数字）转成秒级时间戳；不合法返回 0。"""
+    try:
+        n = int(str(v).strip())
+    except Exception:
+        return 0
+    if n > 10 ** 12:            # 毫秒 → 秒
+        n //= 1000
+    # 合理性检查：只接受 2010-01-01 ~ 2100-01-01 之间
+    return n if 1262304000 < n < 4102444800 else 0
+
+
 def _hot_thepaper():
     """澎湃热榜：首页侧栏 hotNews 数组。
 
     选它的理由是数据最「实」：interactionNum 是站方自己在页面上显示的真实互动数
     （不是今日头条那种点进去对不上的站内加权 HotValue），且能用 contId 拼出
-    newsDetail_forward_<contId> 直达正文，列表看到的和点进去看到的是同一篇。"""
+    newsDetail_forward_<contId> 直达正文，列表看到的和点进去看到的是同一篇。
+
+    【2026-10-07 修】原来 published 写死 0，而接口其实给了 pubTimeLong / publishTime ——
+    结果这 20 条全都算「无时间」，把时效过滤整个绕过去了
+    （用户反馈「热榜上居然还有两天前的新闻」，这里是元凶之一）。
+    现在按 pubTimeLong → trackPublishTime → publishTime 依次取值。"""
     out = []
     for idx, it in enumerate((_thepaper_data().get("hotNews") or [])[:30], 1):
         if not isinstance(it, dict):
@@ -944,64 +869,68 @@ def _hot_thepaper():
             heat = int(heat)
         except Exception:
             heat = 0
-        # 真实更新时间：trackPublishTime / pubTimeLong 是毫秒时间戳，publishTime 是字符串；
-        # 都拿不到时按名次给一个近的时间，避免 published=0 被前端时间排序甩到最末。
-        raw_ts = it.get("trackPublishTime") or it.get("pubTimeLong") or 0
-        pub = 0
-        if raw_ts:
+        pub = _ms_to_ts(it.get("pubTimeLong")) or _ms_to_ts(it.get("trackPublishTime"))
+        if not pub:
             try:
-                pub = int(raw_ts) / 1000
+                pub = int(datetime.strptime((it.get("publishTime") or "").strip(),
+                                            "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST).timestamp())
             except Exception:
                 pub = 0
-        if not pub:
-            ps = it.get("publishTime")
-            if ps:
-                try:
-                    pub = int(datetime.strptime(ps, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST).timestamp())
-                except Exception:
-                    pub = 0
-        if not pub:
-            pub = int(time.time()) - idx * 120
         out.append({
             "id": hashlib.md5(("hot-thepaper-" + str(cid)).encode("utf-8")).hexdigest()[:12],
             "region": "hot", "channel": "thepaper-hot", "label": "澎湃新闻",
             "cls": "热榜", "title": title, "desc": "",
             "link": f"https://www.thepaper.cn/newsDetail_forward_{cid}", "image": "",
-            "published": int(pub), "heat": heat, "rank": idx, "translated": False,
+            "published": pub, "heat": heat, "rank": idx, "translated": False,
         })
-    print(f"[ok] hot/澎湃新闻: {len(out)} 条")
+    print("[ok] hot/澎湃新闻: %d 条（其中有时间的 %d 条）"
+          % (len(out), sum(1 for x in out if x["published"])))
     return out
 
 
 def _cdsb_rel_time(tail):
-    """红星首页锚文本尾巴里的时间：「红星新闻 10-06 20:58」「红星新闻 45分钟前」
-    「红星新闻 今天 12:30」「红星新闻 2天前」等。解析成 UTC+8 秒级时间戳；解析不出返回 0。"""
-    if not tail:
+    """解析红星新闻锚文本里夹的「来源 + 时间」尾巴，转成 UTC+8 秒级时间戳。
+
+    常见形态：
+      "45分钟前" / "2小时前" / "2天前"
+      "今天 12:30" / "昨天 13:20"
+      "10-06 20:58"（当年） / "2026-10-06 20:58"
+    解析不出返回 0（交给调用方按 0 处理：排在后面）。"""
+    now = datetime.now(CST)
+    s = (tail or "").strip()
+    if not s:
         return 0
-    now = datetime.now(CST).timestamp()
-    m = re.search(r"(\d+)\s*分钟前", tail)
+    m = re.search(r"(\d+)\s*分钟前", s)
     if m:
-        return int(now - int(m.group(1)) * 60)
-    m = re.search(r"(\d+)\s*小时前", tail)
+        return now.timestamp() - int(m.group(1)) * 60
+    m = re.search(r"(\d+)\s*小时前", s)
     if m:
-        return int(now - int(m.group(1)) * 3600)
-    m = re.search(r"(\d+)\s*天前", tail)
+        return now.timestamp() - int(m.group(1)) * 3600
+    m = re.search(r"(\d+)\s*天前", s)
     if m:
-        return int(now - int(m.group(1)) * 86400)
-    if "今天" in tail or "刚刚" in tail:
-        mt = re.search(r"(\d{1,2}):(\d{2})", tail)
-        if mt:
-            d = datetime.now(CST).replace(hour=int(mt.group(1)), minute=int(mt.group(2)), second=0, microsecond=0)
-            return int(d.timestamp())
-        return int(now)
-    m = re.search(r"(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})", tail)
+        return now.timestamp() - int(m.group(1)) * 86400
+    m = re.search(r"今天\s*(\d{1,2})[:：](\d{1,2})", s)
+    if m:
+        d = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        return d.timestamp()
+    m = re.search(r"昨天\s*(\d{1,2})[:：](\d{1,2})", s)
+    if m:
+        d = (now - timedelta(days=1)).replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        return d.timestamp()
+    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2})[:：](\d{1,2})", s)
     if m:
         try:
-            d = datetime.now(CST).replace(month=int(m.group(1)), day=int(m.group(2)),
-                                          hour=int(m.group(3)), minute=int(m.group(4)), second=0, microsecond=0)
-            return int(d.timestamp())
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                            int(m.group(4)), int(m.group(5)), tzinfo=CST).timestamp()
         except Exception:
-            return 0
+            pass
+    m = re.search(r"(\d{1,2})[-/](\d{1,2})\s+(\d{1,2})[:：](\d{1,2})", s)
+    if m:
+        try:
+            return datetime(now.year, int(m.group(1)), int(m.group(2)),
+                            int(m.group(3)), int(m.group(4)), tzinfo=CST).timestamp()
+        except Exception:
+            pass
     return 0
 
 
@@ -1024,18 +953,29 @@ def _hot_cdsb():
         title = _clean(m.group(2))
         # 锚文本 append 了站方的「来源 + 时间」尾巴，例如
         #   "xxx（标题） 红星新闻 10-06 20:58" / "xxx（标题） 红星新闻 45分钟前"
-        # 先截下尾巴用来解析真实更新时间，再把「来源 + 时间」切掉（保留足够标题长度，避免误伤）
+        # 直接把它连同后面的时间一起切掉（保留足够的标题长度，避免误伤正文里含来源的标题）
         cut = title.rfind(" 红星新闻 ")
-        rest = title[cut:] if cut > 0 else ""
+        pub = 0
         if cut > 8:
+            rest = title[cut:]          # " 红星新闻 45分钟前" / " 红星新闻 10-06 20:58"
             title = title[:cut].strip()
+            pub = _cdsb_rel_time(rest)
+        if not pub:
+            # 【2026-10-07 修 严重 bug】这里原来是
+            #     pub = int(time.time()) - len(seen) * 120
+            # 也就是**解析不出时间就凭空造一个「刚刚」**。后果：
+            #   红星新闻首页有一批锚文本没有时间尾巴 → 全被标成「几分钟前」→
+            #   两天前的旧闻既通过了「只留当天」的过滤，又排到了热榜第一条。
+            #   用户连着反馈两次「热榜第一条就是两天前的」，实测原文页确认
+            #   （薛之谦那条真实发布于 2026-10-05 11:24，我们却记成 10-07 11:23）。
+            # 现在的规矩：**绝不允许伪造时间**。解析不出就留 0（未知），
+            # 由 _fill_missing_images 去文章页读真实发布时间补上；
+            # 补不到就按「未知时间」被当天过滤剔除 —— 宁可少一条，不可骗用户。
+            pub = 0
         # 锚文本里混着纯图标 / 空 div，短于 6 字的不是标题
         if not title or len(title) < 6 or title in seen:
             continue
         seen.add(title)
-        pub = _cdsb_rel_time(rest)
-        if not pub:
-            pub = int(time.time()) - len(out) * 120   # 兜底：拿不到时间就按位置给近的时间，避免沉底
         out.append({
             "id": hashlib.md5(("hot-cdsb-" + title).encode("utf-8")).hexdigest()[:12],
             "region": "hot", "channel": "cdsb-hot", "label": "红星新闻",
@@ -1101,156 +1041,41 @@ def _hot_ifeng():
 
 def _parse_hot():
     """实时热榜：聚合 {澎湃新闻, 红星新闻, 凤凰网} 三家（用户指定）。
-
-    与国内 / 国际各版块保持同一套逻辑：每条带真实更新时间，按「更新时间倒序」为主、
-    站方热度（互动数）为辅排序；超过 MAX_HOT_AGE_HOURS 的旧闻直接丢弃
-    （常看常新，老新闻不进榜、不抢占前面位置）。三家按真实时间自然轮替，
-    不再出现某一家因名次高而整体霸榜。任一平台抓取失败不影响其它两家。"""
+    每条带平台标签（label），按「平台内归一化热度」跨平台混合排序。任一平台失败不影响其它。"""
     parts = []
     for fn in (_hot_thepaper, _hot_cdsb, _hot_ifeng):
         try:
             parts.extend(fn())
         except Exception as ex:
-            print(f"[warn] 热榜子源异常: {type(ex).__name__}: {ex}")
+            print(f"[warn] 热榜子源异常: {type(ex).__name__}")
+    print(f"[ok] hot: 多平台聚合共 {len(parts)} 条")
     if not parts:
         return parts
-    # 时效过滤：丢弃超过 MAX_HOT_AGE_HOURS 的旧闻（如红星一两天前的旧稿）
-    cutoff = datetime.now(CST).timestamp() - MAX_HOT_AGE_HOURS * 3600
-    fresh = [it for it in parts if (it.get("published") or 0) >= cutoff]
-    dropped = len(parts) - len(fresh)
-    if dropped:
-        print(f"[ok] hot: 时效过滤丢弃 {dropped} 条旧闻（>{MAX_HOT_AGE_HOURS}h）")
-    # 排序：更新时间倒序为主，站方热度（互动数）为辅 —— 与要闻 / 科技等版块同形
-    fresh.sort(key=lambda x: ((x.get("published") or 0), (x.get("heat") or 0)), reverse=True)
-    for i, it in enumerate(fresh, 1):
-        it["rank"] = i
-        it["score"] = round((len(fresh) - i + 1) / len(fresh), 4)
-    print(f"[ok] hot: 聚合后 {len(fresh)} 条（澎湃/红星/凤凰按时间+热度混排）")
-    return fresh
-
-
-# ---------------------------------------------------------------------------
-# Windows 右下角通知（热榜头条变化时）
-# 全链路 try/except 包裹：依赖缺失或任何异常都静默跳过，绝不拖累刷新与主服务。
-# ---------------------------------------------------------------------------
-_LAST_TOAST_TS = [0.0]          # 上次弹通知的时间戳（节流用）
-_LAST_TOP_ID = [None]           # 上一次记录的热榜头条 id（用于判定是否变化）
-_TOAST_MIN_GAP = 600            # 两次通知最小间隔（秒），避免刷屏
-
-
-def _show_toast(title, msg, url):
-    """Windows 右下角气泡通知（纯 ctypes，无第三方依赖）。点击气泡打开 url；失败静默。"""
-    try:
-        import ctypes
-        from ctypes import WINFUNCTYPE, Structure, byref, sizeof, c_int, c_void_p
-        from ctypes import c_uint, c_ulong, c_wchar, c_ubyte
-        from ctypes.wintypes import HWND, UINT, WPARAM, LPARAM, HINSTANCE, HICON, MSG
-
-        WM_COMMAND = 0x0111
-        NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
-        NIF_ICON, NIF_INFO, NIF_TIP, NIF_MESSAGE = 2, 0x10, 4, 1
-        NIIF_INFO = 0x1
-        IDI_APPLICATION = 32512
-        NIN_BALLOONUSERCLICK = 0x0405
-
-        class GUID(Structure):
-            _fields_ = [("Data1", c_ulong), ("Data2", c_ushort),
-                        ("Data3", c_ushort), ("Data4", c_ubyte * 8)]
-
-        class NOTIFYICONDATA(Structure):
-            _fields_ = [
-                ("cbSize", c_ulong), ("hWnd", HWND), ("uID", c_uint),
-                ("uFlags", c_uint), ("uCallbackMessage", c_uint),
-                ("hIcon", HICON), ("szTip", c_wchar * 128),
-                ("dwState", c_ulong), ("dwStateMask", c_ulong),
-                ("szInfo", c_wchar * 256), ("uTimeout", c_ulong),
-                ("szInfoTitle", c_wchar * 64), ("dwInfoFlags", c_ulong),
-                ("guidItem", GUID), ("hBalloonIcon", HICON),
-            ]
-
-        WNDPROC = WINFUNCTYPE(c_int, HWND, UINT, WPARAM, LPARAM)
-
-        def wnd_proc(hwnd, msg, wparam, lparam):
-            if msg == WM_COMMAND and ((lparam >> 16) & 0xFFFF) == NIN_BALLOONUSERCLICK:
-                try:
-                    webbrowser.open(url)
-                except Exception:
-                    pass
-            return ctypes.windll.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
-
-        class WNDCLASS(Structure):
-            _fields_ = [
-                ("style", c_uint), ("lpfnWndProc", WNDPROC),
-                ("cbClsExtra", c_int), ("cbWndExtra", c_int),
-                ("hInstance", HINSTANCE), ("hIcon", HICON),
-                ("hCursor", c_void_p), ("hbrBackground", c_void_p),
-                ("lpszMenuName", c_wchar), ("lpszClassName", c_wchar),
-            ]
-
-        hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
-        wcls = WNDCLASS()
-        wcls.lpszClassName = "HotnewsTaskbar"
-        wcls.lpfnWndProc = WNDPROC(wnd_proc)
-        wcls.hInstance = hinst
-        ctypes.windll.user32.RegisterClassW(byref(wcls))
-        HWND_MESSAGE = c_void_p(-3)
-        hwnd = ctypes.windll.user32.CreateWindowExW(
-            0, "HotnewsTaskbar", "hotnews", 0, 0, 0, 0, 0,
-            HWND_MESSAGE, 0, hinst, None)
-        nid = NOTIFYICONDATA()
-        nid.cbSize = sizeof(NOTIFYICONDATA)
-        nid.hWnd = hwnd
-        nid.uID = 0
-        nid.uFlags = NIF_ICON | NIF_INFO | NIF_TIP | NIF_MESSAGE
-        nid.uCallbackMessage = WM_COMMAND
-        nid.hIcon = ctypes.windll.user32.LoadIconW(0, IDI_APPLICATION)
-        nid.szTip = "热点新闻"
-        nid.szInfo = (msg or "")[:255]
-        nid.uTimeout = 2000
-        nid.szInfoTitle = (title or "")[:63]
-        nid.dwInfoFlags = NIIF_INFO
-        ctypes.windll.shell32.Shell_NotifyIconW(NIM_ADD, byref(nid))
-        ctypes.windll.shell32.Shell_NotifyIconW(NIM_MODIFY, byref(nid))
-        m = MSG()
-        start = time.time()
-        while time.time() - start < 8:
-            if ctypes.windll.user32.GetMessageW(byref(m), hwnd, 0, 0) == 0:
-                break
-            ctypes.windll.user32.TranslateMessage(byref(m))
-            ctypes.windll.user32.DispatchMessageW(byref(m))
-        ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE, byref(nid))
-        ctypes.windll.user32.DestroyWindow(hwnd)
-    except Exception:
-        try:
-            ctypes.windll.user32.MessageBoxW(0, msg, title, 0x40)
-        except Exception:
-            pass
-
-
-def _notify_news(items):
-    """热榜头条变了就弹右下角通知。首跑只记录基线不弹；10 分钟内至多一次。"""
-    try:
-        if not items:
-            return
-        top_id = items[0].get("id")
-        now = time.time()
-        if _LAST_TOP_ID[0] is None:
-            _LAST_TOP_ID[0] = top_id
-            return                                  # 首次：仅建基线，不弹
-        if top_id == _LAST_TOP_ID[0]:
-            return                                  # 头条没变，不弹
-        _LAST_TOP_ID[0] = top_id
-        if now - _LAST_TOAST_TS[0] < _TOAST_MIN_GAP:
-            return                                  # 节流：间隔太短，这次不弹
-        _LAST_TOAST_TS[0] = now
-        head = (items[0].get("title") or "")[:42]
-        threading.Thread(
-            target=_show_toast,
-            args=("热点新闻更新", f"头条：{head}", APP_URL),
-            daemon=True,
-        ).start()
-    except Exception as ex:
-        print(f"[warn] 通知失败（已忽略）: {type(ex).__name__}")
+    # 跨平台统一排序依据：先在每个平台内部排名次（有真实热度就按热度，没有就按站方名次），
+    # 再统一换算成「平台内百分位」，最后才跨平台混排。
+    #
+    # 【为什么不用热度绝对值】各家口径完全不同：澎湃给的是互动数，凤凰/红星压根没有热度值
+    # 只有名次。按绝对值排，凤凰/红星会用名次生成一个 0~1 的分数压过澎湃中下游的真实
+    # 热度条目 —— 实测表现为 2~31 名被红星连续占据，澎湃除榜首外全沉到 30 名开外，
+    # 等于一家垄断，「多平台聚合」名存实亡。
+    # 【为什么不用 min-max 归一化】头部一条互动数会把同平台其余条目全压到 0.1 以下，
+    # 跨无法与其它平台中下游竞争，同样是垄断，只是换成被另一个平台垄断。
+    # 百分位只表达「你在你自己的榜上排第几」，天然跨平台可比。
+    groups = {}
+    for it in parts:
+        groups.setdefault(it.get("label") or "", []).append(it)
+    for group in groups.values():
+        if any(x.get("heat") for x in group):
+            group.sort(key=lambda x: x.get("heat") or 0, reverse=True)
+        else:
+            group.sort(key=lambda x: x.get("rank") or 999)
+            for it in group:
+                it["heat"] = 0          # 数字不可信，前端不展示，避免误导
+        n = max(1, len(group))
+        for i, it in enumerate(group, 1):
+            it["score"] = (n - i + 1) / n
+    parts.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    return parts
 
 
 def _parse_nbc(src):
@@ -1340,43 +1165,48 @@ def _parse_mefcl(src):
     /feed/ 仍返回 403，故改抓首页 HTML。解析失败 / 被拦返回 []，不影响其它源。"""
     import time as _t
     now = _t.time()
-    cookie = _MEFCL_COOKIE.get("value")
-    if not cookie or (now - _MEFCL_COOKIE.get("ts", 0)) > 1500:
-        # 第一步：拿挑战页，抠合法 cookie
-        try:
-            with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
-                              headers={"User-Agent": UA}) as c:
-                r0 = c.get(src["url"])
-            raw0 = r0.content if r0.status_code == 200 else b""
-        except Exception as ex:
-            print(f"[warn] mefcl 挑战页抓取异常: {type(ex).__name__}（回退上次结果）")
-            return _MEFCL_LAST
-        html0 = raw0.decode("utf-8", "ignore")
-        m = re.search(r'ge_js_validator_63=([^";\s]+)', html0)
-        if not m:
-            print("[warn] mefcl 挑战页无 ge_js_validator cookie 字段，可能被改版（回退上次结果）")
-            return _MEFCL_LAST
-        cookie = m.group(1)
-        _MEFCL_COOKIE["value"] = cookie
-        _MEFCL_COOKIE["ts"] = now
-    # 第二步：带合法 cookie 回放首页
+    # 先直接抓首页：站方若已不再弹 JS 挑战，正文（含 article.excerpt）直接返回，
+    # 这时无需 cookie，直接解析即可——否则会误判「无挑战字段」而整源消失。
     try:
         with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
-                          headers={"User-Agent": UA, "Cookie": "ge_js_validator_63=" + cookie}) as c:
-            r = c.get(src["url"])
-        raw = r.content if r.status_code == 200 else None
+                          headers={"User-Agent": UA}) as c:
+            r0 = c.get(src["url"])
+        raw0 = r0.content if r0.status_code == 200 else b""
     except Exception as ex:
-        print(f"[warn] mefcl 抓取异常: {type(ex).__name__}（回退上次结果）")
+        print(f"[warn] mefcl 首页抓取异常: {type(ex).__name__}（回退上次结果）")
         return _MEFCL_LAST
-    if not raw:
-        print("[warn] mefcl 抓取失败（可能被 JS 验证拦截，回退上次结果）")
-        return _MEFCL_LAST
-    html = raw.decode("utf-8", "ignore")
-    # 仍被挑战页挡住（有 cookie 字段但无文章块）→ cookie 失效，下次重取
-    if "ge_js_validator" in html and "excerpt" not in html:
-        _MEFCL_COOKIE["ts"] = 0
-        print("[warn] mefcl 仍返回 JS 验证页，cookie 失效需重试（回退上次结果）")
-        return _MEFCL_LAST
+    html0 = raw0.decode("utf-8", "ignore")
+    if "excerpt" in html0:
+        # 正常返回正文，直接解析
+        html = html0
+    else:
+        # 命中 JS 验证挑战页 → 抠合法 cookie 回放
+        cookie = _MEFCL_COOKIE.get("value")
+        if not cookie or (now - _MEFCL_COOKIE.get("ts", 0)) > 1500:
+            m = re.search(r'ge_js_validator_63=([^";\s]+)', html0)
+            if not m:
+                print("[warn] mefcl 无文章块也无挑战 cookie 字段，可能被改版（回退上次结果）")
+                return _MEFCL_LAST
+            cookie = m.group(1)
+            _MEFCL_COOKIE["value"] = cookie
+            _MEFCL_COOKIE["ts"] = now
+        try:
+            with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
+                              headers={"User-Agent": UA, "Cookie": "ge_js_validator_63=" + cookie}) as c:
+                r = c.get(src["url"])
+            raw = r.content if r.status_code == 200 else None
+        except Exception as ex:
+            print(f"[warn] mefcl 抓取异常: {type(ex).__name__}（回退上次结果）")
+            return _MEFCL_LAST
+        if not raw:
+            print("[warn] mefcl 抓取失败（可能被 JS 验证拦截，回退上次结果）")
+            return _MEFCL_LAST
+        html = raw.decode("utf-8", "ignore")
+        # 仍被挑战页挡住（有 cookie 字段但无文章块）→ cookie 失效，下次重取
+        if "ge_js_validator" in html and "excerpt" not in html:
+            _MEFCL_COOKIE["ts"] = 0
+            print("[warn] mefcl 仍返回 JS 验证页，cookie 失效需重试（回退上次结果）")
+            return _MEFCL_LAST
     items = []
     cutoff = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get("cn", 72) * 3600
     for m in re.finditer(r'<article\s+class="excerpt[^"]*">(.*?)</article>', html, re.S):
@@ -1410,15 +1240,27 @@ def _parse_mefcl(src):
         # 摘要
         dn = re.search(r'<p[^>]*class="note"[^>]*>(.*?)</p>', blk, re.S)
         desc = _clean(dn.group(1))[:200] if dn else ""
-        # 时间：<time datetime="...">
-        tsm = re.search(r'datetime="(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"', blk)
+        # 时间：优先 <time datetime="YYYY-MM-DD HH:MM:SS">；
+        # 【2026-10-07 修】mefcl 实际用的是 <time>2026-09-28</time>（**只有日期、
+        # 没有 datetime 属性**），原来的正则匹配不到 → 20 条全部 published=0 →
+        # 被「只留当天」的规则整批滤掉，结果用户最重要的软件站 mefcl 在列表里
+        # 整个消失。这里补一个纯日期格式的回落（按当天 00:00 计）。
         ts = 0
+        tsm = re.search(r'datetime="(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"', blk)
         if tsm:
             try:
                 ts = int(datetime.strptime(tsm.group(1).replace("T", " "),
                                             "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST).timestamp())
             except Exception:
                 ts = 0
+        if not ts:
+            dm2 = re.search(r'<time[^>]*>\s*(\d{4})-(\d{2})-(\d{2})\s*</time>', blk)
+            if dm2:
+                try:
+                    ts = int(datetime(int(dm2.group(1)), int(dm2.group(2)),
+                                      int(dm2.group(3)), tzinfo=CST).timestamp())
+                except Exception:
+                    ts = 0
         if ts and ts < cutoff:
             continue
         items.append({
@@ -1576,7 +1418,7 @@ def _parse_ifeng(src):
         return []
     html = raw.decode("utf-8", "ignore")
     items, seen = [], set()
-    max_age = src.get("max_age_hours") or MAX_AGE_HOURS.get("cn", 168)
+    max_age = src.get("max_age_hours") or MAX_AGE_HOURS.get("cn", 24)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     for m in re.finditer(r'"type":"article","url":"(https://ent\.ifeng\.com/c/[^"]+)"', html):
         url = m.group(1)
@@ -1611,128 +1453,6 @@ def _parse_ifeng(src):
     return items
 
 
-# ---------------- 要闻源：凤凰资讯 / 红星新闻（带高清图，与热榜分栏） ----------------
-_CDSB_IMG_CACHE = {}   # 红星文章页 URL -> (ts, 首图URL)；首图稳定，缓存避免每次刷新都抓文章页
-
-
-def _cdsb_article_image(article_url):
-    """抓红星文章页取首图：<meta name="image" content> 优先（首图），回落正文 <img data-original>。
-    带 10 分钟缓存；失败返回空（调用方按无图处理）。实测首图 1080x720+，过 HD 门槛。"""
-    now = time.time()
-    c = _CDSB_IMG_CACHE.get(article_url)
-    if c and now - c[0] < 600:
-        return c[1]
-    img = ""
-    try:
-        raw = _fetch(article_url, timeout=8)
-        if isinstance(raw, tuple):
-            raw = raw[0]
-        if raw:
-            ah = raw.decode("utf-8", "ignore")
-            m = re.search(r'<meta[^>]+name="image"[^>]+content="([^"]+)"', ah) \
-                or re.search(r'<meta[^>]+content="([^"]+)"[^>]+name="image"', ah)
-            if m:
-                img = _norm_url(m.group(1), "https://www.cdsb.com/")
-            if not img:
-                im = re.search(r'<img\b[^>]*\bdata-original="([^"]+\.(?:jpg|jpeg|png|webp))"', ah)
-                if im:
-                    img = _norm_url(im.group(1), "https://www.cdsb.com/")
-    except Exception as ex:
-        print(f"[warn] 红星文章页取图失败 {article_url[:60]}: {type(ex).__name__}")
-    _CDSB_IMG_CACHE[article_url] = (now, img)
-    return img
-
-
-def _parse_ifeng_news(src):
-    """凤凰资讯（要闻）：news.ifeng.com 首页内联 JSON，每条约 975x549 缩略图 + newsTime。
-    与热榜的凤凰同源但归入「要闻」、带高清图；低质缩略图由后台 _enrich_quality_bg 异步剔除。"""
-    raw = _fetch(src["url"])
-    if isinstance(raw, tuple):
-        raw = raw[0]
-    if not raw:
-        print("[warn] 凤凰资讯抓取失败")
-        return []
-    page = raw.decode("utf-8", "ignore")
-    max_age = src.get("max_age_hours") or MAX_AGE_HOURS.get("cn", 72)
-    cutoff = datetime.now(CST).timestamp() - max_age * 3600
-    out, seen = [], set()
-    pat = r'"id":"(\d+)","title":"([^"]*)","url":"(https?://[^"]*ifeng\.com/c/[^"]+)"'
-    for m in re.finditer(pat, page):
-        url = m.group(3)
-        title = _clean(m.group(2))
-        if not title or url in seen:
-            continue
-        tail = page[m.end():m.end() + 420]
-        tms = re.search(r'"newsTime":"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"', tail)
-        ts = 0
-        if tms:
-            try:
-                ts = int(datetime.strptime(tms.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST).timestamp())
-            except Exception:
-                ts = 0
-        if ts and ts < cutoff:
-            continue
-        seen.add(url)
-        ims = re.findall(r'"url":"(https://[^"]*ifengimg\.com[^"]*)"', tail[:320])
-        out.append({
-            "id": hashlib.md5((src["id"] + m.group(1)).encode("utf-8")).hexdigest()[:12],
-            "region": src["region"], "channel": src["id"],
-            "label": src.get("label", src["id"]), "cls": src["cls"],
-            "title": title, "desc": "", "link": url,
-            "image": _norm_url(ims[0], "https://news.ifeng.com/") if ims else "",
-            "published": ts or int(datetime.now(CST).timestamp()),
-            "translated": False,
-        })
-        if len(out) >= 15:
-            break
-    print(f"[ok] {src['id']}: 凤凰要闻解析 {len(out)} 条（带图 {sum(1 for i in out if i['image'])}）")
-    return out
-
-
-def _parse_cdsb_news(src):
-    """红星新闻（要闻）：首页 SSR 取文章链接+标题，并发抓文章页取 <meta name=image> 首图（HD）。
-    首页列表项本身无图（站方占位图），真实题图只在文章页，故需逐篇取；首图缓存 10 分钟。"""
-    raw = _fetch(src["url"])
-    if isinstance(raw, tuple):
-        raw = raw[0]
-    if not raw:
-        print("[warn] 红星新闻抓取失败")
-        return []
-    page = raw.decode("utf-8", "ignore")
-    arts, seen = [], set()
-    pat = r'<a\s[^>]*href="((?:https?:)?//[^"]*static\.cdsb\.com/micropub/Articles/[^"]+)"[^>]*>(.*?)</a>'
-    for m in re.finditer(pat, page, re.S):
-        title = _clean(m.group(2))
-        cut = title.rfind(" 红星新闻 ")
-        if cut > 8:
-            title = title[:cut].strip()
-        if not title or len(title) < 6 or title in seen:
-            continue
-        seen.add(title)
-        arts.append((title, _norm_url(m.group(1), src["base"])))
-        if len(arts) >= 15:
-            break
-    if not arts:
-        return []
-    # 并发抓文章页取首图（限 8 线程，避免瞬间打爆站方）
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        imgs = list(ex.map(_cdsb_article_image, [a[1] for a in arts]))
-    now = time.time()
-    out = []
-    for (title, link), img in zip(arts, imgs):
-        out.append({
-            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
-            "region": src["region"], "channel": src["id"],
-            "label": src.get("label", src["id"]), "cls": src["cls"],
-            "title": title, "desc": "", "link": link,
-            "image": img or "",
-            "published": int(now) - len(out) * 60,   # 首页按时间倒序，用位置近似新鲜度
-            "translated": False,
-        })
-    print(f"[ok] {src['id']}: 红星要闻解析 {len(out)} 条（带图 {sum(1 for i in out if i['image'])}）")
-    return out
-
-
 app = FastAPI(title="hotnews", version=VERSION)
 
 
@@ -1758,14 +1478,235 @@ def _drop_shared_images(items):
     return items
 
 
+# ==================== 当天时效 / 文章页补图（2026-10-07 新增） ====================
+# 用户要求两条新规矩：
+#   1) 所有板块必须是「当天的」
+#   2) 每条新闻必须有高清大图，没图的就不要上
+# 这两条和「红星/凤凰必须进要闻」是冲突的——热榜那三家本身一条图都没有。
+# 解决办法就是下面的 _fill_missing_images：去文章页把图补回来，补不到的才丢。
+
+# 列表页只给缩略图、必须去正文页取大图的源（mefcl 的列表图固定 220x150，必糊）
+BIG_IMAGE_CHANNELS = {"cn-mefcl"}
+# 低质图豁免：这些源的题图**站方本身就小**，去正文页也换不出更大的，
+# 只能开豁免，否则整个栏目会消失。目前只有 mefcl（站方图固定 220x150）。
+# 注意：豁免只免「短边门槛」，**仍必须有图**（没图的照样剔除）。
+MIN_IMG_EXEMPT_CHANNELS = {"cn-mefcl"}
+
+
+def _day_start_cutoff():
+    """今天 00:00（东八区）的时间戳。"""
+    now = datetime.now(CST)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _select_fresh(items, region):
+    """按栏目收口时效，**一律按时间倒序**（最新鲜的永远在最上面）。
+
+    用户的几条要求互相冲突，这是权衡后的方案（每条都在代码里标了出处）：
+      · 「常看常新、绝不看旧新闻」→ **新闻类（要闻/热榜）严格当天**；
+        热榜给 24 小时（否则澎湃这类更新慢的榜单会整个消失）
+      · 「每个栏目必须有三个以上的网站，要不然太单一」+「软件栏目去哪里了」
+        → **垂类（科技/软件/娱乐）按 CLS_MAX_AGE_HOURS 放几天**。
+        实测：只在当天里筛，小众软件/少数派/开源中国/果核剥壳今天全都没发东西，
+        「软件」只剩 mefcl 一家 —— 正是用户两次反馈的现象。
+      · 每条都带**真实发布时间**（红星那种解析不出就伪造「刚刚」的逻辑已彻底删除），
+        界面工具栏会显示「最新 <时间>」，不会拿旧闻冒充新新闻。
+    """
+    if not SAME_DAY or not items:
+        return items
+    today = _day_start_cutoff()
+    now = datetime.now(CST).timestamp()
+
+    def cutoff(it):
+        cls = it.get("cls") or ""
+        h = CLS_MAX_AGE_HOURS.get(cls)
+        if h:
+            return now - h * 3600
+        if region == "intl":
+            # 国际源条目稀疏（实测跨度可达两天），按「今天 00:00」会把它们全滤空
+            return now - MAX_AGE_HOURS.get("intl", 48) * 3600
+        return today
+
+    kept = [it for it in items if (it.get("published") or 0) >= cutoff(it)]
+    dropped = len(items) - len(kept)
+    kept.sort(key=lambda x: x.get("published") or 0, reverse=True)
+    # 各栏目的条数与来源数，方便一眼看出哪个栏目被饿死了
+    _stat = {}
+    for it in kept:
+        c = it.get("cls") or "?"
+        _stat.setdefault(c, [0, set()])
+        _stat[c][0] += 1
+        _stat[c][1].add(it.get("label") or it.get("channel"))
+    _txt = " ".join(f"{c}{n}条/{len(s)}家" for c, (n, s) in sorted(_stat.items()))
+    print(f"[ok] {region}: 时效收口 {len(kept)} 条（丢掉 {dropped} 条）| {_txt}")
+    return kept
+
+
+_OG_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\']og:image(?::url)?["\'][^>]*content=["\']([^"\']+)', re.I)
+_OG_RE_B = re.compile(
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name)=["\']og:image', re.I)
+_BODY_IMG_RE = re.compile(
+    r'<img[^>]+(?:data-src|data-original|src)=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)', re.I)
+_IMG_JUNK = ("logo", "icon", "avatar", "qrcode", "erweima", "blank", "/ad", "sprite", "share")
+
+
+# 文章页里的发布时间，按可信度从高到低。
+# 红星新闻的首页尾巴**实测不可信**（首页写 10-06 23:23，文章自己写 2026-10-05 11:24），
+# 所以以文章页自己的元数据为准。
+_ART_TIME_PATS = (
+    re.compile(r'"datePublished"\s*:\s*"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})', re.I),
+    re.compile(r'property=["\']article:published_time["\'][^>]*content=["\']'
+               r'(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})', re.I),
+    re.compile(r'content=["\'](\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})["\'][^>]*'
+               r'property=["\']article:published_time', re.I),
+    re.compile(r'name=["\'](?:publishdate|pubdate|weibo:article:create_at|'
+               r'og:release_date)["\'][^>]*content=["\'](\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})', re.I),
+    re.compile(r'class=["\'][^"\']*(?:time|date)[^"\']*["\'][^>]*>\s*'
+               r'(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})', re.I),
+    re.compile(r'(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2})[:：](\d{2})'),
+    re.compile(r'(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})'),
+)
+
+
+def _parse_article_time(txt):
+    """从文章页 HTML 抽真实发布时间，抽不到返回 0。
+
+    带合理性检查：只接受 2015 年之后、且不超过明天的时间，
+    避免页面里其它地方的年份串（版权年、评论时间）被误命中。
+    """
+    for rx in _ART_TIME_PATS:
+        m = rx.search(txt)
+        if not m:
+            continue
+        try:
+            y, mo, d, h, mi = (int(x) for x in m.groups()[:5])
+            ts = int(datetime(y, mo, d, h, mi, tzinfo=CST).timestamp())
+        except Exception:
+            continue
+        if 1420070400 < ts < time.time() + 2 * 86400:
+            return ts
+    return 0
+
+
+def _article_meta(url):
+    """抓一次文章页，同时取回「题图」和「真实发布时间」。
+
+    【为什么合并】补图和校准时间都需要文章页，分两次抓纯属浪费。
+    返回 (image, published)；都取不到就是 ("", 0)。
+
+    加速要点（2026-10-07）：
+      1) 只要 <head> 里的 og:image 和时间元数据，所以**只读前 ART_PAGE_BYTES 字节**
+      2) 结果放进 _ART_CACHE 永久记住（文章元数据不会变）
+    """
+    if not url or not url.startswith("http"):
+        return "", 0
+    cached = _ART_CACHE.get(url)
+    if cached is not None:
+        return cached
+    # mefcl 的文章页和首页一样有 ge_js_validator JS 挑战，**必须带上同一个 cookie**，
+    # 否则抓回来的是挑战页（几百字节），og:image 取不到 → mefcl 只能留在列表页那张
+    # 220x150 缩略图上 → 被高清门槛剔除 → 整个「软件」栏目消失（用户实际反馈）。
+    _eh = None
+    if "mefcl.com" in url:
+        _cv = _MEFCL_COOKIE.get("value")
+        if _cv:
+            _eh = {"Cookie": "ge_js_validator_63=" + _cv}
+    try:
+        raw = _fetch(url, timeout=8, max_bytes=ART_PAGE_BYTES, extra_headers=_eh)
+    except Exception:
+        return "", 0
+    if not raw:
+        return "", 0
+    data = raw[0] if isinstance(raw, tuple) else raw
+    if not data:
+        return "", 0
+    try:
+        txt = data.decode("utf-8", "ignore")
+    except Exception:
+        return "", 0
+    img = ""
+    for rx in (_OG_RE, _OG_RE_B):
+        m = rx.search(txt)
+        if m:
+            u = _norm_url(m.group(1), url)
+            if not any(x in u.lower() for x in _IMG_JUNK):
+                img = u
+                break
+    if not img:
+        m = _BODY_IMG_RE.search(txt)
+        if m:
+            u = _norm_url(m.group(1), url)
+            if not any(x in u.lower() for x in _IMG_JUNK):
+                img = u
+    ts = _parse_article_time(txt)
+    if img or ts:
+        _ART_CACHE[url] = (img, ts)     # 只缓存有结果；失败不缓存，下次还有机会重试
+    return img, ts
+
+
+def _article_image(url):
+    """只要题图（保留旧接口，内部走 _article_meta）。"""
+    return _article_meta(url)[0]
+
+
+def _fill_missing_images(items, region, max_fetch=24, workers=14):
+    """给缺图的条目去文章页补一张图。补不到的由调用方丢弃。
+
+    热榜（澎湃/红星/凤凰）是纯文字榜，mefcl 列表页只给 220x150 缩略图，
+    这两类都必须靠这一步续命，否则按「没图不要」的新规矩会整块消失。
+    """
+    if not items:
+        return items
+
+    def needs(it):
+        return it.get("channel") in BIG_IMAGE_CHANNELS or not it.get("image")
+
+    need = [it for it in items if needs(it)][:max_fetch]
+    if not need:
+        return items
+    print(f"[ok] {region}: {len(need)} 条需要补图，去文章页取")
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        got = list(ex.map(lambda it: _article_meta(it.get("link") or ""), need))
+    filled = fixed_time = 0
+    for it, (img, ts) in zip(need, got):
+        if img and img != it.get("image"):
+            it["image"] = img
+            filled += 1
+        # 【时间校准 2026-10-07】文章页自己的发布时间才是权威的：
+        #   · 没有时间（红星首页那批没有尾巴的锚）→ 补上
+        #   · 热榜条目 → 一律以文章页为准（实测红星首页尾巴会把 10-05 写成 10-06，
+        #     不覆盖的话旧闻还是会漏进「只留当天」的列表）
+        if ts:
+            old = it.get("published") or 0
+            if not old or it.get("cls") == "热榜":
+                if old != ts:
+                    it["published"] = ts
+                    fixed_time += 1
+    print(f"[ok] {region}: 补图 {filled}/{len(need)} 条，校准发布时间 {fixed_time} 条")
+    return items
+
+
 def _collect(region):
     """并发抓取一个 Region 的全部源，去重后按时间倒序。
     国内源在此剔除无图新闻（快，不下载图）；低质图由后台 _enrich_quality_bg 异步剔除，
     避免首屏因下载测尺寸而变慢。"""
     if region == "hot":
-        return _parse_hot()
+        raw_hot = _parse_hot()
+        # 【加速 2026-10-07】先按时间筛掉旧闻，再去补图 —— 补图要去抓文章页，
+        # 是整段里最贵的一步；给马上要被丢掉的旧条目抓图纯属浪费。
+        # published==0 的保留（时间未知，需要去文章页读真实发布时间）。
+        _cut = datetime.now(CST).timestamp() - CLS_MAX_AGE_HOURS.get("热榜", 24) * 3600
+        fresh_hot = [it for it in raw_hot
+                     if not it.get("published") or it["published"] >= _cut]
+        hot_items = _fill_missing_images(fresh_hot, "hot", max_fetch=40)
+        keep = [it for it in hot_items if it.get("image")]
+        print(f"[ok] hot: 先按时间筛 {len(fresh_hot)}/{len(raw_hot)} 条，"
+              f"补图后带图 {len(keep)}/{len(hot_items)} 条")
+        PRELOAD_ALL["hot"] = list(keep)
+        return _select_fresh(keep, "hot")
     out = []
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with ThreadPoolExecutor(max_workers=16) as ex:
         for r in ex.map(_parse_one, SOURCES[region]):
             out.extend(r)
     seen, items = set(), []
@@ -1777,42 +1718,85 @@ def _collect(region):
     items = _drop_shared_images(items)
     if region == "cn":
         before = len(items)
-        # 集合类源（GitHub awesome 软件合集）无题图，豁免无图过滤，走前端渐变块样式；
-        # 其余无图新闻（如界面 RSS 实测 0 图）一律剔除 —— 用户要求「不显示图片的新闻别上」。
-        cn_only = [it for it in items if it.get("image") or it.get("channel") in NOIMG_SOURCES]
-        print(f"[ok] {region}: 剔除无图 {before - len(cn_only)} 条，剩 {len(cn_only)} 条（低质图后台异步剔除）")
-        # 实时热榜（澎湃/红星/凤凰）不再并入国内板块：它是独立「热榜」标签页，
-        # 并入会导致同一家新闻在「要闻」与顶部热榜里重复出现（用户要求两栏不重复）。
+        # 用户要求「没图的就不要上」：豁免源已取消，无图一律剔除
+        cn_only = []
+        # 【2026-10-07】先给「RSS 本身不带图」的条目去文章页补图，补不到才剔除。
+        # 为什么必须做：少数派(4条)、开源中国的 RSS **完全没有图**，直接按「没图不要」
+        # 剔除会让「软件」栏目只剩 mefcl 一家 —— 正是用户反馈的
+        # 「软件栏目怎么只有一个网站的」。它们的文章页其实都有 og:image，抓得到。
+        _noimg = [it for it in items if not it.get("image")]
+        if _noimg:
+            _fill_missing_images(_noimg, "cn-noimg", max_fetch=40)
+        before = len(items)
+        cn_only = [it for it in items if it.get("image")]
+        print(f"[ok] {region}: 补图后仍无图 {before - len(cn_only)} 条已剔除，剩 {len(cn_only)} 条（低质图后台异步剔除）")
+        # 【2026-10-07 修 死代码】BIG_IMAGE_CHANNELS 本意是让 mefcl 去文章页换大图，
+        # 但 _fill_missing_images 一直只对热榜调用过，**国内源从来没调** →
+        # mefcl 永远停在列表页那张 220x150 缩略图上 → 被高清门槛剔除 →
+        # 整个「软件」栏目消失（用户反馈「软件栏目去哪里了，我重点关注的网站去哪里了」）。
+        _big = [it for it in cn_only if it.get("channel") in BIG_IMAGE_CHANNELS]
+        if _big:
+            _fill_missing_images(_big, "cn-big", max_fetch=24)
+        # 合并实时热榜（澎湃/红星/凤凰）：文本榜无图，必须在无图过滤之后并入，否则被剔掉。
+        # 热榜整体置顶，各平台条目已混合排序。
+        try:
+            hot = PRELOAD.get("hot") or _collect("hot")
+            hot = [h for h in hot if h.get("image")]   # 没图的不并入，否则违反「没图不要」
+            seen_t = {it["title"] for it in cn_only}
+            hot = [h for h in hot if h["title"] not in seen_t]
+            if hot:
+                print(f"[ok] {region}: 合并实时热点 {len(hot)} 条")
+            # 去「割裂」：把 红星/凤凰 的实时热点也并入「要闻」栏目（与热榜共享同一批内容），
+            # 否则要闻只有界面+澎湃两家，红星/凤凰被锁死在热榜、永不进要闻。
+            # 各取前 10 条（按热榜百分位排名），避免淹没要闻里界面/澎湃的常驻源。
+            for lbl in ("红星新闻", "凤凰网"):
+                cnt = 0
+                for h in hot:
+                    if h.get("label") == lbl:
+                        d = dict(h)
+                        d["cls"] = "要闻"
+                        cn_only.append(d)
+                        cnt += 1
+                        if cnt >= 10:
+                            break
+        except Exception as ex:
+            hot = []
+            print(f"[warn] 合并实时热点失败: {type(ex).__name__}")
+        # 注意：hot 不能再按 rank 重排——_parse_hot 里已按「平台内归一化 score」做过跨平台混合排序，
+        # 直接沿用它的顺序即可（rank 是平台内名次，跨平台无可比性）。
         cn_only.sort(key=lambda x: x["published"], reverse=True)
-        return cn_only
+        _merged_all = list(hot) + cn_only
+        PRELOAD_ALL[region] = _merged_all
+        return _select_fresh(_merged_all, region)
     items.sort(key=lambda x: x["published"], reverse=True)
 
-    # 国际实时热榜（Hacker News）置顶，其后国际 RSS 卡片按时间倒序
+    # 国际实时热榜置顶，其后国际 RSS 卡片按时间倒序
     try:
         hot = _parse_hot_intl()
+        # 【加速 2026-10-07】同样先按时间筛掉旧闻再补图（理由见上面 hot 分支）。
+        _icut = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get("intl", 48) * 3600
+        hot = [h for h in hot if not h.get("published") or h["published"] >= _icut]
+        # 2026-10-07：国际热榜同样是纯文字榜（中新社国际 / Hacker News），
+        # 按「每条新闻必须有高清大图」的规矩，必须先补图，补不到的丢掉。
+        hot = _fill_missing_images(hot, f"{region}-hot", max_fetch=40)
+        hot = [h for h in hot if h.get("image")]
         seen_t = {it["title"] for it in items}
         hot = [h for h in hot if h["title"] not in seen_t]
         if hot:
-            print(f"[ok] {region}: 合并国际热榜 {len(hot)} 条")
+            print(f"[ok] {region}: 合并国际热榜 {len(hot)} 条（均已带图）")
     except Exception as ex:
         hot = []
         print(f"[warn] 合并国际热榜失败: {type(ex).__name__}")
 
     if region == "intl":
-        # 国际源全英文 → 英译中显示；英文原文保留在 title_en/desc_en（悬停可见）。
-        # 翻译结果磁盘缓存，命中缓存时不发网络请求；失败则保留英文，绝不因翻译丢内容。
-        #
-        # 【重要】这里**不做耗时翻译**。翻译接口慢且常被限流（实测一次 45 段要 90s+，
-        # 而 RSS 本身只要 11s），放在抓取里会把「国际」板块整体拖死。改为：
-        # 本函数只负责出条目（先给英文），由 _warmup 在后台调用 _translate_intl_bg 补译文，
-        # item 是同一批对象引用，译文补上后 PRELOAD 里的内容自然就变成中文了。
-        #
-        # 与国内保持一致：卡片无题图的一律剔除（低质图由 _enrich_quality_bg 异步再裁），
-        # 保证「国内 / 国际」图片显示规则相同。
+        # 国际 RSS（France24 等）均带题图，与国内保持一致：先剔除无图条目，
+        # 再合并（无图的）国际热榜（Hacker News），保证国际栏目的图片展示
+        # 与国内栏目体验一致（用户要求国内/国际一致）。翻译在后台补，见 _warmup。
         before = len(items)
-        items = [it for it in items if it.get("image") or it.get("channel") in NOIMG_SOURCES]
+        items = [it for it in items if it.get("image")]
         print(f"[ok] {region}: 剔除无图 {before - len(items)} 条，剩 {len(items)} 条（低质图后台异步剔除）")
-    return hot + items
+    PRELOAD_ALL[region] = hot + items
+    return _select_fresh(hot + items, region)
 
 
 def _enrich_quality_bg(region):
@@ -1820,12 +1804,16 @@ def _enrich_quality_bg(region):
     items = PRELOAD.get(region) or []
     if not items:
         return
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        # mefcl 的题图是 220x150 缩略图（站方 excerpt 仅此尺寸），若按全局 200px
-        # 短边门槛会被全砍 → 整个板块消失。mefcl 只有这种图，针对该源豁免尺寸过滤。
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        # 【2026-10-07 定论】mefcl 的题图**站方自己就是 220x150** ——
+        # 实测列表页的 <img data-src> 和文章页 og:image 是同一个文件（220x150），
+        # 去正文页换大图也换不出更大的。所以它**永远达不到 300 的高清线**。
+        # 要么给这个站开豁免（图偏小但能用），要么整个「软件」栏目消失。
+        # 用户明确说「我重点关注的网站」就是 mefcl，所以选择开豁免（仍必须有图）。
+        # 其余源一个都不放过，照旧按 MIN_IMG_SHORT_SIDE 剔除。
         keep = list(ex.map(
-            lambda it: True if it.get("channel") == "cn-mefcl"
-            else (_img_ok(it["image"]) if it.get("image") else True),
+            lambda it: (_img_ok(it["image"]) if it.get("image") else False)
+            or (it.get("channel") in MIN_IMG_EXEMPT_CHANNELS and bool(it.get("image"))),
             items))
     pruned = [it for it, k in zip(items, keep) if k]
     dropped = len(items) - len(pruned)
@@ -1834,10 +1822,814 @@ def _enrich_quality_bg(region):
     PRELOAD[region] = pruned
 
 
+# ===================== Windows 右下角气泡通知（纯 ctypes，无第三方依赖） =====================
+# 非 Windows / 创建失败均静默降级，不影响主程序。点击气泡打开 APP_URL。
+class _Tray:
+    def __init__(self):
+        self.ok = False
+        self.hwnd = None
+        self.nid = None
+        self.shell32 = None
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            self.ctypes = ctypes
+            self.wintypes = wintypes
+            self.WM_TRAY = 0x8000 + 100
+            self.NIM_ADD, self.NIM_MODIFY, self.NIM_DELETE = 0x0, 0x1, 0x2
+            self.NIF_MESSAGE, self.NIF_ICON, self.NIF_INFO, self.NIF_TIP = 0x1, 0x2, 0x10, 0x4
+            self.NIN_BALLOONUSERCLICK = 0x405
+
+            # 【2026-10-07 修致命 bug】原来这里用了三个 ctypes.wintypes 里根本不存在的名字：
+            #     wintypes.wchar    → 不存在（正确是 WCHAR）
+            #     wintypes.LRESULT  → 不存在（正确是 c_ssize_t）
+            #     wintypes.WNDCLASS → 不存在（得自己定义 WNDCLASSW）
+            # 任一个都会让 __init__ 抛 AttributeError，self.ok 永远 False，
+            # 而失败是「静默降级」，日志里只留一行异常类型名 —— 所以这个程序的
+            # 右下角托盘和气泡「从来就没工作过」，用户一直以为是自己没设置对。
+            WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND,
+                                         wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+            self.WNDPROC = WNDPROC
+
+            class WNDCLASSW(ctypes.Structure):
+                _fields_ = [
+                    ("style", wintypes.UINT),
+                    ("lpfnWndProc", WNDPROC),
+                    ("cbClsExtra", ctypes.c_int),
+                    ("cbWndExtra", ctypes.c_int),
+                    ("hInstance", wintypes.HINSTANCE),
+                    ("hIcon", wintypes.HICON),
+                    ("hCursor", wintypes.HANDLE),
+                    ("hbrBackground", wintypes.HBRUSH),
+                    ("lpszMenuName", wintypes.LPCWSTR),
+                    ("lpszClassName", wintypes.LPCWSTR),
+                ]
+
+            self.WNDCLASSW = WNDCLASSW
+
+            class NOTIFYICONDATA(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("hWnd", wintypes.HWND),
+                    ("uID", wintypes.UINT),
+                    ("uFlags", wintypes.UINT),
+                    ("uCallbackMessage", wintypes.UINT),
+                    ("hIcon", wintypes.HANDLE),
+                    ("szTip", wintypes.WCHAR * 128),
+                    ("dwState", wintypes.DWORD),
+                    ("dwStateMask", wintypes.DWORD),
+                    ("szInfo", wintypes.WCHAR * 256),
+                    ("uVersion", wintypes.UINT),
+                    ("szInfoTitle", wintypes.WCHAR * 64),
+                    ("dwInfoFlags", wintypes.DWORD),
+                    ("guidItem", ctypes.c_byte * 16),
+                    ("hBalloonIcon", wintypes.HANDLE),
+                ]
+            self.NOTIFYICONDATA = NOTIFYICONDATA
+            self.user32 = ctypes.windll.user32
+            self.shell32 = ctypes.windll.shell32
+            self.kernel32 = ctypes.windll.kernel32
+
+            # 【2026-10-07 修】ctypes 对没声明原型的函数一律按 32 位 int 传参，
+            # 而 LPARAM/WPARAM 和句柄在 x64 上都是 64 位 —— 后果有两个：
+            #   1) 窗口消息里稍大的 lp 会报 "int too long to convert"，窗口过程直接失效
+            #   2) 返回句柄的函数会被截断成 32 位，句柄可能失真
+            # 所以下面这些必须显式声明 argtypes / restype。
+            u, s, k = self.user32, self.shell32, self.kernel32
+            u.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                         wintypes.WPARAM, wintypes.LPARAM]
+            u.DefWindowProcW.restype = ctypes.c_ssize_t
+            u.CreateWindowExW.argtypes = [
+                wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+            u.CreateWindowExW.restype = wintypes.HWND
+            u.RegisterClassW.argtypes = [wintypes.LPVOID]
+            u.RegisterClassW.restype = wintypes.ATOM
+            u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                     ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            u.LoadImageW.restype = wintypes.HANDLE
+            u.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPVOID]
+            u.LoadIconW.restype = wintypes.HICON
+            s.Shell_NotifyIconW.argtypes = [wintypes.DWORD, wintypes.LPVOID]
+            s.Shell_NotifyIconW.restype = wintypes.BOOL
+            k.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+            k.GetModuleHandleW.restype = wintypes.HMODULE
+            self.ok = True
+        except Exception as ex:
+            # 同上：打完整原因，别再让托盘静默失效
+            import traceback
+            print(f"[warn] 托盘初始化失败（通知降级）: {type(ex).__name__}: {ex}")
+            traceback.print_exc()
+
+    def _wndproc(self, hwnd, msg, wp, lp):
+        user32 = self.user32
+        if msg == self.WM_TRAY:
+            # lp 低字为通知码；用户点击气泡 → 打开应用（APP_URL 由 app.py 写入真实端口）
+            if (lp & 0xFFFF) == self.NIN_BALLOONUSERCLICK:
+                try:
+                    webbrowser.open(APP_URL)
+                except Exception:
+                    pass
+        if msg == 0x2:  # WM_DESTROY
+            user32.PostQuitMessage(0)
+        return user32.DefWindowProcW(hwnd, msg, wp, lp)
+
+    def _load_icon(self):
+        """取一个能显示的通知区图标。
+
+        2026-10-07 新增：原来 uFlags 里根本没有 NIF_ICON、hIcon 也是空的，
+        按 Win32 规范这种通知区图标是空白的（用户反馈看不到右下角图标）。
+        顺序：同目录 hotnews.ico → 从 exe 自身资源里取（打包态） → 系统默认图标兜底。
+        """
+        user32 = self.user32
+        IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+        try:
+            p = _res("hotnews.ico")
+            if os.path.exists(p):
+                h = user32.LoadImageW(None, p, IMAGE_ICON, 0, 0,
+                                      LR_LOADFROMFILE | LR_DEFAULTSIZE)
+                if h:
+                    return h
+        except Exception:
+            pass
+        try:
+            # 打包成 exe 后，图标就在 exe 自己的资源里，资源 ID 通常是 1。
+            # GetModuleHandleW 属于 kernel32（不是 user32）。
+            hinst = self.ctypes.windll.kernel32.GetModuleHandleW(None)
+            h = user32.LoadIconW(hinst, 1)
+            if h:
+                return h
+        except Exception:
+            pass
+        try:
+            return user32.LoadIconW(None, 32512)      # IDI_APPLICATION
+        except Exception:
+            return None
+
+    def start(self):
+        if not self.ok:
+            return
+        threading.Thread(target=self._thread, daemon=True).start()
+
+    def _thread(self):
+        try:
+            ctypes = self.ctypes
+            wintypes = self.wintypes
+            user32 = self.user32
+            WNDPROC = self.WNDPROC
+            # 必须把回调对象挂在 self 上：只塞进结构体的话会被 GC 回收，
+            # 之后窗口过程变成野指针，进程直接崩。
+            self._wndproc_ref = WNDPROC(self._wndproc)
+            wc = self.WNDCLASSW()
+            # 注意：GetModuleHandleW 在 kernel32 里，不在 user32 ——
+            # 写成 user32.GetModuleHandleW 会抛 AttributeError: function not found
+            wc.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
+            wc.lpszClassName = "HotNewsTrayWnd"
+            wc.lpfnWndProc = self._wndproc_ref
+            user32.RegisterClassW(ctypes.byref(wc))
+            hwnd = user32.CreateWindowExW(0, "HotNewsTrayWnd", "hotnews_tray", 0,
+                                          0, 0, 0, 0, None, None, wc.hInstance, None)
+            self.hwnd = hwnd
+            nid = self.NOTIFYICONDATA()
+            nid.cbSize = ctypes.sizeof(self.NOTIFYICONDATA)
+            nid.hWnd = hwnd
+            nid.uID = 1
+            # 2026-10-07 修复：原来只设 NIF_MESSAGE|NIF_TIP，没设 NIF_ICON、hIcon 也没赋值，
+            # 通知区图标是空白的。现在补上图标。
+            nid.uFlags = self.NIF_MESSAGE | self.NIF_TIP | self.NIF_ICON
+            nid.uCallbackMessage = self.WM_TRAY
+            nid.szTip = "热点新闻"
+            nid.hIcon = self._load_icon()
+            self.nid = nid
+            self.shell32.Shell_NotifyIconW(self.NIM_ADD, ctypes.byref(nid))
+            print("[ok] 托盘就绪（图标已设，点击气泡可打开应用）")
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        except Exception as ex:
+            # 原来只打异常类型名（如 "AttributeError"），把真正原因吞掉了 ——
+            # 托盘因此静默失效很久都没人发现。现在打完整堆栈。
+            import traceback
+            print(f"[warn] 托盘线程异常（通知降级）: {type(ex).__name__}: {ex}")
+            traceback.print_exc()
+            self.ok = False
+
+
+TRAY = _Tray()
+
+
+# ================= 右下角自绘气泡（2026-10-07 新增，替代系统气泡） =================
+# 【为什么必须自己画】
+#   本机实测：Windows 11 (build 26300) 且 ToastEnabled=0（系统通知总开关关闭）。
+#   老式 Shell_NotifyIcon 气泡在 Win11 上支持不可靠，加上通知关闭，会被系统静默丢弃 ——
+#   表现就是"代码返回成功，但用户什么都看不见"（用户实际反馈就是这个）。
+#   所以这里自绘一个置顶小窗：不经过通知中心，关掉通知也一定看得见。
+#   点击气泡 → 打开应用；9 秒后自动消失；多条通知排队依次显示。
+BALLOON_W, BALLOON_H = 400, 118
+BALLOON_PER_ITEM_MS = 5200   # 每条新闻停留多久（毫秒）
+BALLOON_PLAY_COUNT = 3       # 一条气泡里滚动播放几条（用户定 3 条；再多就嫌长）
+
+
+class _Balloon:
+    def __init__(self):
+        self.ok = False
+        self.q = []                 # 队列里每一项是「一组要滚动播放的条目」[(title,msg,warn), ...]
+        self.lock = threading.Lock()
+        self.hwnd = None
+        self.cur = ("", "", False)
+        self.showing = False
+        self.playlist = []          # 当前正在播放的那一组
+        self.idx = 0                # 播到第几条
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            self.ctypes, self.wintypes = ctypes, wintypes
+            u, g, k = (ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.kernel32)
+            self.u, self.g, self.k = u, g, k
+
+            # 【2026-10-07 修「毛刺感」】显示器是 125% 缩放，但进程没声明 DPI 感知时，
+            # Windows 会把窗口按 100% 画好再整块放大 —— 文字因此发虚、边缘起毛刺。
+            # 声明 DPI 感知后按物理像素绘制，再把尺寸/字号按缩放比放大，字就实了。
+            try:
+                u.SetProcessDPIAware()
+            except Exception:
+                pass
+            try:
+                u.GetDC.argtypes = [wintypes.HWND]
+                u.GetDC.restype = wintypes.HDC
+                u.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+                g.GetDeviceCaps.argtypes = [wintypes.HDC, ctypes.c_int]
+                g.GetDeviceCaps.restype = ctypes.c_int
+                _hdc = u.GetDC(None)
+                _dpi = g.GetDeviceCaps(_hdc, 88)      # LOGPIXELSX
+                u.ReleaseDC(None, _hdc)
+                self.scale = max(1.0, min(3.0, (_dpi or 96) / 96.0))
+            except Exception:
+                self.scale = 1.0
+            s = self.scale
+            self.W = int(BALLOON_W * s)
+            self.H = int(BALLOON_H * s)
+            self.pad = int(16 * s)
+            print(f"[ok] 气泡缩放比 = {s:.2f}（{int(s * 100)}%），尺寸 {self.W}x{self.H}")
+
+            WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
+                                         wintypes.WPARAM, wintypes.LPARAM)
+            self.WNDPROC = WNDPROC
+
+            class WNDCLASSW(ctypes.Structure):
+                _fields_ = [("style", wintypes.UINT), ("lpfnWndProc", WNDPROC),
+                            ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+                            ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON),
+                            ("hCursor", wintypes.HANDLE), ("hbrBackground", wintypes.HBRUSH),
+                            ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR)]
+
+            class RECT(ctypes.Structure):
+                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+            class PAINTSTRUCT(ctypes.Structure):
+                _fields_ = [("hdc", wintypes.HDC), ("fErase", wintypes.BOOL),
+                            ("rcPaint", RECT), ("fRestore", wintypes.BOOL),
+                            ("fIncUpdate", wintypes.BOOL),
+                            ("rgbReserved", ctypes.c_byte * 32)]
+
+            self.WNDCLASSW, self.RECT, self.PAINTSTRUCT = WNDCLASSW, RECT, PAINTSTRUCT
+
+            # --- 原型：x64 下句柄/LPARAM 是 64 位，不声明会被截断或报 too long to convert ---
+            u.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                         wintypes.WPARAM, wintypes.LPARAM]
+            u.DefWindowProcW.restype = ctypes.c_ssize_t
+            u.CreateWindowExW.argtypes = [
+                wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+            u.CreateWindowExW.restype = wintypes.HWND
+            u.RegisterClassW.argtypes = [wintypes.LPVOID]
+            u.RegisterClassW.restype = wintypes.ATOM
+            u.BeginPaint.argtypes = [wintypes.HWND, wintypes.LPVOID]
+            u.BeginPaint.restype = wintypes.HDC
+            u.EndPaint.argtypes = [wintypes.HWND, wintypes.LPVOID]
+            u.GetClientRect.argtypes = [wintypes.HWND, wintypes.LPVOID]
+            u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            u.SetTimer.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.LPVOID]
+            u.SetTimer.restype = wintypes.UINT
+            u.KillTimer.argtypes = [wintypes.HWND, wintypes.UINT]
+            u.DestroyWindow.argtypes = [wintypes.HWND]
+            u.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            u.InvalidateRect.argtypes = [wintypes.HWND, wintypes.LPVOID, wintypes.BOOL]
+            u.DrawTextW.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int,
+                                    wintypes.LPVOID, wintypes.UINT]
+            u.DrawTextW.restype = ctypes.c_int
+            u.FillRect.argtypes = [wintypes.HDC, wintypes.LPVOID, wintypes.HBRUSH]
+            u.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT,
+                                                wintypes.LPVOID, wintypes.UINT]
+            u.LoadImageW.restype = wintypes.HANDLE
+            u.LoadIconW.restype = wintypes.HICON
+            g.CreateSolidBrush.argtypes = [wintypes.COLORREF]
+            g.CreateSolidBrush.restype = wintypes.HBRUSH
+            g.CreateFontW.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                      ctypes.c_int, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.LPCWSTR]
+            g.CreateFontW.restype = wintypes.HANDLE
+            g.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+            g.SelectObject.restype = wintypes.HANDLE
+            g.DeleteObject.argtypes = [wintypes.HANDLE]
+            g.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
+            g.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
+            k.GetModuleHandleW.restype = wintypes.HMODULE
+            # 浅色卡片要用的 GDI 函数（圆角、描边、画小图标）
+            g.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, wintypes.COLORREF]
+            g.CreatePen.restype = wintypes.HANDLE
+            g.RoundRect.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            g.CreateRoundRectRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                             ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            g.CreateRoundRectRgn.restype = wintypes.HANDLE
+            u.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
+            u.DrawIconEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.HICON,
+                                     ctypes.c_int, ctypes.c_int, wintypes.UINT,
+                                     wintypes.HBRUSH, wintypes.UINT]
+            # 注意：GetStockObject 属于 gdi32（不是 user32），写错会 AttributeError
+            g.GetStockObject.argtypes = [ctypes.c_int]
+            g.GetStockObject.restype = wintypes.HANDLE
+            self.ok = True
+        except Exception as ex:
+            import traceback
+            print(f"[warn] 自绘气泡初始化失败: {type(ex).__name__}: {ex}")
+            traceback.print_exc()
+
+    def _icon(self):
+        u = self.u
+        for cand in (_res("hotnews.ico"), None):
+            try:
+                if cand and os.path.exists(cand):
+                    h = u.LoadImageW(None, cand, 1, 0, 0, 0x10 | 0x40)
+                    if h:
+                        return h
+            except Exception:
+                pass
+        try:
+            return u.LoadIconW(self.k.GetModuleHandleW(None), 1)
+        except Exception:
+            return None
+
+    def _wndproc(self, hwnd, msg, wp, lp):
+        ctypes, wintypes = self.ctypes, self.wintypes
+        u, g = self.u, self.g
+        try:
+            if msg == 0x000F:                      # WM_PAINT
+                ps = self.PAINTSTRUCT()
+                hdc = u.BeginPaint(hwnd, ctypes.byref(ps))
+                rc = self.RECT()
+                u.GetClientRect(hwnd, ctypes.byref(rc))
+                title, text, warn = self.cur
+                s = self.scale
+                # 卡片底色：明快浅色（跟程序网页风格一致，不用黑底）。
+                # 大事样式用暖白底 + 橙条区分，一眼能看出"这条不一样"。
+                u.FillRect(hdc, ctypes.byref(rc), self.br_bg_warn if warn else self.br_bg)
+                # 左侧彩色强调条
+                bar = self.RECT(0, 0, int(5 * s), rc.bottom)
+                u.FillRect(hdc, ctypes.byref(bar), self.br_warn if warn else self.br_info)
+                # 1px 浅灰圆角描边，让卡片在浅色桌面上有边界感
+                op = g.SelectObject(hdc, self.pen_border)
+                ob = g.SelectObject(hdc, self.null_brush)
+                g.RoundRect(hdc, 0, 0, rc.right, rc.bottom, int(16 * s), int(16 * s))
+                g.SelectObject(hdc, op)
+                g.SelectObject(hdc, ob)
+                g.SetBkMode(hdc, 1)                # TRANSPARENT
+                # 左上角小图标（有就用，没有就把标题左移）
+                x0 = int(20 * s)
+                if self.hicon16:
+                    _ic = int(18 * s)
+                    u.DrawIconEx(hdc, int(19 * s), int(17 * s), self.hicon16, _ic, _ic, 0, None, 3)
+                    x0 = int(46 * s)
+                right = rc.right - int(16 * s)
+                # 标题（深色、加粗）
+                g.SelectObject(hdc, self.font_title)
+                g.SetTextColor(hdc, 0x2C201A)      # #1A202C
+                t = self.RECT(x0, int(13 * s), right, int(41 * s))
+                u.DrawTextW(hdc, title, -1, ctypes.byref(t),
+                            0x20 | 0x4 | 0x8000 | 0x800)     # SINGLELINE|VCENTER|ELLIPSIS|NOPREFIX
+                # 正文（中灰、加粗）
+                g.SelectObject(hdc, self.font_msg)
+                g.SetTextColor(hdc, 0x68554A)      # #4A5568
+                m = self.RECT(x0, int(47 * s), right, rc.bottom - int(10 * s))
+                u.DrawTextW(hdc, text, -1, ctypes.byref(m),
+                            0x10 | 0x800)                    # WORDBREAK|NOPREFIX
+                u.EndPaint(hwnd, ctypes.byref(ps))
+                return 0
+            if msg == 0x0113:                      # WM_TIMER
+                if wp == 1:                        # 轮询队列：取下一组来播
+                    pl = None
+                    with self.lock:
+                        if self.q and not self.showing:
+                            pl = self.q.pop(0)
+                    if pl:
+                        self.playlist = pl
+                        self.idx = 0
+                        self._apply_current()
+                        self._place()
+                        u.ShowWindow(hwnd, 4)       # SW_SHOWNOACTIVATE
+                        u.SetWindowPos(hwnd, -1, self.x, self.y, self.W, self.H,
+                                       0x0010 | 0x0040)          # NOACTIVATE|SHOWWINDOW
+                        u.InvalidateRect(hwnd, None, True)
+                        self.showing = True
+                        # 整组停留时间 = 每条停留 × 条数
+                        u.SetTimer(hwnd, 2, BALLOON_PER_ITEM_MS * len(pl), None)
+                        if len(pl) > 1:
+                            u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)   # 轮换计时器
+                elif wp == 2:                      # 整组播完 → 隐藏
+                    u.KillTimer(hwnd, 2)
+                    u.KillTimer(hwnd, 3)
+                    u.ShowWindow(hwnd, 0)           # SW_HIDE
+                    self.showing = False
+                    self.playlist = []
+                elif wp == 3:                      # 滚动到下一条
+                    self.idx += 1
+                    if self.idx < len(self.playlist):
+                        self._apply_current()
+                        u.InvalidateRect(hwnd, None, True)
+                    else:
+                        u.KillTimer(hwnd, 3)
+                return 0
+            if msg == 0x0201:                      # WM_LBUTTONDOWN → 打开应用
+                try:
+                    webbrowser.open(APP_URL)
+                except Exception:
+                    pass
+                u.ShowWindow(hwnd, 0)
+                self.showing = False
+                return 0
+            if msg == 0x0002:                      # WM_DESTROY
+                u.PostQuitMessage(0)
+                return 0
+        except Exception as ex:
+            print(f"[warn] 气泡窗口消息处理异常: {type(ex).__name__}: {ex}")
+        return u.DefWindowProcW(hwnd, msg, wp, lp)
+
+    def _apply_current(self):
+        """把当前播放到的那一条装进 self.cur，并在标题尾巴标出 (第几条/共几条)。"""
+        pl = self.playlist
+        if not pl:
+            self.cur = ("", "", False)
+            return
+        i = max(0, min(self.idx, len(pl) - 1))
+        title, text, warn = pl[i]
+        if len(pl) > 1:
+            title = f"{title}    ({i + 1}/{len(pl)})"
+        self.cur = (title, text, warn)
+
+    def _place(self):
+        """放到工作区右下角（避开任务栏）。"""
+        rc = self.RECT()
+        try:
+            self.u.SystemParametersInfoW(0x0030, 0, self.ctypes.byref(rc), 0)   # SPI_GETWORKAREA
+        except Exception:
+            rc = self.RECT(0, 0, 1920, 1080)
+        self.x = max(0, rc.right - self.W - self.pad)
+        self.y = max(0, rc.bottom - self.H - self.pad)
+
+    def start(self):
+        if not self.ok:
+            return
+        threading.Thread(target=self._thread, daemon=True).start()
+
+    def _thread(self):
+        try:
+            ctypes, wintypes = self.ctypes, self.wintypes
+            u, g = self.u, self.g
+            self._ref = self.WNDPROC(self._wndproc)
+            wc = self.WNDCLASSW()
+            wc.hInstance = self.k.GetModuleHandleW(None)
+            wc.lpszClassName = "HotNewsBalloonWnd"
+            wc.lpfnWndProc = self._ref
+            u.RegisterClassW(ctypes.byref(wc))
+            self.x, self.y = 0, 0
+            self._place()
+            hwnd = u.CreateWindowExW(
+                0x00000008 | 0x00000080 | 0x08000000,     # TOPMOST|TOOLWINDOW|NOACTIVATE
+                "HotNewsBalloonWnd", "热点新闻提醒",
+                0x80000000,                               # WS_POPUP
+                self.x, self.y, self.W, self.H,
+                None, None, wc.hInstance, None)
+            self.hwnd = hwnd
+            s = self.scale
+            # GDI 资源建一次就复用，避免每次弹都泄漏。
+            # 配色跟程序网页的「明快浅色」一致：白卡片 + 浅灰描边 + 彩色强调条。
+            # （原来是 #1F2430 黑底，用户反馈"好丑"，已改掉。）
+            self.br_bg = g.CreateSolidBrush(0xFFFFFF)        # 纯白      #FFFFFF
+            self.br_bg_warn = g.CreateSolidBrush(0xF1F8FF)   # 暖白      #FFF8F1
+            self.br_info = g.CreateSolidBrush(0xB06C2B)      # 蓝        #2B6CB0
+            self.br_warn = g.CreateSolidBrush(0x206BDD)      # 橙        #DD6B20
+            self.pen_border = g.CreatePen(0, max(1, int(s)), 0xF0E8E2)   # 浅灰描边 #E2E8F0
+            self.null_brush = g.GetStockObject(5)            # NULL_BRUSH（只描边不填充）
+            # 字体：字体加粗（weight 700 走真粗体，不用 GDI 合成，避免发糊），
+            # 并用 CLEARTYPE_QUALITY(5) + OUT_TT_PRECIS(5) 开抗锯齿。
+            # 原来的 iQuality=0(DEFAULT) 在缩放屏上会出现锯齿/毛刺。
+            self.font_title = g.CreateFontW(-int(19 * s), 0, 0, 0, 700, 0, 0, 0,
+                                            134, 5, 0, 5, 0, "Microsoft YaHei UI")
+            self.font_msg = g.CreateFontW(-int(16 * s), 0, 0, 0, 700, 0, 0, 0,
+                                          134, 5, 0, 5, 0, "Microsoft YaHei UI")
+            # 小图标（取不到就算了，标题会自动左移）
+            self.hicon16 = None
+            try:
+                _p = _res("hotnews.ico")
+                if os.path.exists(_p):
+                    self.hicon16 = u.LoadImageW(None, _p, 1, int(18 * s), int(18 * s), 0x10)
+            except Exception:
+                pass
+            # 圆角：GDI 画出来是直角，用 window region 切成圆角
+            try:
+                _hrgn = g.CreateRoundRectRgn(0, 0, self.W + 1, self.H + 1,
+                                             int(16 * s), int(16 * s))
+                if _hrgn:
+                    u.SetWindowRgn(hwnd, _hrgn, True)
+            except Exception:
+                pass
+            u.SetTimer(hwnd, 1, 300, None)                 # 每 300ms 看一次队列
+            print("[ok] 自绘气泡就绪（右下角，不依赖系统通知）")
+            msg = wintypes.MSG()
+            while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                u.TranslateMessage(ctypes.byref(msg))
+                u.DispatchMessageW(ctypes.byref(msg))
+        except Exception as ex:
+            import traceback
+            print(f"[warn] 自绘气泡线程异常: {type(ex).__name__}: {ex}")
+            traceback.print_exc()
+            self.ok = False
+
+
+BALLOON = _Balloon()
+
+
+def _show_toast_list(entries):
+    """一条气泡里滚动播放多条：entries = [(title, msg, warn), ...]。
+
+    用户要求「滚动播放气泡新闻，三条左右」：一组最多 BALLOON_PLAY_COUNT 条，
+    每条停留 BALLOON_PER_ITEM_MS，标题尾部带 (1/3) 这样的进度。
+    """
+    entries = [e for e in (entries or []) if e and (e[0] or e[1])]
+    if not entries:
+        return
+    entries = entries[:BALLOON_PLAY_COUNT]
+    if BALLOON.ok:
+        with BALLOON.lock:
+            BALLOON.q.append(list(entries))
+            # 队列最多压 2 组，避免刷新风暴时排队排到天边
+            if len(BALLOON.q) > 2:
+                del BALLOON.q[:-2]
+        return
+    # 自绘不可用时的兜底：系统气泡只能显示第一条
+    title, msg, warn = entries[0]
+    if not TRAY.ok or TRAY.nid is None:
+        return
+    try:
+        nid = TRAY.nid
+        nid.uFlags = TRAY.NIF_INFO | TRAY.NIF_TIP
+        nid.szInfoTitle = (title or "")[:63]
+        nid.szInfo = (msg or "")[:255]
+        nid.dwInfoFlags = 0x2 if warn else 0x1
+        TRAY.shell32.Shell_NotifyIconW(TRAY.NIM_MODIFY, TRAY.ctypes.byref(nid))
+    except Exception as ex:
+        print(f"[warn] 气泡通知失败: {type(ex).__name__}")
+
+
+def _show_toast(title, msg, warn=False):
+    """右下角弹单条提示（滚动播放的简化封装）。"""
+    _show_toast_list([(title, msg, warn)])
+
+
+# 跨栏目合并的新条目基线 + 节流（两次通知最小间隔）
+NEWS_BASELINE = set()
+NEWS_LAST_TOAST = 0.0
+# 【节流 2026-10-07】刷新仍是每 10 分钟一轮（保证「常看常新」），
+# 但普通「更新提醒」气泡没必要每轮都弹 —— 那一天最多 144 次，太吵。
+# 改成 30 分钟最多一次（3 轮里最多打扰 1 次，内容照样是最新的）。
+# 注意：「新闻大事」和「我的软件发布」两条**不受这个节流限制**，仍然即时。
+NEWS_TOAST_MIN = 30 * 60
+NEWS_LOCK = threading.Lock()
+
+
+def _notify_news(items):
+    """刷新后调用：对比基线找出新增条目，若有则弹一条「新增 N 条」右下角通知。
+    首次调用只建立基线不弹；节流窗口内不重复弹。"""
+    global NEWS_BASELINE, NEWS_LAST_TOAST
+    if not items:
+        return
+    new_ids = {it.get("id") for it in items if it.get("id")}
+    if not new_ids:
+        return
+    with NEWS_LOCK:
+        if not NEWS_BASELINE:
+            NEWS_BASELINE.update(new_ids)
+            return
+        added = new_ids - NEWS_BASELINE
+        NEWS_BASELINE.update(new_ids)
+        if len(NEWS_BASELINE) > 4000:
+            NEWS_BASELINE = set(list(NEWS_BASELINE)[-2000:])
+    if not added:
+        return
+    now = time.time()
+    if now - NEWS_LAST_TOAST < NEWS_TOAST_MIN:
+        return
+    NEWS_LAST_TOAST = now
+    fresh = [it for it in items if it.get("id") in added]
+    if not fresh:
+        return
+    # 【2026-10-07 用户要求：气泡提醒还要包含国际版块】
+    # 不能简单「按时间取最新 3 条」—— 国内更新密集，会把 3 个位置全占掉，国际永远轮不到。
+    # 改成按版块分配名额：国际先占 1 席、国内占 1 席、热榜占 1 席，
+    # 还有空位才按时间补。这样一轮气泡里必定能看见国际。
+    picked, used = [], set()
+
+    def take(cands, maxn=1):
+        for it in cands:
+            if len(picked) >= BALLOON_PLAY_COUNT or maxn <= 0:
+                return
+            if id(it) in used:
+                continue
+            used.add(id(it))
+            picked.append(it)
+            maxn -= 1
+
+    sort_key = lambda x: x.get("published", 0)          # noqa: E731
+    intl = sorted([it for it in fresh if it.get("region") == "intl"], key=sort_key, reverse=True)
+    cn = sorted([it for it in fresh if it.get("region") == "cn"
+                 and it.get("cls") != "热榜"], key=sort_key, reverse=True)
+    hot = sorted([it for it in fresh if it.get("cls") == "热榜"], key=sort_key, reverse=True)
+    take(intl, 1)          # 国际必占一席
+    take(cn, 1)            # 国内一席
+    take(hot, 1)           # 热榜一席
+    # 剩余空位按时间补（不挑版块）
+    if len(picked) < BALLOON_PLAY_COUNT:
+        take(sorted(fresh, key=sort_key, reverse=True), BALLOON_PLAY_COUNT - len(picked))
+    # 用户要求「滚动播放气泡新闻，三条左右」：一条气泡里依次滚这几条
+    entries = []
+    for it in picked[:BALLOON_PLAY_COUNT]:
+        tag = "国际" if it.get("region") == "intl" else "国内"
+        label = it.get("label") or it.get("cls") or "热点"
+        # 国际条目优先用译文（_translate_items 是就地写回 title 的，英文留在 title_en）
+        title = it.get("title") or ""
+        if it.get("region") == "intl" and not it.get("translated") and it.get("title_en"):
+            title = it.get("title_en") or title
+        entries.append((f"热点新闻更新 · {tag} · {label}", title[:72], False))
+    if len(added) > len(entries):
+        _t, _m, _w = entries[-1]
+        entries[-1] = (_t, _m + f"　（本次共新增 {len(added)} 条）", _w)
+    print("[ok] 更新提醒：滚动播放 %d 条（国际 %d / 国内 %d / 热榜 %d）"
+          % (len(entries),
+             sum(1 for x in picked if x.get("region") == "intl"),
+             sum(1 for x in picked if x.get("region") == "cn" and x.get("cls") != "热榜"),
+             sum(1 for x in picked if x.get("cls") == "热榜")))
+    _show_toast_list(entries)
+
+
+# ============ 「我发布的软件」专属提醒（2026-10-07 用户要求） ============
+# 用户原话：「气泡提醒必须有我发表的软件提醒，让我及时知道发布情况」。
+# 用户会把作品投稿到 mefcl 这类软件站，所以要盯着这些站，一旦出现作品名立刻弹提醒。
+# 注意：这里只放**强标识**，不放「海风」这种常见词（会被天气新闻误命中）。
+MY_SOFTWARE_KEYWORDS = (
+    "壁纸助手", "微软壁纸助手", "ms-wallpaper-assistant",
+    "FoxPath", "狐径", "kele551",
+)
+MY_SOFTWARE_CHANNELS = {"cn-mefcl", "cn-ghpym", "cn-iplay", "cn-soft"}   # 软件发布类站点
+_MY_SOFT_SEEN = set()
+_MY_SOFT_READY = [False]
+
+
+def _notify_my_software(items):
+    """发现自己的作品被发布 → 弹一条专属提醒。
+
+    这条不做时间节流：用户的诉求就是「及时知道发布情况」，漏报比多报严重。
+    """
+    if not items:
+        return
+    hits = []
+    for it in items:
+        blob = ("%s %s" % (it.get("title") or "", it.get("desc") or "")).lower()
+        if any(k.lower() in blob for k in MY_SOFTWARE_KEYWORDS):
+            hits.append(it)
+    if not hits:
+        return
+    fresh = [it for it in hits if it.get("id") and it["id"] not in _MY_SOFT_SEEN]
+    for it in hits:
+        if it.get("id"):
+            _MY_SOFT_SEEN.add(it["id"])
+    if len(_MY_SOFT_SEEN) > 2000:
+        _MY_SOFT_SEEN.clear()
+    if not _MY_SOFT_READY[0]:
+        _MY_SOFT_READY[0] = True
+        print(f"[ok] 「我的软件」提醒基线已建立（命中 {len(hits)} 条）")
+        return
+    if not fresh:
+        return
+    entries = []
+    for it in fresh[:BALLOON_PLAY_COUNT]:
+        entries.append((
+            "🎉 你的软件被发布了",
+            "[%s] %s" % (it.get("label") or it.get("channel") or "", (it.get("title") or "")[:60]),
+            True))
+    print(f"[ok] ★ 我的软件提醒：{len(fresh)} 条")
+    _show_toast_list(entries)
+
+
+# ============ 新闻大事提醒（2026-10-07 新增，用户要求的两类气泡之一） ============
+# 用户要两类提醒：「新闻更新提醒」（上面的 _notify_news）和「新闻大事提醒」（这里）。
+# 判定取两条规则的并集：
+#   ① 关键词命中：标题里出现地震/爆炸/战争/坠机/暴跌 这类重大事件词
+#   ② 多家同时报道：同一条新闻被 3 家以上不同来源同时报（标题 2-gram 重合度 >= 0.6 归并）
+MAJOR_KEYWORDS = (
+    "地震", "海啸", "爆炸", "袭击", "战争", "开战", "坠机", "空难", "沉船",
+    "遇难", "身亡", "死亡", "失联", "坍塌", "火灾", "山洪", "台风", "红色预警",
+    "暴跌", "熔断", "停牌", "崩盘", "破产", "降息", "加息", "制裁", "断交",
+    "重大事故", "紧急", "突发", "疫情", "核泄漏",
+)
+MAJOR_MIN_SOURCES = 3        # 同一条新闻被这么多家同时报 → 判为大事
+MAJOR_TOAST_MIN = 30 * 60    # 大事提醒最小间隔（秒），免得刷屏
+_MAJOR_SEEN = set()
+_MAJOR_LAST_TOAST = 0.0
+_MAJOR_READY = [False]       # 首次只建基线不弹，避免启动瞬间炸出一堆
+_MAJOR_LOCK = threading.Lock()
+
+
+def _title_grams(s, n=2):
+    s = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", s or "")
+    return {s[i:i + n] for i in range(len(s) - n + 1)} if len(s) >= n else ({s} if s else set())
+
+
+def _notify_major(items):
+    """刷新后调用：挑出「大事」弹一条警示气泡。首次调用只建基线不弹。"""
+    global _MAJOR_LAST_TOAST, _MAJOR_READY
+    if not items:
+        return
+    items = items[:150]
+    hit = [it for it in items if any(k in (it.get("title") or "") for k in MAJOR_KEYWORDS)]
+    # 规则②：多家同时报道同一条 → 也是大事
+    groups = []
+    for it in items:
+        g = _title_grams(it.get("title"))
+        if not g:
+            continue
+        for grp in groups:
+            inter = len(g & grp["g"])
+            if inter / max(1, min(len(g), len(grp["g"]))) >= 0.6:
+                grp["labels"].add(it.get("label") or it.get("channel") or "")
+                grp["g"] |= g
+                break
+        else:
+            groups.append({"g": set(g),
+                           "labels": {it.get("label") or it.get("channel") or ""},
+                           "item": it})
+    for grp in groups:
+        if len([x for x in grp["labels"] if x]) >= MAJOR_MIN_SOURCES:
+            hit.append(grp["item"])
+    if not hit:
+        return
+    with _MAJOR_LOCK:
+        fresh = [it for it in hit if it.get("id") and it["id"] not in _MAJOR_SEEN]
+        for it in hit:
+            if it.get("id"):
+                _MAJOR_SEEN.add(it["id"])
+        if len(_MAJOR_SEEN) > 4000:
+            _MAJOR_SEEN = set(list(_MAJOR_SEEN)[-2000:])
+        if not _MAJOR_READY[0]:
+            _MAJOR_READY[0] = True
+            print(f"[ok] 大事提醒基线已建立（{len(_MAJOR_SEEN)} 条）")
+            return
+    if not fresh:
+        return
+    now = time.time()
+    if now - _MAJOR_LAST_TOAST < MAJOR_TOAST_MIN:
+        return
+    _MAJOR_LAST_TOAST = now
+    sample = fresh[:BALLOON_PLAY_COUNT]
+    entries = []
+    for it in sample:
+        label = it.get("label") or it.get("cls") or "要闻"
+        entries.append((f"⚠ 新闻大事 · {label}", (it.get("title") or "")[:72], True))
+    if len(fresh) > len(entries):
+        _t, _m, _w = entries[-1]
+        entries[-1] = (_t, _m + f"　（另有 {len(fresh) - len(entries)} 条同类）", _w)
+    print(f"[ok] 大事提醒：滚动播放 {len(entries)} 条")
+    _show_toast_list(entries)
+
+
+
 @app.on_event("startup")
 def _warmup():
     """后台预热两个 Region + 静默检查更新"""
     _load_trans_cache()          # 载入历史译文缓存，避免重复消耗免费翻译额度
+    TRAY.start()                 # 右下角托盘图标（非 Windows 静默降级）
+    BALLOON.start()              # 右下角自绘气泡（系统通知被关也照样弹）
     def run():
         # 国际源在国外 + 还要后台翻译，实测 RSS 就要 11s；以前把它排在 cn 后面串行执行，
         # 首屏要等它。现在国际单独开线程，cn（国内首屏）不受影响先就绪。
@@ -1850,9 +2642,20 @@ def _warmup():
                 print(f"[warn] 预热 intl 失败: {type(ex).__name__}")
                 return
             try:
+                # 低质图后台异步剔除（与国内一致）
+                if items:
+                    threading.Thread(target=_enrich_quality_bg, args=("intl",), daemon=True).start()
+            except Exception:
+                pass
+            try:
                 # 翻译慢且常被限流：不阻塞抓取，后台补齐译文
                 if not _TRANS_BUSY[0]:
                     threading.Thread(target=_translate_intl_bg, args=(items,), daemon=True).start()
+            except Exception:
+                pass
+            try:
+                _notify_news(items)   # 首次仅建立基线，不弹通知
+                _notify_my_software(items)
             except Exception:
                 pass
 
@@ -1865,30 +2668,45 @@ def _warmup():
                 # 国内源：后台异步剔除低质图（下载测尺寸），不阻塞首屏
                 if region == "cn" and items:
                     threading.Thread(target=_enrich_quality_bg, args=(region,), daemon=True).start()
+                _notify_news(items)   # 首次仅建立基线，不弹通知
+                _notify_my_software(items)
             except Exception as ex:
                 print(f"[warn] 预热 {region} 失败: {type(ex).__name__}")
 
     def refresh_loop():
-        # 国内 / 热榜 / 国际 三个板块统一每 10 分钟重建一次，与前端自动刷新节奏一致，
-        # 也保证「国内」「国际」更新逻辑完全相同。
-        n = 0
+        # 用户要求：所有栏目统一每 10 分钟自动刷新（不分国内/国际），无需手动。
+        # 一轮内重建 热榜 + 国内源 + 国际源，刷新后弹气泡（更新提醒 / 大事提醒）。
         while True:
-            time.sleep(600)
-            n += 1
+            time.sleep(600)          # 10 分钟一轮
             try:
-                PRELOAD["cn"] = _collect("cn")
+                PRELOAD["hot"] = _collect("hot")
             except Exception:
                 pass
             try:
-                PRELOAD["hot"] = _parse_hot()
-                _notify_news(PRELOAD["hot"])     # 热榜头条变化 → 右下角通知
+                cn_items = _collect("cn")
+                PRELOAD["cn"] = cn_items
+                # 2026-10-07 修复：以前刷新时漏掉了国内的「低质图异步剔除」，
+                # 导致跑久了低质图不会被清，跟刚启动时的表现不一致。
+                if cn_items:
+                    threading.Thread(target=_enrich_quality_bg, args=("cn",), daemon=True).start()
             except Exception:
                 pass
             try:
                 items = _collect("intl")
                 PRELOAD["intl"] = items
+                if items:
+                    threading.Thread(target=_enrich_quality_bg, args=("intl",), daemon=True).start()
                 if not _TRANS_BUSY[0]:
                     threading.Thread(target=_translate_intl_bg, args=(items,), daemon=True).start()
+            except Exception:
+                pass
+            # 一轮刷新结束：合并所有栏目，弹「更新提醒」（内部已节流）+「大事提醒」+「我的软件」
+            try:
+                merged = (PRELOAD.get("cn", []) + PRELOAD.get("hot", [])
+                          + PRELOAD.get("intl", []))
+                _notify_news(merged)
+                _notify_major(merged)
+                _notify_my_software(merged)      # 用户要求：作品被发布必须及时知道
             except Exception:
                 pass
 
@@ -1903,8 +2721,12 @@ def _warmup():
             st = updater.check()
             if st["status"] == "update":
                 print(f"[update] 发现新版本 v{st['remote']}，开始后台下载")
+                # 用户要求「更新提醒」气泡：发现新版本必须让你看见，不能只写日志
+                _show_toast(f"发现新版本 v{st['remote']}", "正在后台下载，退出程序时自动替换重启")
                 ok, msg = updater.download_and_prepare(st["latest"])
                 print(f"[update] {msg}")
+                if ok:
+                    _show_toast(f"新版本 v{st['remote']} 已就绪", "退出程序时自动替换并重启")
             elif st["status"] == "latest":
                 print(f"[ok] 已是最新 v{st['remote']}")
             else:
@@ -1919,43 +2741,54 @@ def _warmup():
     threading.Thread(target=refresh_loop, daemon=True).start()
 
 
-def _order_items(items):
-    """
-    统一排序：热榜（按热度排好的）置顶，其余严格按发布时间倒序，
-    拿不到时间的条目沉到最后（它们没法参与时间排序，别混在中间打乱顺序）。
-    """
-    hot = [it for it in items if it.get("cls") == "热榜"]
-    rest = [it for it in items if it.get("cls") != "热榜"]
-    rest.sort(key=lambda x: (x.get("published") or 0), reverse=True)
-    return hot + rest
+# ============ 接口绝不阻塞（2026-10-07 修「切换分区时栏目没切换」） ============
+# 用户反馈：点「国际」之后栏目和内容都没变。
+# 根因：api_news 在没有预热数据时会**同步** _collect(region)，而国际板块冷启动实测
+# 要 40~49 秒（国内约 30 秒）—— 请求一直挂着，页面自然停在旧数据上。
+# 现在：没数据就立刻返回 loading，后台线程去抓，前端每 15 秒轮询自动接上。
+_COLLECTING = {}
+_COLLECT_LOCK = threading.Lock()
 
 
-def _purge_caches():
-    """深度刷新：把所有层级的缓存一次性作废（含 RSS、图片字节、尺寸探测、共享榜缓存）"""
-    n = len(_CACHE) + len(_IMG_CACHE) + len(_IMG_SIZE)
-    _CACHE.clear()
-    _IMG_CACHE.clear()
-    _IMG_SIZE.clear()
-    _IMG_JUNK.clear()
-    _IMG_MEASURE.clear()
-    _IMG_BAD.clear()
-    _THEPAPER_CACHE["ts"] = 0.0
-    _THEPAPER_CACHE["data"] = None
-    _HN_CACHE["ts"] = 0
-    _HN_CACHE["items"] = []
-    for k in PRELOAD:
-        PRELOAD[k] = []
-    return n
+def _kick_collect(region):
+    """后台抓一轮并写进 PRELOAD。已在抓就不重复起。返回是否新起了线程。"""
+    with _COLLECT_LOCK:
+        if _COLLECTING.get(region):
+            return False
+        _COLLECTING[region] = True
+
+    def _run():
+        try:
+            PRELOAD[region] = _collect(region)
+        except Exception as ex:
+            print(f"[warn] 后台抓取 {region} 失败: {type(ex).__name__}")
+        finally:
+            with _COLLECT_LOCK:
+                _COLLECTING[region] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
 
 
 @app.get("/api/news")
 def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Query(""), limit: int = Query(48, ge=1, le=200)):
     if region not in SOURCES:
         return JSONResponse({"error": "unknown region"}, status_code=400)
-    if PRELOAD.get(region):
+    # 【搜索走更宽的池子】用户原则：主列表常看常新、绝不看旧新闻；
+    # 但程序叫「热点新闻检索」，搜索时必须能搜到更早的新闻。
+    # 所以带关键词时改搜 PRELOAD_ALL（当天过滤之前的完整池子，含最近几天）。
+    _kw = (q or "").strip()
+    if _kw and PRELOAD_ALL.get(region):
+        all_items = PRELOAD_ALL[region]
+    elif PRELOAD.get(region):
         all_items = PRELOAD[region]
     else:
-        all_items = _collect(region)
+        # 没有预热数据 → **绝不在请求里同步抓取**，立刻返回并让后台去抓。
+        _kick_collect(region)
+        return JSONResponse(
+            {"version": VERSION, "count": 0, "items": [], "loading": True,
+             "message": "正在抓取，请稍候…"},
+            media_type="application/json; charset=utf-8")
     # 去重（同标题）
     seen, items = set(), []
     for it in all_items:
@@ -1969,77 +2802,16 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
             it["image"] = ""
     # 排序要分两段：热榜条目由 _parse_hot 按「平台内归一化热度」排好，且它们的 published 为 0
     #（热榜接口不提供时间），一旦统一按 published 排就会被甩到最末，"混合榜"就没意义了。
-    items = _order_items(items)
+    hot = [it for it in items if it.get("cls") == "热榜"]
+    rest = [it for it in items if it.get("cls") != "热榜"]
+    rest.sort(key=lambda x: x["published"], reverse=True)
+    items = hot + rest
     if q.strip():
         kw = q.strip().lower()
         items = [i for i in items if kw in i["title"].lower() or kw in i["desc"].lower()]
     # 显式声明 charset=utf-8，避免个别客户端把 JSON 误判为 GBK 导致乱码
     return JSONResponse({"version": VERSION, "count": len(items), "items": items[:limit]},
                         media_type="application/json; charset=utf-8")
-
-
-_REFRESH_LOCK = threading.Lock()
-
-
-def _filter_hd(items, region, workers=32):
-    """按「高清门槛」剔选题图不达标的条目（默认门槛见 MIN_IMG_W/H 与 IMG_TOL）"""
-    t0 = time.time()
-    if not items:
-        return items
-    to_check = [it for it in items if it.get("image")]
-    if not to_check:
-        return items
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        keep = list(ex.map(lambda it: _img_ok(it["image"]), to_check))
-    ok = {id(it) for it, k in zip(to_check, keep) if k}
-    kept = [it for it in items if not it.get("image") or id(it) in ok]
-    dropped = len(items) - len(kept)
-    print(f"[ok] {region}: 高清筛选 {time.time()-t0:.1f}s，剔除 {dropped} 条，剩 {len(kept)} 条")
-    return kept
-
-
-@app.post("/api/refresh")
-def api_refresh(region: str = Query("cn", enum=["cn", "intl", "hot"]), deep: int = Query(1)):
-    """
-    真正的「重新抓取」。
-
-    /api/news 只要 PRELOAD 非空就直接返回预热数据，而 PRELOAD 由后台线程每 5 分钟
-    才重建一次，重建时还会命中 300 秒 TTL 的 RSS 缓存 —— 这就是用户「连点十次刷新
-    还是那批旧新闻」的原因。这个接口先把缓存全部作废（deep=1 连图片缓存一起），
-    立刻同步抓一遍，再把新数据写回 PRELOAD，保证点一次就一定拿到源的最新内容。
-    """
-    if region not in SOURCES:
-        return JSONResponse({"error": "unknown region"}, status_code=400)
-    if not _REFRESH_LOCK.acquire(blocking=False):
-        return JSONResponse({"ok": False, "busy": True, "message": "正在抓取中，请稍候"},
-                            status_code=409)
-    t0 = time.time()
-    try:
-        # deep=0（普通刷新）保留图片尺寸探测结果：一张给定 URL 的像素是不会变的，
-        # 清掉它只会让每次刷新都重新下载上百张图去测尺寸（实测 30 秒 vs 3 秒）。
-        saved_dims = None if deep else dict(_IMG_SIZE)
-        saved_junk = None if deep else set(_IMG_JUNK)
-        cleared = _purge_caches()
-        if not deep:
-            _IMG_SIZE.update(saved_dims or {})
-            _IMG_JUNK.update(saved_junk or ())
-        if deep:
-            cleared += len(saved_dims or {})
-        items = _collect(region)
-        before = len(items)
-        if region in ("cn", "intl"):
-            items = _filter_hd(items, region)
-        PRELOAD[region] = items
-        return JSONResponse({
-            "ok": True, "region": region, "version": VERSION,
-            "fetched": before, "count": len(items),
-            "cleared": cleared, "elapsed": round(time.time() - t0, 1),
-            "items": items,
-        }, media_type="application/json; charset=utf-8")
-    except Exception as ex:
-        return JSONResponse({"ok": False, "message": f"{type(ex).__name__}: {ex}"}, status_code=500)
-    finally:
-        _REFRESH_LOCK.release()
 
 
 @app.get("/api/version")

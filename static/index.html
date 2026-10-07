@@ -78,7 +78,7 @@
     transition:transform .16s ease, box-shadow .16s ease;
   }
   .card:hover{transform:translateY(-3px);box-shadow:0 8px 22px rgba(26,77,143,.12)}
-  .thumb{height:190px;background:#eceff4;position:relative;overflow:hidden}
+  .thumb{display:block;height:190px;background:#eceff4;position:relative;overflow:hidden;text-decoration:none}
   .thumb img{width:100%;height:100%;object-fit:cover;display:block}
   /* 无题图的条目：不摆「缺失」占位，改用品牌色块 + 分类字，视觉上仍是完整卡片 */
   .thumb.ph{
@@ -169,16 +169,18 @@
   <div class="toolbar">
     <input type="search" id="q" placeholder="搜索标题或摘要关键词…" autocomplete="off">
     <select id="cls"><option value="">全部分类</option></select>
+    <select id="sort">
+      <option value="new">最新优先</option>
+      <option value="old">最早优先</option>
+    </select>
     <button class="act primary" id="reload">刷新</button>
-    <button class="act" id="reloadDeep" title="清掉全部缓存（含图片缓存）后重新抓取，用于换一批图和内容">深度刷新</button>
-    <button class="act" id="btnWorld" title="用浏览器自带的整页翻译把国际新闻翻成中文" style="display:none">浏览器翻译</button>
     <button class="act" id="checkUpdate" title="检查是否有新版本">检查更新</button>
     <span class="meta" id="meta"></span>
     <button class="act quit" id="quit" title="停止后台服务并退出程序">退出程序</button>
   </div>
 </header>
 <main><div id="grid"></div></main>
-<footer class="ft">热点新闻检索 · v<span id="ftVer">-</span> · 作者 海风 · 联系邮箱 <a href="mailto:75219857@qq.com">75219857@qq.com</a></footer>
+<footer class="ft">热点新闻检索 · v<span id="ftVer">-</span> · 作者 海风（kele551） · <a href="https://gitee.com/kele551/hotnews" target="_blank" rel="noopener">gitee.com/kele551/hotnews</a></footer>
 <div id="toast"></div>
 
 <script>
@@ -258,9 +260,15 @@ function hotlistHTML(rows){
 }
 
 function cardHTML(it, showCls){
-  const thumb = it.image
-    ? `<div class="thumb"><img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt=""></div>`
-    : `<div class="thumb ph"><i>${esc(shortLabel(it.label||it.channel))}</i></div>`;
+  // 缩略图也做成可点：新闻图库的自然预期是「点哪儿都能进原文」，
+  // 原来只有标题是链接，点图片没反应（2026-10-07 按用户反馈改）。
+  const inner = it.image
+    ? `<img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt="">`
+    : `<i>${esc(shortLabel(it.label||it.channel))}</i>`;
+  const cls = `thumb${it.image ? "" : " ph"}`;
+  const thumb = it.link
+    ? `<a class="${cls}" href="${esc(it.link)}" target="_blank" rel="noopener" title="打开原文">${inner}</a>`
+    : `<div class="${cls}">${inner}</div>`;
   return `<article class="card">
     ${thumb}
     <div class="body">
@@ -271,9 +279,23 @@ function cardHTML(it, showCls){
     </div></article>`;
 }
 
+// 【2026-10-07 新增】统一的「数据时间」文案。
+// 用户几次反馈"热榜还有两天前的新闻"，实测根因是后端把红星新闻解析不出时间的条目
+// 伪造成了"刚刚"（已修）。同时这个显示能让人一眼判断是"数据旧"还是"页面旧"。
+function metaText(shown){
+  const newest = (state.items||[]).reduce((a,b)=>Math.max(a, b.published||0), 0);
+  const nt = newest
+    ? new Date(newest*1000).toLocaleString("zh-CN",
+        {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
+    : "-";
+  const st = new Date().toLocaleTimeString("zh-CN", {hour12:false});
+  return `共 ${shown} 条 / 源 ${state.items.length} 条 · 最新 ${nt} · 页面更新于 ${st}`;
+}
+
 function render(){
   const kw = (document.getElementById("q").value||"").trim().toLowerCase();
   const cls = document.getElementById("cls").value;
+  const sort = document.getElementById("sort").value;
   const grid = document.getElementById("grid");
 
   // 国内：实时热榜置顶（排名列表，无冗余「热榜」标签）+ 其余卡片网格
@@ -282,12 +304,12 @@ function render(){
     const hotItems = (cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
     let cards = state.items.filter(it=>{
       if(it.cls === "热榜") return false;          // 热榜已置顶，卡片区不再重复
-      if(EXCLUDED_CLS.has(it.cls)) return false;   // 科技/数码不在界面展示
+      if(EXCLUDED_CLS.has(it.cls)) return false;   // 只排除「热榜」(已置顶单独展示) 和「数码」(源已移除)；科技照常展示
       if(cls && it.cls !== cls) return false;
       if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
       return true;
     });
-    cards.sort((a,b)=> (b.published||0)-(a.published||0));
+    cards.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
     if(!hotItems.length && !cards.length){
       grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
       document.getElementById("meta").textContent = "共 0 条";
@@ -321,13 +343,14 @@ function render(){
       }
     }
     grid.innerHTML = html;
-    document.getElementById("meta").textContent = `共 ${hotItems.length+cards.length} 条 / 源 ${state.items.length} 条`;
+    document.getElementById("meta").textContent = metaText(hotItems.length+cards.length);
     return;
   }
 
   // 国际：实时热榜（Hacker News）置顶 + 其余卡片网格
   const isWorld = state.region === "intl";
-  document.getElementById("btnWorld").style.display = isWorld ? "" : "none";
+  // 【2026-10-07】原来这里会按国际/国内切换「浏览器翻译」按钮的显示；
+  // 按钮已移除，这行必须一起删 —— 否则 getElementById 返回 null，抛错会让整个 render 挂掉。
   const hotItems = (isWorld && cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
   let list = state.items.filter(it=>{
     if(hotItems.length && it.cls === "热榜") return false;   // 热榜已置顶，卡片区不再显示
@@ -335,10 +358,10 @@ function render(){
     if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
     return true;
   });
-  list.sort((a,b)=> (b.published||0)-(a.published||0));
+  list.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
   if(!hotItems.length && !list.length){
     grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
-    document.getElementById("meta").textContent = `共 ${hotItems.length+list.length} 条 / 源 ${state.items.length} 条`;
+    document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
     return;
   }
   let html2 = hotItems.length ? `<h2 class="sech">国际实时热榜 · Hacker News</h2>` + hotlistHTML(hotItems) : "";
@@ -346,66 +369,50 @@ function render(){
     grid.innerHTML = html2;
   } else {
     const done = list.filter(it=>it.translated).length;
-    // 抓取不等翻译（否则国际板块要多等 1~2 分钟），译文是后台补齐的。
-    // 还没译完时给个明确说法 + 一键入口，别让用户以为是坏了。
+    // 抓取不等翻译（否则国际板块要多等 1~2 分钟），译文由后台线程渐进补齐。
+    // 【2026-10-07 用户要求】国际板块现在已经自动全中文了，
+    // 原来的「浏览器翻译」按钮（跳 /world 纯英文页让 Edge/Chrome 整页翻译）
+    // 已经没有意义，已从工具栏移除。这里只保留「补齐中」的进度说明，不再引导点按钮。
     const tipBar = (isWorld && !cls && done < list.length)
-      ? `<div class="transbar">中文译文后台补齐中（${done}/${list.length}）·
-           想立刻看全中文，点右上角 <b>浏览器翻译</b>，用 Edge/Chrome 自带的整页翻译，
-           不受机翻额度影响。</div>`
+      ? `<div class="transbar">中文译文后台补齐中（${done}/${list.length}），稍等片刻会自动刷新成中文。</div>`
       : "";
     if(hotItems.length) html2 += `<h2 class="sech">更多国际新闻</h2>`;
     grid.innerHTML = html2 + tipBar + `<div class="grid">` + list.map(it=>cardHTML(it, !cls)).join("") + `</div>`;
   }
-  document.getElementById("meta").textContent = `共 ${hotItems.length+list.length} 条 / 源 ${state.items.length} 条`;
+  // 【2026-10-07 新增】把「最新一条新闻的时间」和「本次拉取时间」显示出来。
+  // 用户几次反馈"热榜还有两天前的新闻"，**实测根因是后端把红星新闻解析不出时间的
+  // 条目伪造成了"刚刚"**（已修）。这个显示能让人一眼判断是"数据旧"还是"页面旧"。
+  document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
 }
 
+// 【2026-10-07】请求序号：切换分区时可能有两个请求在飞，
+// 网络慢的那个后回来会把新分区的数据覆盖掉（表现为"点了没换"/"换回去又变回来"）。
+// 每次 load 领一个号，回来时号不是最新的就丢弃。
+let LOAD_SEQ = 0;
 async function load(showToast){
+  const mySeq = ++LOAD_SEQ;
   document.getElementById("meta").textContent = "抓取中…";
   try{
     const r = await fetch(`/api/news?region=${state.region}&limit=200`);
     const js = await r.json();
+    if(mySeq !== LOAD_SEQ) return;                 // 已经切到别的分区，丢弃这次旧响应
     state.items = js.items || [];
     LAST_SIG = sig(state.items);
     document.getElementById("ver").textContent = js.version || SSR.version;
     document.getElementById("ftVer").textContent = js.version || SSR.version;
     buildClsOptions();
     render();
-    if(showToast) toast(`已刷新 ${state.items.length} 条`);
+    if(js.loading){
+      // 后端还没预热好（国际板块首次要几十秒），后端已转后台抓取，前端轮询接手
+      document.getElementById("meta").textContent = js.message || "正在抓取，请稍候…";
+    } else if(showToast){
+      toast(`已刷新 ${state.items.length} 条`);
+    }
   }catch(e){
+    if(mySeq !== LOAD_SEQ) return;
     document.getElementById("meta").textContent = "抓取失败：" + e.message;
   }
 }
-
-// 强制刷新：绕过 PRELOAD，把服务端 RSS 缓存作废后立刻重抓。
-// /api/news 只是把后台 5 分钟前预热好的数据再读一遍 —— 连点十次也是同一批旧内容，
-// 这正是「新闻一直是几小时前」的原因（见 server.py _purge_caches）。
-async function forceRefresh(deep){
-  const btn = deep ? document.getElementById("reloadDeep") : document.getElementById("reload");
-  const meta = document.getElementById("meta");
-  if(btn){ btn.disabled = true; btn.textContent = deep ? "深度抓取中…" : "抓取中…"; }
-  meta.textContent = deep ? "清缓存并重抓中…（首次较慢）" : "重新抓取中…";
-  try{
-    const r = await fetch(`/api/refresh?region=${state.region}&deep=${deep?1:0}`, {method:"POST"});
-    if(!r.ok){
-      const t = await r.text();
-      throw new Error(`HTTP ${r.status} ${t.slice(0,120)}`);
-    }
-    const js = await r.json();
-    state.items = js.items || [];
-    LAST_SIG = sig(state.items);
-    document.getElementById("ver").textContent = js.version || SSR.version;
-    document.getElementById("ftVer").textContent = js.version || SSR.version;
-    buildClsOptions();
-    render();
-    toast(`已重抓 ${js.fetched} 条 → 保留 ${js.count} 条（${js.elapsed}s）`);
-  }catch(e){
-    meta.textContent = "强制刷新失败：" + e.message;
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = deep ? "深度刷新" : "刷新"; }
-  }
-}
-document.getElementById("reload").onclick = ()=>forceRefresh(false);
-document.getElementById("reloadDeep").onclick = ()=>forceRefresh(true);
 
 // 国际板块的中文译文由后台线程渐进补齐（抓取不等翻译，否则国际板块要慢 90 秒以上）。
 // 这里定期静默重拉：只有内容真的变了才重绘，避免闪烁，也把补上的译文刷出来。
@@ -439,11 +446,9 @@ async function checkVersion(){
   }catch(e){}
 }
 
-document.getElementById("btnWorld").onclick = ()=>{
-  // 打开纯英文版世界页（<html lang="en">），由浏览器自带的整页翻译接管成中文。
-  // 走的是浏览器自己的翻译服务，速度快、无额度限制，也不占我们后台的抓取时间。
-  window.open("/world", "_blank");
-};
+document.getElementById("reload").onclick = ()=>load(true);
+// 【2026-10-07 已移除】原「浏览器翻译」按钮的处理函数（跳 /world 纯英文页，
+// 交给 Edge/Chrome 整页翻译）。国际板块现在由后台自动译成中文，这个入口不需要了。
 document.getElementById("checkUpdate").onclick = async ()=>{
   const btn = document.getElementById("checkUpdate");
   btn.disabled = true; const old = btn.textContent; btn.textContent = "检查中…";
@@ -500,12 +505,24 @@ document.getElementById("q").addEventListener("input", ()=>{
   clearTimeout(window._deb); window._deb = setTimeout(render, 260);
 });
 document.getElementById("cls").onchange = render;
-document.getElementById("cls").onchange = render;
+document.getElementById("sort").onchange = render;
 document.getElementById("regionSeg").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
+  if(b.dataset.r === state.region) return;          // 点的是当前分区，不用重来
   document.querySelectorAll("#regionSeg button").forEach(x=>x.classList.remove("on"));
   b.classList.add("on");
   state.region = b.dataset.r;
+  // 【2026-10-07 修「国内和国际切换的时候，栏目没有切换」】
+  // 原来切换分区时保留了「分类」下拉里选中的值（比如国内的「科技」），
+  // 而国际板块根本没有这个分类 → 列表空空如也，看着就像栏目没换。
+  // 所以切换分区必须同时清掉分类筛选和搜索词，并立刻清屏给出加载反馈
+  // （国际首次抓取要几十秒，不能让人对着旧内容发呆）。
+  document.getElementById("cls").value = "";
+  document.getElementById("q").value = "";
+  state.items = [];
+  document.getElementById("grid").innerHTML =
+    `<div class="empty">正在抓取${state.region === "intl" ? "国际" : "国内"}新闻，请稍候…</div>`;
+  document.getElementById("meta").textContent = "抓取中…";
   load(false);
 });
 document.getElementById("ver").textContent = SSR.version;
