@@ -119,7 +119,8 @@ FALLBACK_MIN = 8         # 当天条目少于这个数 → 放宽到最近 24 �
 CLS_MAX_AGE_HOURS = {
     "科技": 96,     # 4 天：IT之家/快科技日更，爱范儿/雷峰网/NotebookCheck 慢一些
     "软件": 120,    # 5 天：小众软件、开源中国、少数派这类本来就不是日更
-    "娱乐": 72,     # 3 天
+    "娱乐": 120,    # 5 天：新浪娱乐首页混着深度稿，窗口太窄会只剩一两条
+    "国际娱乐": 120,
     "热榜": 24,     # 用户反馈「热榜上居然还有两天前的新闻」→ 热榜不再豁免，同样按当天
 }
 # 「当天优先」的两个下限：某栏目当天条目低于这个数、或少于这么多家网站，
@@ -177,7 +178,11 @@ SOURCES = {
         {"id": "cn-oschina", "label": "开源中国", "url": "https://www.oschina.net/news/rss", "base": "https://www.oschina.net", "region": "cn", "cls": "软件"},
         {"id": "cn-sspai",   "label": "少数派",   "url": "https://sspai.com/feed",           "base": "https://sspai.com",       "region": "cn", "cls": "软件"},
         # 娱乐栏目：凤凰娱乐首页（明星/绯闻/八卦）。首页内联 JSON 带标题+题图+newsTime，量大。
-        {"id": "cn-ent", "label": "凤凰娱乐", "url": "https://ent.ifeng.com/", "base": "https://ent.ifeng.com", "region": "cn", "cls": "娱乐", "parser": "ifeng"},
+        {"id": "cn-ent", "label": "凤凰娱乐", "url": "https://ent.ifeng.com/", "base": "https://ent.ifeng.com", "region": "cn", "cls": "娱乐", "parser": "ifeng"},
+        # 【2026-10-07 补源】用户要求「娱乐栏目的新闻太少，增加新闻源头」。
+        # 实测国内娱乐 RSS 全废（网易/中新网无条目、搜狐无图、人民网停更、时光网连不上），
+        # 只能用新浪娱乐的 SSR HTML；它的列表页无图无时间，靠 _fill_missing_images 补。
+        {"id": "cn-sina-ent", "label": "新浪娱乐", "url": "https://ent.sina.com.cn/", "base": "https://ent.sina.com.cn", "region": "cn", "cls": "娱乐", "parser": "sina_ent"},
     ],
     "intl": [
         {"id": "f24-main",    "label": "France24", "url": "https://www.france24.com/en/rss",         "base": "https://www.france24.com", "region": "intl", "cls": "要闻"},
@@ -197,6 +202,13 @@ SOURCES = {
         {"id": "intl-abc",     "label": "ABC News", "url": "https://abcnews.go.com/abcnews/internationalheadlines",  "base": "https://abcnews.go.com", "region": "intl", "cls": "要闻"},
         # 娱乐栏目（国际）：f24-culture（文化）已按用户要求删除，改用国际娱乐八卦源。
         # Variety 实测 10 条全带图；Billboard 10 条无图（音乐明星向），国际不做无图过滤，占位显示。
+        # 【2026-10-07 补源】实测连通且**全部带图**的国际娱乐源：
+        # NME 10条/10图、Stereogum 40条/40图、Consequence 15条/15图。
+        # 实测失败未采用：Deadline/Pitchfork/People/TheWrap/Vulture/Collider 连不上；
+        # HollywoodReporter/RollingStone/IndieWire 能连通但 0 张图（会被无图规则剔除）。
+        {"id": "intl-nme",       "label": "NME",        "url": "https://www.nme.com/feed",           "base": "https://www.nme.com",        "region": "intl", "cls": "娱乐", "max_age_hours": 72},
+        {"id": "intl-stereogum", "label": "Stereogum",  "url": "https://www.stereogum.com/feed/",     "base": "https://www.stereogum.com",  "region": "intl", "cls": "娱乐", "max_age_hours": 72},
+        {"id": "intl-consequence","label": "Consequence","url": "https://consequence.net/feed/",       "base": "https://consequence.net",    "region": "intl", "cls": "娱乐", "max_age_hours": 72},
         {"id": "intl-variety",   "label": "Variety",   "url": "https://variety.com/feed/",    "base": "https://variety.com",   "region": "intl", "cls": "娱乐", "max_age_hours": 72},
         {"id": "intl-billboard", "label": "Billboard", "url": "https://www.billboard.com/feed/", "base": "https://www.billboard.com", "region": "intl", "cls": "娱乐", "max_age_hours": 72},
     ],
@@ -514,6 +526,9 @@ def _parse_one(src):
         return _parse_thepaper(src)
     if src.get("parser") == "mefcl":
         return _parse_mefcl(src)
+    # 新浪娱乐：首页 HTML 列表（无 RSS 可用，实测网易/中新网/时光网的娱乐 RSS 全废）
+    if src.get("parser") == "sina_ent":
+        return _parse_sina_ent(src)
     # GitHub curated 软件集合仓库（awesome 列表）：抓 README raw 解析软件条目
     if src.get("parser") == "github_readme":
         return _parse_github_readme(src)
@@ -1747,7 +1762,9 @@ def _collect(region):
         # 「软件栏目怎么只有一个网站的」。它们的文章页其实都有 og:image，抓得到。
         _noimg = [it for it in items if not it.get("image")]
         if _noimg:
-            _fill_missing_images(_noimg, "cn-noimg", max_fetch=40)
+            # 上限放到 60：新浪娱乐一个源就贡献 30 条无图条目（列表页没图没时间），
+            # 上限太低会被少数派/开源中国占满，娱乐栏就补不到图。
+            _fill_missing_images(_noimg, "cn-noimg", max_fetch=60)
         before = len(items)
         cn_only = [it for it in items if it.get("image")]
         print(f"[ok] {region}: 补图后仍无图 {before - len(cn_only)} 条已剔除，剩 {len(cn_only)} 条（低质图后台异步剔除）")
@@ -2570,6 +2587,47 @@ def _looks_foreign(title):
 # 国内热榜里允许保留的来源（澎湃/红星本身就是国内源，无需过滤；
 # 凤凰是综合源，必须过滤掉国际条目）
 HOT_FILTER_FOREIGN_LABELS = {"凤凰网"}
+
+
+def _parse_sina_ent(src):
+    """新浪娱乐：ent.sina.com.cn 首页的 <p class="item"><a href title="标题">。
+
+    【为什么用它】国内娱乐的 RSS 实测**全废**：
+      网易娱乐/中新网娱乐 → 无条目；搜狐娱乐 → 30 条但 0 图、无时间；
+      人民网娱乐 → 停更一年多（最新 2025-06-05）；时光网 → 连不上。
+    新浪娱乐首页是 SSR HTML，条目链接形如 https://k.sina.com.cn/article_<...>.html。
+
+    注意：这个列表页**既没有发布时间、也没有题图**，两者都靠后续的
+    _fill_missing_images 去文章页取（_article_meta 一次抓取同时返回 og:image
+    和真实发布时间），所以这里 published / image 先留空。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 新浪娱乐抓取失败")
+        return []
+    page = raw.decode("utf-8", "ignore")
+    pat = (r'<p class="item"><a href="(https://k\.sina\.com\.cn/article_[^"]+)"'
+           r'[^>]*title="([^"]*)"')
+    out, seen = [], set()
+    for m in re.finditer(pat, page):
+        url = _norm_url(m.group(1), src["base"])
+        title = _clean(m.group(2))
+        if not title or len(title) < 6 or url in seen:
+            continue
+        seen.add(url)
+        out.append({
+            "id": hashlib.md5(("sina-ent-" + url).encode("utf-8")).hexdigest()[:12],
+            "region": "cn", "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": url, "image": "", "published": 0,
+            "heat": 0, "translated": False,
+        })
+        if len(out) >= 30:
+            break
+    print(f"[ok] {src['id']}: 新浪娱乐解析 {len(out)} 条（题图与时间待文章页补）")
+    return out
 
 
 def _split_hot_by_scope(items):
