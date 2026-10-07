@@ -182,10 +182,10 @@ SOURCES = {
         # 【2026-10-07 补源】用户要求「娱乐栏目的新闻太少，增加新闻源头」。
         # 实测国内娱乐 RSS 全废（网易/中新网无条目、搜狐无图、人民网停更、时光网连不上），
         # 只能用新浪娱乐的 SSR HTML；它的列表页无图无时间，靠 _fill_missing_images 补。
+        # 【已试过并放弃】网易娱乐 ent.163.com：首页 415 条带标题条目，图可改写 thumbnail参数放大到 660x440，但它是**网易号泛频道推荐流**（每次请求内容都不同），
+        # 混着汽车/养生/育儿/社会；加娱乐关键词过滤后 40 条只剩 3 条且有 2 条不是娱乐。
+        # 用户 2026-10-07 决定不做这个源，别再挖了。
         {"id": "cn-sina-ent", "label": "新浪娱乐", "url": "https://ent.sina.com.cn/", "base": "https://ent.sina.com.cn", "region": "cn", "cls": "娱乐", "parser": "sina_ent"},
-        # 【2026-10-07 再挖网易娱乐】首页 415 条带标题条目，图片靠改写 thumbnail 参数放大到 660x440，
-        # 时间由文章页补（TIME_FIX_CHANNELS）。
-        {"id": "cn-163-ent", "label": "网易娱乐", "url": "https://ent.163.com/", "base": "https://ent.163.com", "region": "cn", "cls": "娱乐", "parser": "163_ent"},
     ],
     "intl": [
         {"id": "f24-main",    "label": "France24", "url": "https://www.france24.com/en/rss",         "base": "https://www.france24.com", "region": "intl", "cls": "要闻"},
@@ -548,8 +548,6 @@ def _parse_one(src):
     # 新浪娱乐：首页 HTML 列表（无 RSS 可用，实测网易/中新网/时光网的娱乐 RSS 全废）
     if src.get("parser") == "sina_ent":
         return _parse_sina_ent(src)
-    if src.get("parser") == "163_ent":
-        return _parse_163_ent(src)
     # GitHub curated 软件集合仓库（awesome 列表）：抓 README raw 解析软件条目
     if src.get("parser") == "github_readme":
         return _parse_github_readme(src)
@@ -1552,17 +1550,11 @@ BIG_IMAGE_CHANNELS = {"cn-mefcl"}
 # 注意：豁免只免「短边门槛」，**仍必须有图**（没图的照样剔除）。
 MIN_IMG_EXEMPT_CHANNELS = {"cn-mefcl"}
 # 需要去文章页「取发布时间」的源（它们的图已经有了，只是为了时间才抓一次）
-TIME_FIX_CHANNELS = {"cn-163-ent"}
-# 娱乐内容关键词（网易娱乐那种泛频道源必须过这一关，见 _parse_163_ent）
-ENT_KEYWORDS = (
-    "演员", "明星", "艺人", "歌手", "导演", "编剧", "主持", "偶像", "女团", "男团",
-    "电影", "电视剧", "剧集", "综艺", "演唱会", "专辑", "新歌", "单曲", "票房", "收视",
-    "首映", "写真", "红毯", "颁奖", "恋情", "结婚", "离婚", "分手", "复合", "男友",
-    "女友", "出道", "复出", "退圈", "病逝", "享年", "剧组", "开机", "杀青", "预告",
-    "影帝", "影后", "视帝", "视后", "爆红", "粉丝", "歌迷", "追星", "翻唱",
-    "真人秀", "选秀", "热播", "上映", "定档", "片酬", "代言", "娱乐圈", "八卦",
-    "绯闻", "同框", "合影", "探班", "庆生", "离婚", "怀二胎", "生子", "婚事",
-)
+# 只为「取发布时间」才抓文章页的源。目前**为空** ——
+# 曾经放过网易娱乐，但它的首页是网易号泛频道推荐流（每次请求内容都不同，
+# 混着汽车/养生/育儿/社会），加娱乐关键词过滤后 40 条只剩 3 条、还有 2 条不是娱乐，
+# 得不偿失，用户 2026-10-07 决定移除。机制保留，以后有需要再往里加。
+TIME_FIX_CHANNELS = set()
 
 
 def _day_start_cutoff():
@@ -2808,60 +2800,6 @@ def _spill_from_cn():
     except Exception:
         return []
 
-def _parse_163_ent(src):
-    """网易娱乐：ent.163.com 首页的图文列表。
-
-    【为什么值得挖】国内娱乐源实测几乎全废，只有新浪娱乐能用；网易娱乐首页有
-    **415 条带标题的条目**，内容量和新鲜度都很好。
-
-    【关键技巧】它的图是 190x120 缩略图，但 URL 带 `thumbnail=WyH` 参数 ——
-    **把它改写成 thumbnail=660y440，实测直接返回 660x440 的高清图**，
-    所以不必去文章页抓图。
-    （注意：网易号文章页的 og:image 是站方自己的「下载App」横幅 common_nav/topapp.jpg，
-      150x178、每篇都一样，完全没有参考价值，别用它。）
-
-    【时间】首页区块里没有发布时间，所以 published 先留 0，
-    由 _fill_missing_images 去文章页取（见 TIME_FIX_CHANNELS）。
-    """
-    raw = _fetch(src["url"])
-    if isinstance(raw, tuple):
-        raw = raw[0]
-    if not raw:
-        print("[warn] 网易娱乐抓取失败")
-        return []
-    page = raw.decode("utf-8", "ignore")
-    # 同一个 data_row 里：先 <a><img 缩略图></a>，紧跟着 news_title 下的 <h3><a>标题</a>
-    pat = (r'<img[^>]+src="(https?://nimg\.ws\.126\.net/\?url=[^"]+)"[\s\S]{0,420}?'
-           r'<h3>\s*<a[^>]+href="(https?://www\.163\.com/dy/article/[^"#]+)[^"]*"[^>]*>'
-           r'([^<]{8,80})</a>')
-    out, seen = [], set()
-    for m in re.finditer(pat, page):
-        img = _clean(m.group(1))
-        # 190x120 -> 660x440（实测有效；改不动就退回原图，交给高清门槛判断）
-        img = re.sub(r"thumbnail=\d+y\d+", "thumbnail=660y440", img)
-        url = _norm_url(m.group(2), src["base"])
-        title = _clean(m.group(3))
-        if not title or len(title) < 8 or url in seen:
-            continue
-        seen.add(url)
-        out.append({
-            "id": hashlib.md5(("163ent-" + url).encode("utf-8")).hexdigest()[:12],
-            "region": "cn", "channel": src["id"], "label": src["label"],
-            "cls": src["cls"], "title": title, "desc": "",
-            "link": url, "image": img, "published": 0,
-            "heat": 0, "translated": False,
-        })
-        # 【2026-10-07】网易娱乐首页是**网易号泛频道推荐流**，实测混进汽车/养生/育儿/社会：
-        #   "29.4万元！宝马新车官宣" / "最遭人嫌的老人是符合这8条" / "外出打工为啥宁愿去广东"
-        # 所以要求标题必须命中娱乐关键词，否则不要 —— 宁可少几条，也不让娱乐栏变成大杂烩。
-        if not any(k in title for k in ENT_KEYWORDS):
-            out.pop()
-            seen.discard(url)
-            continue
-        if len(out) >= 40:
-            break
-    print(f"[ok] {src['id']}: 网易娱乐解析 {len(out)} 条（图已放大到 660x440，时间待文章页补）")
-    return out
 
 def _split_hot_by_scope(items):
     """把热榜条目分成「国内」「国际」两拨（用户建议的灵活做法）。
