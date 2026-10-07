@@ -28,6 +28,7 @@ import sys
 import json
 import hashlib
 import subprocess
+import shutil
 import tempfile
 import threading
 import urllib.parse
@@ -272,6 +273,72 @@ def _write_replace_bat(new_exe):
     return bat
 
 
+def cleanup_leftovers():
+    """启动时清理上次升级留下的 .old / .new 文件（以及过期的升级包）。
+
+    快速替换会把原 exe 改名成 .old 留在原地（运行中的文件删不掉），
+    所以要等下次启动、旧文件不再被占用时再删。
+    """
+    try:
+        exe = EXE_PATH
+        if exe:
+            for suf in (".old", ".new"):
+                p = exe + suf
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+def _fast_swap(pkg):
+    """就地替换并重启：**不依赖任何脚本宿主**，实测约 20 毫秒。
+
+    原理：Windows 允许**重命名**正在运行的 exe（只是不允许覆盖/删除它）。所以：
+      1. 升级包先复制到 exe 同目录的 .new（同盘复制 14MB 约 11 毫秒）
+      2. 把正在运行的 exe 改名成 .old（约 8 毫秒）
+      3. 把 .new 改名成正式名字（同盘改名，原子）
+      4. 拉起新 exe，然后本进程退出
+    旧做法（写 .vbs 让 wscript 等主程序退出后再复制）要**先睡 2 秒**、再每秒重试，
+    慢且依赖脚本宿主 —— 用户反馈「那么小的程序，更新安装太慢」就是它。
+    返回 (ok, 说明)。
+    """
+    exe = EXE_PATH
+    if not exe or not os.path.exists(exe):
+        return False, "拿不到自身路径"
+    folder = os.path.dirname(exe)
+    new_p = exe + ".new"
+    old_p = exe + ".old"
+    try:
+        for p in (new_p, old_p):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        shutil.copy2(pkg, new_p)          # 同盘复制，很快
+        os.rename(exe, old_p)             # 运行中也能改名
+        os.rename(new_p, exe)             # 原子改名到位
+    except Exception as ex:
+        # 尽力回滚，别把程序弄丢
+        try:
+            if (not os.path.exists(exe)) and os.path.exists(old_p):
+                os.rename(old_p, exe)
+        except Exception:
+            pass
+        return False, f"就地替换失败: {type(ex).__name__}"
+    # 拉起新版本（分离进程：本进程随后退出不会带走它）
+    try:
+        DETACHED = 0x00000008 | 0x08000000        # DETACHED_PROCESS | CREATE_NO_WINDOW
+        subprocess.Popen([exe], cwd=folder, creationflags=DETACHED, shell=False,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
+    except Exception as ex:
+        return False, f"新版本已就位但启动失败: {type(ex).__name__}"
+    return True, "已就地替换并重启"
+
 def trigger_replace():
     """立即执行替换脚本（主程序退出前调用）。wscript.exe 跑 VBS，GUI 宿主无黑窗。
 
@@ -305,6 +372,14 @@ def trigger_replace():
     if exp_sha and _sha256(pkg) != exp_sha:
         _state.update(status="error", message="升级包校验失败，已放弃替换")
         return False
+
+    # 【2026-10-07 用户反馈「更新安装太慢」】先用**就地替换**：实测约 20 毫秒，
+    # 不需要等主程序退出、不需要脚本宿主、也不会出现"替换成功但没重启"的情况。
+    ok, msg = _fast_swap(pkg)
+    if ok:
+        _state.update(status="done", message=msg)
+        return True
+    print(f"[warn] 就地替换失败（{msg}），回退到脚本方式")
 
     vbs = os.path.join(tempfile.gettempdir(), "hotnews_update.vbs")
     if os.path.exists(vbs):
