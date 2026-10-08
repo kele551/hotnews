@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>热点新闻检索</title>
+<style>
+  :root{
+    --primary:#1a4d8f;
+    --accent:#e8632f;
+    --bg:#f4f6fa;
+    --card:#ffffff;
+    --line:#e3e8f0;
+    --text:#1c2430;
+    --muted:#6b7789;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;
+    background:var(--bg);color:var(--text);
+    font-size:19px;line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+  }
+  header{
+    background:var(--card);border-bottom:1px solid var(--line);
+    padding:22px 32px;position:sticky;top:0;z-index:50;
+  }
+  .hd-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  h1{font-size:30px;font-weight:700;letter-spacing:1px}
+  h1 span{color:var(--accent)}
+  .badge{
+    background:#eaf0fa;color:var(--primary);border-radius:999px;
+    padding:4px 14px;font-size:15px;font-weight:600;
+  }
+  .spacer{flex:1}
+  .seg{display:flex;background:#eef1f6;border-radius:10px;padding:4px}
+  .seg button{
+    border:0;background:transparent;color:var(--muted);
+    font-size:17px;font-weight:600;padding:7px 20px;border-radius:8px;cursor:pointer;
+    font-family:inherit;transition:.15s;
+  }
+  .seg button.on{background:var(--card);color:var(--primary);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .toolbar{
+    display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+    margin-top:16px;
+  }
+  input[type=search],select{
+    font-family:inherit;font-size:17px;padding:9px 14px;
+    border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--text);
+    outline:none;
+  }
+  input[type=search]{min-width:300px;flex:0 1 360px}
+  input[type=search]:focus,select:focus{border-color:var(--primary)}
+  button.act{
+    font-family:inherit;font-size:17px;font-weight:600;cursor:pointer;
+    padding:9px 20px;border-radius:9px;border:1px solid var(--line);
+    background:var(--card);color:var(--text);transition:.15s;
+  }
+  button.act:hover{border-color:var(--primary);color:var(--primary)}
+  button.act.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+  button.act.primary:hover{background:#153f74}
+  button.act.quit{color:#9c5237;border-color:#eed6cc;padding:9px 16px;margin-left:auto}
+  button.act.quit:hover{background:#fdf2ee;border-color:var(--accent);color:var(--accent)}
+  .meta{color:var(--muted);font-size:15px}
+  main{padding:26px 32px 60px}
+  #grid{display:block}
+  .grid{
+    display:grid;gap:22px;
+    grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
+  }
+  /* 区块标题（实时热榜 / 更多新闻） */
+  .sech{font-size:22px;font-weight:700;color:var(--text);margin:4px 0 16px;
+    padding-left:11px;border-left:4px solid var(--accent)}
+  .sech:not(:first-child){margin-top:34px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;display:flex;flex-direction:column;
+    transition:transform .16s ease, box-shadow .16s ease;
+  }
+  .card:hover{transform:translateY(-3px);box-shadow:0 8px 22px rgba(26,77,143,.12)}
+  .thumb{display:block;height:190px;background:#eceff4;position:relative;overflow:hidden;text-decoration:none}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  /* 无题图的条目：不摆「缺失」占位，改用品牌色块 + 分类字，视觉上仍是完整卡片 */
+  .thumb.ph{
+    height:104px;background:linear-gradient(118deg,#16406f 0%,#2b6bb0 58%,#3f83c9 100%);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .thumb.ph i{
+    font-style:normal;font-size:25px;font-weight:800;color:rgba(255,255,255,.94);
+    letter-spacing:9px;text-indent:9px;white-space:nowrap;
+  }
+  .thumb.ph::after{
+    content:"";position:absolute;left:16px;bottom:12px;width:26px;height:3px;
+    background:var(--accent);border-radius:2px;
+  }
+  .body{padding:16px 18px 18px;display:flex;flex-direction:column;gap:9px;flex:1}
+  .tags{display:flex;gap:8px;align-items:center;font-size:14px}
+  .tag{background:#eef1f6;color:var(--muted);border-radius:5px;padding:2px 9px}
+  .tag.cls{background:#fdeee5;color:var(--accent);font-weight:600}
+  .card h2{font-size:20px;font-weight:700;line-height:1.5}
+  .card h2 a{color:inherit;text-decoration:none}
+  .card h2 a:hover{color:var(--primary)}
+  .desc{font-size:16px;color:var(--muted);line-height:1.6;flex:1}
+  .time{font-size:14px;color:#9aa4b2}
+  .empty{padding:90px 0;text-align:center;color:var(--muted);font-size:19px}
+  /* 国际板块译文补齐进度提示：说明「为什么还有英文」并给出一键解决办法 */
+  .transbar{
+    background:#fff7f2;border:1px solid #f6d9c7;border-left:4px solid var(--accent);
+    border-radius:9px;padding:11px 16px;color:#8a4a24;font-size:15px;line-height:1.6;
+    margin-bottom:18px;
+  }
+  .transbar b{color:#6d3717}
+  #toast{
+    position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(20px);
+    background:#1c2430;color:#fff;padding:12px 24px;border-radius:10px;font-size:16px;
+    opacity:0;pointer-events:none;transition:.25s;z-index:99;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .ft{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);
+    text-align:center;color:var(--muted);font-size:14px;line-height:1.9}
+  .ft a{color:var(--primary);text-decoration:none}
+  .ft a:hover{text-decoration:underline}
+  /* 实时热点：排名列表（文本榜，带热度），前 3 名用强调色 */
+  .hotlist{list-style:none;display:flex;flex-direction:column;gap:10px;max-width:900px}
+  .hotrow{display:flex;gap:18px;align-items:center;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;padding:14px 20px;transition:transform .14s ease,box-shadow .14s ease}
+  .hotrow:hover{transform:translateX(3px);box-shadow:0 6px 18px rgba(26,77,143,.10)}
+  .rank{font-size:25px;font-weight:800;color:var(--muted);min-width:40px;text-align:center;
+    font-variant-numeric:tabular-nums}
+  .hotrow:nth-child(1) .rank{color:var(--accent)}
+  .hotrow:nth-child(2) .rank{color:#e8975a}
+  .hotrow:nth-child(3) .rank{color:#e8b95a}
+  .hmain{flex:1;display:flex;flex-direction:column;gap:7px;min-width:0}
+  .htitle{font-size:20px;font-weight:700;color:var(--text);text-decoration:none;line-height:1.5;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .htitle:hover{color:var(--primary)}
+  .hmeta{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}
+  .heat{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
+  /* 多平台热榜：按平台分组 + 平台标 */
+  .plat{margin-bottom:8px}
+  .sub{font-size:16px;font-weight:700;color:var(--text);margin:18px 0 12px;
+    display:flex;align-items:center;gap:8px}
+  .sub .cnt{font-size:13px;font-weight:600;color:var(--muted);background:var(--line);
+    border-radius:10px;padding:1px 9px}
+  .src{font-size:12px;font-weight:700;padding:1px 9px;border-radius:10px;color:#fff;white-space:nowrap}
+  .src-澎湃新闻{background:#d0021b}
+  .src-红星新闻{background:#c0392b}
+  .src-凤凰网{background:#b8860b}
+  @media (max-width:640px){
+    header{padding:16px 18px}
+    h1{font-size:24px}
+    main{padding:18px}
+    .grid{grid-template-columns:1fr}
+    input[type=search]{min-width:0;width:100%}
+  }
+
+/* 退出程序的整页提示（用户反馈"点了退出没反应"，其实是后台退了但页面没反馈） */
+#quitMask{position:fixed;inset:0;background:rgba(248,250,252,.94);z-index:999;
+  display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)}
+#quitMask .qm-card{background:#fff;border:1px solid #e6eaf0;border-radius:16px;
+  padding:38px 46px;text-align:center;box-shadow:0 12px 40px rgba(20,30,50,.10);max-width:460px}
+#quitMask .qm-ico{width:56px;height:56px;border-radius:50%;background:#e8f6ee;color:#2f9e5f;
+  font-size:30px;line-height:56px;margin:0 auto 16px}
+#quitMask h3{margin:0 0 12px;font-size:20px;color:#1a202c}
+#quitMask p{margin:6px 0;color:#4a5568;font-size:14px;line-height:1.7}
+#quitMask .qm-sub{color:#8896ab;font-size:13px;margin-top:12px}
+#quitMask button{margin-top:20px;padding:10px 26px;border:1px solid #cfd8e3;background:#fff;
+  border-radius:9px;font-size:14px;color:#2b6cb0;cursor:pointer}
+#quitMask button:hover{background:#f2f7fd;border-color:#2b6cb0}
+</style>
+</head>
+<body>
+<header>
+  <div class="hd-top">
+    <h1>热点新闻<span>检索</span></h1>
+    <span class="badge" id="verBadge">v<span id="ver">-</span></span>
+    <div class="spacer"></div>
+    <div class="seg" id="regionSeg">
+      <button data-r="cn" class="on">国内</button>
+      <button data-r="intl">国际</button>
+    </div>
+  </div>
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="搜索标题或摘要关键词…" autocomplete="off">
+    <select id="cls"><option value="">全部分类</option></select>
+    <select id="sort">
+      <option value="new">最新优先</option>
+      <option value="old">最早优先</option>
+    </select>
+    <label class="autostart" title="开机后在后台自动启动，这样点「打开」时页面是现成的、秒开"><input type="checkbox" id="autostart">开机启动</label>
+  <button class="act primary" id="reload">刷新</button>
+    <button class="act" id="checkUpdate" title="检查是否有新版本">检查更新</button>
+    <span class="meta" id="meta"></span>
+    <button class="act quit" id="quit" title="停止后台服务并退出程序">退出程序</button>
+  </div>
+</header>
+<main><div id="grid"></div></main>
+<footer class="ft">热点新闻检索 · v<span id="ftVer">-</span> · 作者 海风（kele551） · <a href="https://gitee.com/kele551/hotnews" target="_blank" rel="noopener">gitee.com/kele551/hotnews</a></footer>
+<div id="toast"></div>
+
+<script>
+const SSR = __SSR_DATA__;
+let state = { region: SSR.region || "cn", items: SSR.items || [], timer: null };
+
+function fmt(ts){
+  if(!ts) return "";
+  const d = new Date(ts*1000);
+  const diff = (Date.now() - ts*1000) / 1000;
+  let rel;
+  if(diff < 3600) rel = Math.max(1, Math.round(diff/60)) + " 分钟前";
+  else if(diff < 86400) rel = Math.round(diff/3600) + " 小时前";
+  else rel = Math.round(diff/86400) + " 天前";
+  return rel + " · " + d.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+}
+function fmtHeat(n){
+  n = Number(n) || 0;
+  if(n >= 1e8) return (n/1e8).toFixed(1).replace(/\.0$/,"") + "亿";
+  if(n >= 1e4) return (n/1e4).toFixed(1).replace(/\.0$/,"") + "万";
+  return String(n);
+}
+const EXCLUDED_CLS = new Set(["热榜","数码"]);  // 热榜置顶单独展示不入筛选；数码源已移除
+const CLS_ORDER = ["科技","软件","要闻","国内","国际","社会","体育","娱乐"];  // 财经、文化已移除（无源）；娱乐：国内=凤凰娱乐八卦，国际=Variety/Billboard
+function buildClsOptions(){
+  const sel = document.getElementById("cls");
+  const cur = sel.value;
+  const set = [...new Set(state.items.map(i=>i.cls))].filter(Boolean).filter(c=>!EXCLUDED_CLS.has(c));
+  set.sort((a,b)=>{
+    const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
+    return (ia<0?99:ia) - (ib<0?99:ib);
+  });
+  sel.innerHTML = '<option value="">全部分类</option>' + set.map(c=>`<option>${esc(c)}</option>`).join("");
+  sel.value = set.includes(cur) ? cur : "";
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function toast(msg){
+  const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2200);
+}
+
+function shortLabel(s){
+  s = String(s==null?"":s).trim();
+  if(!s) return "·";
+  if(/^[A-Za-z0-9 .\-_/]+$/.test(s)){
+    const parts = s.split(/[\s\-_/]+/).filter(Boolean);
+    return (parts.length>1 ? parts.slice(0,2).map(p=>p[0]).join("") : s.slice(0,2)).toUpperCase();
+  }
+  return s.slice(0,3);
+}
+// 热度文案：不同平台的口径不一样，显示时要说清是什么数字，别含糊地丢一个整数给用户。
+//   澎湃新闻 → 站方页面上的真实互动数（能在原文页核对）
+//   红星新闻 / 凤凰网 → 只给名次不给热度值，后端置 0，这里不显示
+//   Hacker News → 真实投票点数 + 评论数（都能在页面上一一核对）
+function heatText(it){
+  const h = Number(it.heat) || 0;
+  if(!h) return "";
+  if(it.label === "Hacker News"){
+    return `▲${h}` + (it.comments ? ` · ${it.comments} 评` : "");
+  }
+  return fmtHeat(h);
+}
+
+function hotlistHTML(rows){
+  return `<ol class="hotlist">` + rows.map((it, i) => {
+    const hs = heatText(it);
+    return `
+      <li class="hotrow">
+        <span class="rank">${i + 1}</span>
+        <div class="hmain">
+          <a class="htitle" href="${esc(it.link)}" target="_blank" rel="noopener"
+             title="${esc(it.title_en||it.title)}">${esc(it.title)}</a>
+          <div class="hmeta"><span class="src src-${esc(it.label)}">${esc(it.label)}</span>${hs?`<span class="heat">${esc(hs)}</span>`:""}</div>
+        </div>
+      </li>`;
+  }).join("") + `</ol>`;
+}
+
+function cardHTML(it, showCls){
+  // 缩略图也做成可点：新闻图库的自然预期是「点哪儿都能进原文」，
+  // 原来只有标题是链接，点图片没反应（2026-10-07 按用户反馈改）。
+  const inner = it.image
+    ? `<img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt="">`
+    : `<i>${esc(shortLabel(it.label||it.channel))}</i>`;
+  const cls = `thumb${it.image ? "" : " ph"}`;
+  const thumb = it.link
+    ? `<a class="${cls}" href="${esc(it.link)}" target="_blank" rel="noopener" title="打开原文">${inner}</a>`
+    : `<div class="${cls}">${inner}</div>`;
+  return `<article class="card">
+    ${thumb}
+    <div class="body">
+      <div class="tags">${showCls?`<span class="tag cls">${esc(it.cls)}</span>`:""}<span class="tag">${esc(it.label||it.channel)}</span>${it.heat?`<span class="tag hot">${fmtHeat(it.heat)}</span>`:""}</div>
+      <h2><a href="${esc(it.link)}" target="_blank" rel="noopener" title="${esc(it.title_en||it.desc_en||"")}">${esc(it.title)}</a></h2>
+      <p class="desc">${esc(it.desc||"")}</p>
+      <span class="time">${fmt(it.published)}</span>
+    </div></article>`;
+}
+
+// 【2026-10-07 新增】统一的「数据时间」文案。
+// 用户几次反馈"热榜还有两天前的新闻"，实测根因是后端把红星新闻解析不出时间的条目
+// 伪造成了"刚刚"（已修）。同时这个显示能让人一眼判断是"数据旧"还是"页面旧"。
+function metaText(shown){
+  const newest = (state.items||[]).reduce((a,b)=>Math.max(a, b.published||0), 0);
+  const nt = newest
+    ? new Date(newest*1000).toLocaleString("zh-CN",
+        {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
+    : "-";
+  const st = new Date().toLocaleTimeString("zh-CN", {hour12:false});
+  return `共 ${shown} 条 / 源 ${state.items.length} 条 · 最新 ${nt} · 页面更新于 ${st}`;
+}
+
+function render(){
+  const kw = (document.getElementById("q").value||"").trim().toLowerCase();
+  const cls = document.getElementById("cls").value;
+  const sort = document.getElementById("sort").value;
+  const grid = document.getElementById("grid");
+
+  // 国内：实时热榜置顶（排名列表，无冗余「热榜」标签）+ 其余卡片网格
+  if(state.region === "cn"){
+    // 仅在「全部分类」且无搜索时，把热榜作为首屏置顶展示
+    const hotItems = (cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
+    let cards = state.items.filter(it=>{
+      if(it.cls === "热榜") return false;          // 热榜已置顶，卡片区不再重复
+      if(EXCLUDED_CLS.has(it.cls)) return false;   // 只排除「热榜」(已置顶单独展示) 和「数码」(源已移除)；科技照常展示
+      if(cls && it.cls !== cls) return false;
+      if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
+      return true;
+    });
+    cards.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
+    if(!hotItems.length && !cards.length){
+      grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
+      document.getElementById("meta").textContent = "共 0 条";
+      return;
+    }
+    let html = "";
+    if(hotItems.length){
+      // 跨平台混合排序由后端完成（各平台热度已归一化成 score）。
+      // 没有给出可信热度数值的平台（凤凰网/红星新闻只有名次），后端会把 heat 置 0 且不显示数字，
+      // 避免拿名次冒充阅读量误导人。
+      const merged = hotItems.slice(0, 60);
+      html += `<h2 class="sech">实时热榜 · 多平台聚合</h2>` + hotlistHTML(merged);
+    }
+    if(cards.length){
+      if(hotItems.length) html += `<h2 class="sech">更多新闻</h2>`;
+      if(cls){
+        // 已选定某分类：分类名在下拉里已知，卡片不再重复标
+        html += `<div class="grid">` + cards.map(it=>cardHTML(it,false)).join("") + `</div>`;
+      }else{
+        // 全部分类：按分类分块，分类名只作为区块标题出现一次（避免满屏重复同一词）
+        const byCls = {};
+        cards.forEach(it=>{ const k = it.cls || "其他"; (byCls[k] = byCls[k] || []).push(it); });
+        const keys = Object.keys(byCls).sort((a,b)=>{
+          const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
+          return (ia<0?99:ia) - (ib<0?99:ib);
+        });
+        html += keys.map(k=>
+          `<h3 class="sub">${esc(k)} <span class="cnt">${byCls[k].length}</span></h3>` +
+          `<div class="grid">` + byCls[k].map(it=>cardHTML(it,false)).join("") + `</div>`
+        ).join("");
+      }
+    }
+    grid.innerHTML = html;
+    document.getElementById("meta").textContent = metaText(hotItems.length+cards.length);
+    return;
+  }
+
+  // 国际：实时热榜（Hacker News）置顶 + 其余卡片网格
+  const isWorld = state.region === "intl";
+  // 【2026-10-07】原来这里会按国际/国内切换「浏览器翻译」按钮的显示；
+  // 按钮已移除，这行必须一起删 —— 否则 getElementById 返回 null，抛错会让整个 render 挂掉。
+  const hotItems = (isWorld && cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
+  let list = state.items.filter(it=>{
+    if(hotItems.length && it.cls === "热榜") return false;   // 热榜已置顶，卡片区不再显示
+    if(cls && it.cls !== cls) return false;
+    if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
+    return true;
+  });
+  list.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
+  if(!hotItems.length && !list.length){
+    grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
+    document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
+    return;
+  }
+  let html2 = hotItems.length ? `<h2 class="sech">国际实时热榜 · Hacker News</h2>` + hotlistHTML(hotItems) : "";
+  if(!list.length){
+    grid.innerHTML = html2;
+  } else {
+    const done = list.filter(it=>it.translated).length;
+    // 抓取不等翻译（否则国际板块要多等 1~2 分钟），译文由后台线程渐进补齐。
+    // 【2026-10-07 用户要求】国际板块现在已经自动全中文了，
+    // 原来的「浏览器翻译」按钮（跳 /world 纯英文页让 Edge/Chrome 整页翻译）
+    // 已经没有意义，已从工具栏移除。这里只保留「补齐中」的进度说明，不再引导点按钮。
+    const tipBar = (isWorld && !cls && done < list.length)
+      ? `<div class="transbar">中文译文后台补齐中（${done}/${list.length}），稍等片刻会自动刷新成中文。</div>`
+      : "";
+    if(hotItems.length) html2 += `<h2 class="sech">更多国际新闻</h2>`;
+    grid.innerHTML = html2 + tipBar + `<div class="grid">` + list.map(it=>cardHTML(it, !cls)).join("") + `</div>`;
+  }
+  // 【2026-10-07 新增】把「最新一条新闻的时间」和「本次拉取时间」显示出来。
+  // 用户几次反馈"热榜还有两天前的新闻"，**实测根因是后端把红星新闻解析不出时间的
+  // 条目伪造成了"刚刚"**（已修）。这个显示能让人一眼判断是"数据旧"还是"页面旧"。
+  document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
+}
+
+// 【2026-10-07】请求序号：切换分区时可能有两个请求在飞，
+// 网络慢的那个后回来会把新分区的数据覆盖掉（表现为"点了没换"/"换回去又变回来"）。
+// 每次 load 领一个号，回来时号不是最新的就丢弃。
+let LOAD_SEQ = 0;
+async function load(showToast){
+  const mySeq = ++LOAD_SEQ;
+  document.getElementById("meta").textContent = "抓取中…";
+  try{
+    const r = await fetch(`/api/news?region=${state.region}&limit=200`);
+    const js = await r.json();
+    if(mySeq !== LOAD_SEQ) return;                 // 已经切到别的分区，丢弃这次旧响应
+    state.items = js.items || [];
+    LAST_SIG = sig(state.items);
+    document.getElementById("ver").textContent = js.version || SSR.version;
+    document.getElementById("ftVer").textContent = js.version || SSR.version;
+    buildClsOptions();
+    render();
+    if(js.loading){
+      // 后端还没预热好（国际板块首次要几十秒），后端已转后台抓取，前端轮询接手
+      document.getElementById("meta").textContent = js.message || "正在抓取，请稍候…";
+    } else if(showToast){
+      toast(`已刷新 ${state.items.length} 条`);
+    }
+  }catch(e){
+    if(mySeq !== LOAD_SEQ) return;
+    document.getElementById("meta").textContent = "抓取失败：" + e.message;
+  }
+}
+
+// 国际板块的中文译文由后台线程渐进补齐（抓取不等翻译，否则国际板块要慢 90 秒以上）。
+// 这里定期静默重拉：只有内容真的变了才重绘，避免闪烁，也把补上的译文刷出来。
+let LAST_SIG = "";
+function sig(items){
+  return (items||[]).map(x=>`${x.id}|${x.translated?1:0}`).join(",");
+}
+async function silentRefresh(){
+  if(document.getElementById("q").value.trim()) return;      // 正在搜索，别打扰
+  if(document.getElementById("cls").value) return;           // 正在看某个分类
+  try{
+    const r = await fetch(`/api/news?region=${state.region}&limit=200`);
+    const js = await r.json();
+    const s = sig(js.items || []);
+    if(s === LAST_SIG) return;                               // 没变化就不重绘
+    LAST_SIG = s;
+    state.items = js.items || [];
+    buildClsOptions();
+    render();
+  }catch(e){}
+}
+setInterval(()=>silentRefresh(), 15000);
+
+async function checkVersion(){
+  try{
+    const r = await fetch("/api/version");
+    const js = await r.json();
+    if(js.version && js.version !== SSR.version && !sessionStorage.getItem("skipVer")){
+      toast(`检测到新版本 v${js.version}，前端需刷新`);
+    }
+  }catch(e){}
+}
+
+document.getElementById("reload").onclick = ()=>load(true);
+// 【2026-10-07 已移除】原「浏览器翻译」按钮的处理函数（跳 /world 纯英文页，
+// 交给 Edge/Chrome 整页翻译）。国际板块现在由后台自动译成中文，这个入口不需要了。
+document.getElementById("checkUpdate").onclick = async ()=>{
+  const btn = document.getElementById("checkUpdate");
+  btn.disabled = true; const old = btn.textContent; btn.textContent = "检查中…";
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), 15000);  // 15 秒超时，避免卡死
+  try{
+    const r = await fetch("/api/update/check", {signal: ctrl.signal});
+    const js = await r.json();
+    if(js.status === "update"){
+      const notes = js.notes ? "\n\n更新内容：\n" + js.notes : "";
+      toast(`发现新版本 v${js.remote}，正在后台下载…`);
+      setTimeout(()=>promptInstall(js.remote, notes), 3000);
+    } else if(js.status === "latest"){
+      toast(`已是最新版本 v${js.current}`);
+    } else if(js.status === "checking"){
+      toast("正在检查，请稍候…");
+    } else {
+      toast(js.message || "检查失败，请稍后重试");
+    }
+  }catch(e){
+    toast(e.name === "AbortError" ? "检查超时，请稍后重试" : "检查更新失败：" + e.message);
+  }finally{
+    clearTimeout(timer);
+    btn.disabled = false; btn.textContent = old;
+  }
+};
+
+async function promptInstall(remote, notes){
+  if(!confirm(`已下载新版本 v${remote}。\n\n是否立即更新并重启？\n${notes||""}`)) return;
+  try{
+    const r = await fetch("/api/update/install", {method:"POST"});
+    const js = await r.json();
+    if(js.ok){
+      document.getElementById("grid").innerHTML =
+        '<div class="empty">正在更新并重启，请稍候…</div>';
+    } else {
+      toast(js.message || "更新失败");
+    }
+  }catch(e){}
+}
+
+document.getElementById("quit").onclick = async ()=>{
+  if(!confirm("停止服务并退出程序？退出后此页面将无法继续访问。")) return;
+  const btn = document.getElementById("quit");
+  btn.disabled = true; btn.textContent = "正在退出…";
+  try{ await fetch("/api/quit", {method:"POST"}); }catch(e){}
+  document.getElementById("grid").innerHTML =
+    '<div class="empty">服务已停止。<br>可以关闭此页面，或重新双击程序启动。</div>';
+  document.getElementById("meta").textContent = "";
+  document.getElementById("q").disabled = true;
+  document.getElementById("reload").disabled = true;
+};
+document.getElementById("q").addEventListener("input", ()=>{
+  clearTimeout(window._deb); window._deb = setTimeout(render, 260);
+});
+document.getElementById("cls").onchange = render;
+document.getElementById("sort").onchange = render;
+document.getElementById("regionSeg").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  if(b.dataset.r === state.region) return;          // 点的是当前分区，不用重来
+  document.querySelectorAll("#regionSeg button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");
+  state.region = b.dataset.r;
+  // 【2026-10-07 修「国内和国际切换的时候，栏目没有切换」】
+  // 原来切换分区时保留了「分类」下拉里选中的值（比如国内的「科技」），
+  // 而国际板块根本没有这个分类 → 列表空空如也，看着就像栏目没换。
+  // 所以切换分区必须同时清掉分类筛选和搜索词，并立刻清屏给出加载反馈
+  // （国际首次抓取要几十秒，不能让人对着旧内容发呆）。
+  document.getElementById("cls").value = "";
+  document.getElementById("q").value = "";
+  state.items = [];
+  document.getElementById("grid").innerHTML =
+    `<div class="empty">正在抓取${state.region === "intl" ? "国际" : "国内"}新闻，请稍候…</div>`;
+  document.getElementById("meta").textContent = "抓取中…";
+  window.scrollTo(0, 0);   // 切分区也回到顶部（热榜位置）
+  load(false);
+});
+document.getElementById("ver").textContent = SSR.version;
+document.getElementById("ftVer").textContent = SSR.version;
+if(state.items.length) buildClsOptions();
+render();
+load(false);
+setInterval(()=>checkVersion(), 60000);
+
+// 【2026-10-07 用户要求「网页打开必须定位在热榜」】
+// 浏览器默认会恢复上次的滚动位置和表单状态，结果打开时可能停在页面中间，
+// 甚至因为上次选中了某个分类（比如"科技"）而把热榜整块藏起来
+//（热榜只在「全部分类 + 无搜索」时才显示）。
+// 所以每次打开都强制：清掉分类与搜索 → 关掉滚动恢复 → 锚定到热榜标题。
+function anchorToHotList(){
+  try{ if("scrollRestoration" in history) history.scrollRestoration = "manual"; }catch(e){}
+  const sel = document.getElementById("cls");
+  const q = document.getElementById("q");
+  if(sel) sel.value = "";
+  if(q) q.value = "";
+  window.scrollTo(0, 0);                     // 先回到顶部（热榜就在首屏最上面）
+  const sech = document.querySelector("main .sech");
+  if(sech && (sech.textContent||"").indexOf("热榜") >= 0){
+    try{ sech.scrollIntoView({block:"start"}); }catch(e){ window.scrollTo(0,0); }
+  }
+}
+anchorToHotList();
+window.addEventListener("load", anchorToHotList);
+// 分区切换后同样回到热榜（新分区的内容还没到，先别停在旧位置）
+
+/* ================= 开机自启开关（用户要求"第一次使用时给个开关让用户选"） ================= */
+async function refreshAutoStart(){
+  try{
+    const r = await fetch("/api/autostart");
+    const j = await r.json();
+    const cb = document.getElementById("autostart");
+    if(cb) cb.checked = !!j.enabled;
+  }catch(e){}
+}
+document.addEventListener("DOMContentLoaded", ()=>{
+  const cb = document.getElementById("autostart");
+  if(!cb) return;
+  refreshAutoStart();
+  cb.onchange = async ()=>{
+    cb.disabled = true;
+    try{
+      const r = await fetch("/api/autostart", {method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({enabled: cb.checked})});
+      const j = await r.json();
+      cb.checked = !!j.enabled;
+      cb.title = j.message || "";
+    }catch(e){}
+    cb.disabled = false;
+  };
+});
+
+/* ================= 首屏加载提示（用户反馈"打开页面什么都没有"） ================= */
+let _bootTry = 0;
+function bootWatch(){
+  try{
+    if((state.items.length || hotItems.length) || _bootTry > 40) return;
+    _bootTry++;
+    const g = document.getElementById("grid");
+    if(g && !g.querySelector(".card")){
+      g.innerHTML = '<div class="empty">正在加载今天的新闻…<br>' +
+        '<span style="color:#8896ab;font-size:13px">首次启动约需 10 秒，稍等一下就好</span></div>';
+    }
+    setTimeout(async ()=>{ try{ await load(false); }catch(e){} bootWatch(); }, 1500);
+  }catch(e){}
+}
+bootWatch();
+</script>
+</body>
+</html>
