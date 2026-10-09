@@ -34,7 +34,7 @@
 
 ## 使用
 
-下载 [最新 Release](https://gitee.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.1.exe`，双击运行，自动打开浏览器。
+下载 [最新 Release](https://gitee.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.2.exe`，双击运行，自动打开浏览器。
 
 - 自动选端口（8000 起，被占则顺延）
 - 启动时自动检查更新（可关闭，见 `config.json`）
@@ -45,7 +45,7 @@
 
 ---
 
-## 数据源（v1.5.1）
+## 数据源（v1.5.2）
 
 每个源都是**实测连通 + 带图**之后才加入的；实测失败的（无法访问、无图、停更）一律没有采用。
 
