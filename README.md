@@ -2,7 +2,7 @@
 
 > 作者：**海风（kele551）** · 仓库：https://gitee.com/kele551/hotnews （GitHub 同名镜像）
 
-![License](https://img.shields.io/badge/license-MIT-blue) ![Platform](https://img.shields.io/badge/platform-Windows-blue) ![Version](https://img.shields.io/badge/version-v1.5.1-blue) ![Downloads](https://img.shields.io/github/downloads/kele551/hotnews/total?label=downloads&color=green)
+![License](https://img.shields.io/badge/license-MIT-blue) ![Platform](https://img.shields.io/badge/platform-Windows-blue) ![Version](https://img.shields.io/badge/version-v1.5.2-blue) ![Downloads](https://img.shields.io/github/downloads/kele551/hotnews/total?label=downloads&color=green)
 
 网页形式呈现的国内 / 国际热点新闻图库，支持搜索、分类、筛选，**每 10 分钟自动刷新**。
 
