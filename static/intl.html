@@ -76,6 +76,29 @@
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .time{color:var(--muted);font-size:14px;margin-top:auto}
   .empty{padding:60px;text-align:center;color:var(--muted)}
+  /* ===== 【2026-10-09 用户要求「国际频道加实时热榜区块」】=====
+     与国内页同一套：区块标题 + 平台分组标 + 名次 + 「来源：<平台>热榜 · 第N名」。
+     在此之前这个页面里连"热榜"两个字都没有，用户看着就像"国际没有热榜"。 */
+  .sech{font-size:21px;font-weight:700;margin:26px 0 14px;display:flex;align-items:center;gap:10px}
+  .sub{font-size:16px;font-weight:700;margin:18px 0 10px;display:flex;align-items:center;gap:8px}
+  .sub .cnt{font-size:13px;font-weight:600;color:var(--muted);background:var(--line);
+    border-radius:10px;padding:1px 9px}
+  .hotlist{list-style:none;display:flex;flex-direction:column;gap:10px;max-width:900px}
+  .hotrow{display:flex;gap:18px;align-items:center;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;padding:14px 20px}
+  .rank{font-size:25px;font-weight:800;color:var(--muted);min-width:40px;text-align:center;
+    font-variant-numeric:tabular-nums}
+  .hotrow:nth-child(1) .rank{color:var(--accent)}
+  .hotrow:nth-child(2) .rank{color:#e8975a}
+  .hotrow:nth-child(3) .rank{color:#e8b95a}
+  .hmain{flex:1;display:flex;flex-direction:column;gap:7px;min-width:0}
+  .htitle{font-size:19px;font-weight:700;color:var(--text);text-decoration:none;line-height:1.5;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .htitle:hover{color:var(--primary)}
+  .hmeta{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}
+  .srcline{display:inline-flex;align-items:center;gap:2px}
+  .src{font-size:12px;font-weight:700;padding:1px 9px;border-radius:10px;color:#fff;white-space:nowrap;
+    background:var(--primary)}
   footer{padding:18px 32px;color:var(--muted);font-size:14px;border-top:1px solid var(--line);
     background:var(--card)}
 </style>
@@ -135,6 +158,35 @@ function fmt(ts){
     {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
 }
 
+// 【2026-10-09 用户要求】国际频道的「实时热榜」区块：按平台分组 + 平台标 + 名次，
+// 每条都带出处（`来源：凤凰网热榜 · 第4名`）。数据来自 /api/news?region=intl 里 cls=="热榜"
+// 的条目，source 字段由后端热榜聚合统一给出（_hot_source_of）。
+function hotBlock(rows){
+  if(!rows || !rows.length) return "";
+  const groups = {};
+  rows.forEach(it => {
+    const k = it.label || it.channel || "?";
+    (groups[k] = groups[k] || []).push(it);
+  });
+  let html = `<h2 class="sech">实时热榜 · 多平台聚合</h2>`;
+  Object.keys(groups).forEach(k => {
+    html += `<div class="sub">${esc(k)}热榜 <span class="cnt">${groups[k].length}</span></div>`;
+    html += `<ol class="hotlist">` + groups[k].map(it => {
+      const src = it.source || (k + "热榜");
+      const rk = Number(it.rank) || 0;
+      return `<li class="hotrow">
+        <span class="rank">${rk || ""}</span>
+        <div class="hmain">
+          <a class="htitle" href="${esc(safeLink(it.link))}" target="_blank" rel="noopener"
+             title="${esc(it.title_en || it.title)}">${esc(it.title)}</a>
+          <div class="hmeta"><span class="srcline">来源：<b class="src">${esc(src)}</b>${
+            rk ? ` · 第${rk}名` : ""}</span></div>
+        </div></li>`;
+    }).join("") + `</ol>`;
+  });
+  return html;
+}
+
 function card(it){
   // show the ORIGINAL English text (title_en holds it once a translation exists)
   const title = it.title_en || it.title || "";
@@ -162,10 +214,16 @@ async function load(){
     const js = await r.json();
     const items = js.items || [];
     document.getElementById("ver").textContent = "v" + (js.version || "-");
+    // 【2026-10-09】热榜置顶（与其他国际新闻分开），其余照旧走卡片网格。
+    const hotRows = items.filter(x => x.cls === "热榜");
+    const rest = items.filter(x => x.cls !== "热榜");
     document.getElementById("grid").innerHTML = items.length
-      ? `<div class="grid">` + items.map(card).join("") + `</div>`
+      ? hotBlock(hotRows) + (rest.length
+          ? `<h2 class="sech">更多国际新闻</h2><div class="grid">` + rest.map(card).join("") + `</div>`
+          : "")
       : `<div class="empty">Nothing loaded yet. The feed may still be warming up - press Reload.</div>`;
-    document.getElementById("meta").textContent = items.length + " articles";
+    document.getElementById("meta").textContent =
+      items.length + " articles" + (hotRows.length ? " · hot list " + hotRows.length : "");
   }catch(e){
     document.getElementById("grid").innerHTML =
       `<div class="empty">Load failed: ${esc(e.message)}</div>`;
