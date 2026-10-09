@@ -33,6 +33,11 @@ jobs:
   windows-build:
     name: Windows 打包与校验
     runs-on: windows-latest
+    # 【2026-10-09 修】GitHub 的 Windows runner 控制台默认 cp1252，中文 print 会抛
+    # UnicodeEncodeError 把 CI 弄红（本地因控制台是 UTF-8 从没复现过）。强制 UTF-8 输出。
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
 
     steps:
       - name: 检出源码
