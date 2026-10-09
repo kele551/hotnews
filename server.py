@@ -430,6 +430,12 @@ _POOL_TIMEOUTS = [0]
 # 文章页 → (题图, 发布时间, 站方栏目)。og:image 基本不会变，进程内记住，避免每轮刷新重抓一遍。
 # 【2026-10-09 修 高-2】原来是个裸 dict，只增不减 —— 跑一天就是几千条，换成带容量上限的缓存。
 _ART_CACHE = _TTLCache(7 * 86400, 4096)
+# 2026-10-09 补回（真机事故）：mefcl（用户投稿站）的站点校验 cookie 缓存 + "上次成功结果"兜底。
+# 这两个模块级变量在"删除死代码"那一批里被误删，而 _parse_mefcl 仍在用它们 ——
+# 于是它一抛 NameError，就把**整个「国内」栏**的抓取带崩（ex.map 会把异常抛到外层），
+# 用户看到的就是"国内新闻半天抓不出来"。
+_MEFCL_COOKIE = {"value": "", "ts": 0}
+_MEFCL_LAST = []
 
 # 只重试这几种「对方临时不舒服」的状态码；404/403 之类不重试（重试也没用，还多打一次站方）
 _RETRY_CODES = frozenset({408, 429, 500, 502, 503, 504})
@@ -1042,6 +1048,21 @@ def _refeed_if_mojibake(raw, doc):
 
 
 def _parse_one(src):
+    """带**单源隔离**的解析入口。
+
+    2026-10-09 真机教训：mefcl 解析里一个 NameError 把整个「国内」栏带崩了 ——
+    `_collect` 用 `ex.map(_parse_one, ...)` 迭代结果，任何一个源抛异常都会中断整栏。
+    现在这里兜一层：**某个源坏了只丢它自己**，日志写清是哪个源、什么异常。
+    """
+    try:
+        return _parse_one_raw(src)
+    except Exception as ex:
+        print(f"[warn] 源解析异常，已跳过该源: {src.get('id') or src.get('url')} - "
+              f"{type(ex).__name__}: {ex}")
+        return []
+
+
+def _parse_one_raw(src):
     # 凤凰娱乐：首页内联 JSON（newsstream），非 RSS，走专用解析
     if src.get("parser") == "ifeng":
         return _parse_ifeng(src)
