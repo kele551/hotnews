@@ -200,10 +200,17 @@
 
 <script>
 const SSR = __SSR_DATA__;
+// 【2026-10-09 修 高-4】退出 / 更新安装 / 开机自启这三个有副作用的接口，
+// 服务端要求带上本机访问令牌（window.__SSR_DATA__.token，仅本机页面拿得到）。
+// 不带的话服务端一律 403 —— 这是防「随便一个网页用 <form> 就把程序关掉」的本地 CSRF。
+const POST_HEADERS = SSR.token ? {"X-HN-Token": SSR.token} : {};
 let state = { region: SSR.region || "cn", items: SSR.items || [], timer: null };
 
 function fmt(ts){
-  if(!ts) return "";
+  // 【2026-10-09 修 中-1】源站没给发布时间时 published=0 → 明确写「时间未知」，
+  // 不再显示成空白（空白容易让人误以为是"刚刚"或被渲染坏了）。
+  // 服务端也不再用"当前时刻"顶替（README 承诺：绝不伪造时间）。
+  if(!ts) return "时间未知";
   const d = new Date(ts*1000);
   const diff = (Date.now() - ts*1000) / 1000;
   let rel;
@@ -494,7 +501,7 @@ document.getElementById("checkUpdate").onclick = async ()=>{
 async function promptInstall(remote, notes){
   if(!confirm(`已下载新版本 v${remote}。\n\n是否立即更新并重启？\n${notes||""}`)) return;
   try{
-    const r = await fetch("/api/update/install", {method:"POST"});
+    const r = await fetch("/api/update/install", {method:"POST", headers:POST_HEADERS});
     const js = await r.json();
     if(js.ok){
       document.getElementById("grid").innerHTML =
@@ -509,7 +516,7 @@ document.getElementById("quit").onclick = async ()=>{
   if(!confirm("停止服务并退出程序？退出后此页面将无法继续访问。")) return;
   const btn = document.getElementById("quit");
   btn.disabled = true; btn.textContent = "正在退出…";
-  try{ await fetch("/api/quit", {method:"POST"}); }catch(e){}
+  try{ await fetch("/api/quit", {method:"POST", headers:POST_HEADERS}); }catch(e){}
   document.getElementById("grid").innerHTML =
     '<div class="empty">服务已停止。<br>可以关闭此页面，或重新双击程序启动。</div>';
   document.getElementById("meta").textContent = "";
@@ -586,7 +593,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
     cb.disabled = true;
     try{
       const r = await fetch("/api/autostart", {method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:{...POST_HEADERS, "Content-Type":"application/json"},
         body: JSON.stringify({enabled: cb.checked})});
       const j = await r.json();
       cb.checked = !!j.enabled;

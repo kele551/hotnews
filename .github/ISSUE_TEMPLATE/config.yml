@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（请勿开公开 Issue）
+    url: https://github.com/kele551/hotnews/security/advisories/new
+    about: 走私密渠道报告，别在公开 Issue 里贴漏洞细节。响应时限与支持范围见 SECURITY.md。
+
+  - name: 先看文档（安装 / 运行 / 自动更新 / 数据源清单）
+    url: https://gitee.com/kele551/hotnews#readme
+    about: README 里有安装与运行方式、数据源实测评测表、已知取舍、自动更新的注意事项。
+
+  - name: 某个源没内容 / 栏目空白
+    url: https://gitee.com/kele551/hotnews/blob/master/check_sources.py
+    about: 源码版可以先跑 python check_sources.py，把输出贴进 Issue；多半能直接看出是哪个源挂了。

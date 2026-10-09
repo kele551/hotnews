@@ -13,11 +13,14 @@ import json
 import html
 import base64
 import hashlib
+import hmac              # 【2026-10-09 修 高-4】本机令牌比对（标准库，不引入新依赖）
+import ipaddress         # 【2026-10-09 修 高-1】判图片域名解析出来的是不是内网/回环地址
+import socket            # 同上：只解析域名，不建连接
 import threading
 import urllib.parse
 import webbrowser
 from datetime import datetime, timezone, timedelta
-from collections import Counter
+from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -100,7 +103,22 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 CST = timezone(timedelta(hours=8))
 CACHE_TTL = 300          # RSS 缓存 5 分钟
-IMG_CACHE_TTL = 86400    # 图片缓存 1 天
+IMG_CACHE_TTL = 86400    # 图片缓存 1 天（**浏览器端** Cache-Control 用这个值）
+# 【2026-10-09 修 高-2 / 高-3】
+#   IMG_MEM_TTL  —— 进程内那份图片字节只留 6 小时。原来跟着浏览器缓存一起留 1 天，
+#                   一天里跑几百上千条新闻，等于把图片本体都攒在内存里（详见 _TTLCache）。
+#   FAIL_CACHE_TTL / IMG_FAIL_CACHE_TTL —— 抓取失败只写一个**很短**的负缓存：
+#                   原来失败也按整段 TTL 记（文档 5 分钟、图片 404 一整天），一次网络抖动
+#                   就让该源整轮消失、破图一天不自愈。留十几秒只是防同一瞬间的重复打点。
+IMG_MEM_TTL = 6 * 3600
+FAIL_CACHE_TTL = 15
+IMG_FAIL_CACHE_TTL = 60
+RETRY_BACKOFF = 0.6      # 失败重试前等这么久；只对超时/连接错误/5xx 重试，且只重试 1 次
+IMG_CACHE_MAX_ITEMS = 256                # 图片缓存条数上限（LRU）
+IMG_CACHE_MAX_BYTES = 32 * 1024 * 1024   # 图片缓存总字节预算（LRU）
+IMG_ONE_MAX_BYTES = 1024 * 1024          # 单张超过 1MB 不进内存缓存，直接透传给浏览器
+DOC_CACHE_MAX_ITEMS = 512                # RSS/文章页缓存条数上限
+DOC_CACHE_MAX_BYTES = 16 * 1024 * 1024   # 同上，字节预算
 # 【加速】部分下载上限（2026-10-07）：
 #   ART_PAGE_BYTES —— 抓文章页只要 <head> 里的 og:image，96KB 足够，不必下整页
 #   IMG_HEAD_BYTES —— 测图片尺寸只要文件头，256KB 足够覆盖 JPEG 的 SOF 段
@@ -176,7 +194,7 @@ SOURCES = {
         #                       大眼仔旭（10 条但 0 张图，会被「没图不要」的规则剔除）
         {"id": "cn-ghpym",   "label": "果核剥壳", "url": "https://www.ghpym.com/feed", "base": "https://www.ghpym.com", "region": "cn", "cls": "软件"},
         # 软件类：mefcl（用户投稿站点），站方有 JS cookie 验证；抓首页（/feed/ 仍 403），
-        # parser 内现取挑战 cookie 回放绕过
+        # parser 内先按站方校验流程取到访问 cookie，再带 cookie 正常请求首页
         {"id": "cn-mefcl",   "label": "mefcl",     "url": "https://www.mefcl.com/",                       "base": "https://www.mefcl.com",     "region": "cn", "cls": "软件", "parser": "mefcl"},
         # 软件类：国内中文源（用户要求删除不易读的英文 GitHub 仓库，改用国内）。
         # 开源中国 RSS 软件发布动态（50 条，中文，带 180~210 字摘要）；少数派 RSS 工具/效率软件实践（10 条，中文）。
@@ -231,8 +249,64 @@ SOURCES = {
 # 要么补上图，要么就从列表里消失（不再用渐变色块占位）。
 NOIMG_SOURCES = set()
 
-_CACHE = {}     # url -> (ts, payload)
-_IMG_CACHE = {} # url -> (ts, bytes, ctype)
+_MISS = object()    # 缓存「没有这条」的哨兵：None 本身是「抓取失败」的合法缓存值
+
+
+class _TTLCache:
+    """带 TTL + 容量上限的 LRU 缓存（2026-10-09 新增，修 高-2）。
+
+    原来 _CACHE / _IMG_CACHE 是普通 dict，只写不删：进程跑得越久内存越高，
+    而 /img 不需要任何鉴权，别人换着 URL 请求就能把这个进程的内存灌满
+    （无窗口运行时用户看不到任何提示，只会觉得"越用越卡"）。
+    现在每条都记「过期时间 + 占用字节」，超条数或超字节预算就按 LRU 淘汰最久没用的那条；
+    图片还额外限制单张体积（超过 IMG_ONE_MAX_BYTES 的直接透传，不进内存）。
+    抓取是多线程的，所以内部加锁。
+    """
+
+    def __init__(self, ttl, max_items, max_bytes=0):
+        self._ttl = ttl
+        self._max_items = max_items
+        self._max_bytes = max_bytes
+        self._d = OrderedDict()        # key -> (expire_at, value, weight)
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, key, default=_MISS):
+        with self._lock:
+            e = self._d.get(key)
+            if e is None:
+                return default
+            if time.time() >= e[0]:
+                self._drop(key)
+                return default
+            self._d.move_to_end(key)
+            return e[1]
+
+    def put(self, key, value, weight=0, ttl=None):
+        with self._lock:
+            if key in self._d:
+                self._drop(key)
+            self._d[key] = (time.time() + (self._ttl if ttl is None else ttl), value, weight)
+            self._bytes += weight
+            while self._d and (len(self._d) > self._max_items
+                               or (self._max_bytes and self._bytes > self._max_bytes)):
+                self._drop(next(iter(self._d)))     # 淘汰最久未使用的一条
+
+    def _drop(self, key):
+        e = self._d.pop(key, None)
+        if e:
+            self._bytes -= e[2]
+
+    def stats(self):
+        with self._lock:
+            return len(self._d), self._bytes
+
+
+_CACHE = _TTLCache(CACHE_TTL, DOC_CACHE_MAX_ITEMS, DOC_CACHE_MAX_BYTES)   # 文档/RSS
+_IMG_CACHE = _TTLCache(IMG_MEM_TTL, IMG_CACHE_MAX_ITEMS, IMG_CACHE_MAX_BYTES)   # 完整图片本体
+# 【2026-10-09 修 阻断-2】测尺寸只看文件头，这类「探测用片段」单独一个缓存，
+# 绝不与 _IMG_CACHE 里的完整图混放（键、缓存对象都分开）。
+_PROBE_CACHE = _TTLCache(IMG_MEM_TTL, IMG_CACHE_MAX_ITEMS, 8 * 1024 * 1024)
 PRELOAD = {"cn": [], "intl": [], "hot": []}   # 启动时预热好的条目，API 直接取用
 # 「当天」过滤之前的完整池子（按各源窗口，含最近几天）。
 # 主列表只给当天（用户原则：常看常新、绝不看旧新闻），
@@ -294,8 +368,27 @@ _HTTP_LIMITS = httpx.Limits(max_connections=48, max_keepalive_connections=24,
 _CLIENT = httpx.Client(follow_redirects=True, trust_env=False, timeout=10,
                        limits=_HTTP_LIMITS, headers={"User-Agent": UA})
 
-# 文章页 → 题图 URL。og:image 基本不会变，进程内永久记住，避免每轮刷新重抓一遍。
-_ART_CACHE = {}
+# 文章页 → (题图, 发布时间, 站方栏目)。og:image 基本不会变，进程内记住，避免每轮刷新重抓一遍。
+# 【2026-10-09 修 高-2】原来是个裸 dict，只增不减 —— 跑一天就是几千条，换成带容量上限的缓存。
+_ART_CACHE = _TTLCache(7 * 86400, 4096)
+
+# 只重试这几种「对方临时不舒服」的状态码；404/403 之类不重试（重试也没用，还多打一次站方）
+_RETRY_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _ctype_of(resp):
+    """响应里的真实 content-type（去掉 charset 参数）；拿不到才按 JPEG 兜底。"""
+    try:
+        return (resp.headers.get("content-type") or "").split(";")[0].strip() or "image/jpeg"
+    except Exception:
+        return "image/jpeg"
+
+
+def _fetch_failed(out, key):
+    """这次抓取算不算失败（失败只写短负缓存，也不占容量预算）。"""
+    if key == "img":
+        return not (isinstance(out, tuple) and out and out[0])
+    return not out
 
 
 def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
@@ -308,57 +401,247 @@ def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
         or ".jpg?" in _low or ".png?" in _low or ".webp?" in _low or ".gif?" in _low
         or "/img/" in _low
     )
-    key = ("img", url) if _is_img else ("doc", url)
-    # 带了额外请求头（如 mefcl 的挑战 cookie）时缓存键要区分开，
-    # 否则先抓到的「挑战页」会把后面带 cookie 的正确结果顶掉。
+    key = "img" if _is_img else "doc"
+    # 带了额外请求头（如 mefcl 的访问 cookie）时缓存键要区分开，
+    # 否则先抓到的「校验页」会把后面带 cookie 的正确结果顶掉。
     _ck = url
     if extra_headers:
         _ck = url + "|" + ",".join(f"{k}={v}" for k, v in sorted(extra_headers.items()))
-    now = datetime.now().timestamp()
-    cache = _IMG_CACHE if key[0] == "img" else _CACHE
+    # 【2026-10-09 修 阻断-2】max_bytes 是「只读前 N 字节」的探测请求（测图片尺寸、
+    # 只取文章页 <head>），拿到的是**片段**，绝不能和「要完整本体」的请求共用缓存：
+    #   · 图片：完整本体进 _IMG_CACHE，探测片段进 _PROBE_CACHE（连缓存对象都分开）；
+    #   · 文档：完整正文用原键，片段加 "|head" 后缀。
+    # 以前两者同键同缓存，_measure_image 留下的「前 256KB」会把 /img 要的完整图顶掉 ——
+    # 于是所有超过 256KB 的题图在 24 小时里只显示上半张，正是用户看到的"半张图"。
+    head = max_bytes is not None
+    if key == "img":
+        cache = _PROBE_CACHE if head else _IMG_CACHE
+    else:
+        cache = _CACHE
+        if head:
+            _ck += "|head"
     hit = cache.get(_ck)
-    if hit and (now - hit[0]) < (IMG_CACHE_TTL if key[0] == "img" else CACHE_TTL):
-        return hit[1]
-    try:
-        # trust_env=False：不走系统/沙箱代理，本机直连国内站点更快更稳
-        hdrs = {}
-        if key[0] == "img":
-            # 部分图片 CDN 靠 Referer 防盗链，带上来源站点域名
-            try:
-                hdrs["Referer"] = urllib.parse.urlsplit(url).netloc
-            except Exception:
-                pass
-        if extra_headers:
-            hdrs.update(extra_headers)
-        if max_bytes:
-            # 【加速】只读前 N 字节就断开：og:image 在 <head>、图片尺寸在头部几十字节里，
-            # 整页下载纯属浪费（新闻页常有 100~500KB）。实测这是补图环节最大的一笔开销。
-            buf = bytearray()
-            with _CLIENT.stream("GET", url, timeout=timeout, headers=hdrs) as r:
-                if r.status_code == 200:
-                    for chunk in r.iter_bytes(16384):
-                        buf.extend(chunk)
-                        if len(buf) >= max_bytes:
-                            break
-            data = bytes(buf) if buf else None
-            out = ((data, "image/jpeg") if data else (None, "")) if key[0] == "img" else data
-        else:
-            r = _CLIENT.get(url, timeout=timeout, headers=hdrs)
-            if key[0] == "img":
-                if r.status_code == 200:
-                    out = (r.content, r.headers.get("content-type", "image/jpeg"))
-                else:
-                    out = (None, "")
+    if hit is not _MISS:
+        return hit
+    # 图片：先做地址层面的拦截（裸 IP / 内网 / 回环 / 非 80·443 端口一律不取），
+    # 免得 /img 被当成内网探针、把本机当开放代理用（修 高-1）。
+    if key == "img":
+        _why = _img_url_block_reason(url)
+        if _why:
+            print(f"[warn] 图片地址被拒（{_why}）: {url[:110]}")
+            return (None, "")
+    out, transient, truncated = None, False, False
+    for attempt in (0, 1):
+        # 【2026-10-09】truncated 必须每次尝试都归零：否则上一次尝试的 True 会残留到重试，
+        # 让「这次其实读完了整张图」的小图被误判成片段（不进 _IMG_CACHE，白丢一次缓存机会）。
+        out, transient, truncated = None, False, False
+        try:
+            # trust_env=False：不走系统/沙箱代理，本机直连国内站点更快更稳
+            hdrs = {}
+            if key == "img":
+                # 来源站点信息：部分图片 CDN 会校验它（站点访问策略），按站方要求带上
+                try:
+                    hdrs["Referer"] = urllib.parse.urlsplit(url).netloc
+                except Exception:
+                    pass
+            if extra_headers:
+                hdrs.update(extra_headers)
+            if head:
+                # 【加速】只读前 N 字节就断开：og:image 在 <head>、图片尺寸在头部几十字节里，
+                # 整页下载纯属浪费（新闻页常有 100~500KB）。实测这是补图环节最大的一笔开销。
+                buf, ctype = bytearray(), ""
+                blocked = False
+                with _CLIENT.stream("GET", url, timeout=timeout, headers=hdrs) as r:
+                    if r.status_code in _RETRY_CODES:
+                        transient = True
+                    elif r.status_code == 200:
+                        # 跟随重定向后落到内网地址 → 当抓取失败，绝不把内容带回去
+                        if key == "img" and str(r.url) != url and _img_url_block_reason(str(r.url)):
+                            blocked = True
+                        ctype = _ctype_of(r)
+                        for chunk in r.iter_bytes(16384):
+                            buf.extend(chunk)
+                            if len(buf) >= max_bytes:
+                                break
+                truncated = len(buf) >= max_bytes
+                data = bytes(buf) if (buf and not blocked) else None
+                # 真实 content-type 要留下：原来这里写死 image/jpeg，PNG/WebP 会被报成 JPEG
+                out = (data, ctype or "image/jpeg") if data else (None, "")
+                if key != "img":
+                    out = data
             else:
-                # 必须返回原始字节 r.content，而不是 r.text：
-                # httpx 的 r.text 会用它猜的编码（常误判 GBK 源为 utf-8）解码成字符串，
-                # 一旦源字节不是合法 utf-8（如中关村在线 RSS 是 GBK），标题就被换成 U+FFFD 乱码。
-                # 交给 feedparser.parse(bytes) 按各源 XML 声明的编码自行解码，才能正确还原中文。
-                out = r.content if r.status_code == 200 else None
-    except Exception:
-        out = None
-    cache[_ck] = (now, out)
+                r = _CLIENT.get(url, timeout=timeout, headers=hdrs)
+                if r.status_code in _RETRY_CODES:
+                    transient = True
+                if key == "img":
+                    if r.status_code != 200 or (str(r.url) != url
+                                                and _img_url_block_reason(str(r.url))):
+                        out = (None, "")
+                    else:
+                        out = (r.content, _ctype_of(r))
+                else:
+                    # 必须返回原始字节 r.content，而不是 r.text：
+                    # httpx 的 r.text 会用它猜的编码（常误判 GBK 源为 utf-8）解码成字符串，
+                    # 一旦源字节不是合法 utf-8（如中关村在线 RSS 是 GBK），标题就被换成 U+FFFD 乱码。
+                    # 交给 feedparser.parse(bytes) 按各源 XML 声明的编码自行解码，才能正确还原中文。
+                    out = r.content if r.status_code == 200 else None
+        except Exception:
+            out, transient = None, True
+        # 【2026-10-09 修 高-3】偶发抖动（超时/连接错误/5xx）给一次带退避的重试：
+        # 以前源抓取、_article_meta、_measure_image 全是单次尝试，抖一下这轮就没了。
+        if transient and attempt == 0:
+            time.sleep(RETRY_BACKOFF)
+            continue
+        break
+    if _fetch_failed(out, key):
+        # 【修 高-3】失败只写很短的负缓存（防同一瞬间重复打点），不再长期负缓存：
+        # 以前文档失败要哑 5 分钟、图片 404 要哑一整天，难怪"栏目偶尔少一块"。
+        cache.put(_ck, out, 0, ttl=IMG_FAIL_CACHE_TTL if key == "img" else FAIL_CACHE_TTL)
+        return out
+    weight = len(out[0]) if key == "img" else len(out or b"")
+    if key == "img" and weight > IMG_ONE_MAX_BYTES:
+        return out          # 单张大图不进内存缓存（浏览器那份 Cache-Control 仍缓存一天）
+    if key == "img" and head and not truncated:
+        # 探测时就把整张图读完了（小图）→ 直接当完整图存，后面 /img 命中它，少下一次
+        _IMG_CACHE.put(_ck, out, weight)
+    else:
+        cache.put(_ck, out, weight)
     return out
+
+
+# ============ 图片代理的来源白名单（2026-10-09 新增，修 高-1）============
+# 背景：/img 原来只校验「以 http(s):// 开头」就直连，等于给任意网页一个内网探针：
+#   <img src="http://127.0.0.1:8000/img?url=http://192.168.1.1/">
+# 靠 onload/onerror 就能扫内网端口；按 README 用 `python server.py` 启动时绑的是
+# 0.0.0.0，同局域网的人还能把本机当开放代理读回响应体。
+# 现在两道闸：
+#   1) 地址层面：只允许 http/https、不带用户名密码、端口只能 80/443，域名不能是裸 IP，
+#      且域名解析出来的地址必须全是公网地址（私网/回环/链路本地/保留段一律拒绝）；
+#   2) 域名层面：只代理「登记源站的域名」和「当前正在服务的条目里出现过的图片域名」——
+#      后者由 _note_item_hosts() 在每次下发新闻列表时登记，等于自动跟随源站换 CDN，
+#      而外部页面塞进来的域名永远进不了这个集合。
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_DNS_CACHE = {}                 # host -> (ts, (ip, ...))，只给图片白名单用
+_DNS_CACHE_TTL = 300
+_IMG_HOSTS_SEEN = set()         # 见过（＝我们自己的条目里出现过）的图片域名
+_IMG_HOSTS_LOCK = threading.Lock()
+
+
+def _parent_domain(host):
+    """取站点域名：img.ithome.com → ithome.com；www.news.cn → news.cn。
+    带二级后缀的（com.cn / co.uk …）多留一段，免得把两个不同站点认成一家。"""
+    parts = [x for x in (host or "").lower().split(".") if x]
+    if len(parts) >= 3 and ".".join(parts[-2:]) in (
+            "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "com.hk", "com.tw",
+            "co.uk", "co.jp", "com.au", "co.kr"):
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else ".".join(parts)
+
+
+# 登记源站的域名（SOURCES 里 base/url 的站点域名）——白名单的静态部分
+_SRC_DOMAINS = set()
+for _rg in SOURCES.values():
+    for _s in _rg:
+        for _u in (_s.get("base"), _s.get("url")):
+            try:
+                _h = urllib.parse.urlsplit(_u or "").hostname
+            except Exception:
+                _h = None
+            if _h:
+                _SRC_DOMAINS.add(_parent_domain(_h))
+
+
+def _host_ips(host):
+    """解析域名（结果缓存 5 分钟）；解析不出来返回 ()，调用方按 fail-closed 处理。"""
+    now = time.time()
+    hit = _DNS_CACHE.get(host)
+    if hit and (now - hit[0]) < _DNS_CACHE_TTL:
+        return hit[1]
+    ips = ()
+    try:
+        ips = tuple({i[4][0] for i in socket.getaddrinfo(host, None)})
+    except Exception:
+        ips = ()
+    if len(_DNS_CACHE) > 512:
+        _DNS_CACHE.clear()
+    _DNS_CACHE[host] = (now, ips)
+    return ips
+
+
+def _ip_is_public(s):
+    """是不是公网地址：私网/回环/链路本地/组播/保留/未指定 一律不算。"""
+    try:
+        ip = ipaddress.ip_address(s)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped          # ::ffff:127.0.0.1 这类要还原成 IPv4 再看
+    if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+            or ip.is_reserved or ip.is_unspecified):
+        return False
+    return bool(ip.is_global)
+
+
+def _img_url_block_reason(url):
+    """地址层面的拦截，返回拒绝原因；None 表示这个地址可以取。"""
+    try:
+        p = urllib.parse.urlsplit(url)
+    except Exception:
+        return "地址解析失败"
+    if p.scheme not in ("http", "https"):
+        return "协议不允许"
+    if p.username or p.password:
+        return "地址里带凭据"
+    try:
+        port = p.port
+    except ValueError:
+        return "端口不合法"
+    if port not in (None, 80, 443):
+        return "端口不常规"
+    host = (p.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return "缺少主机名"
+    try:
+        ipaddress.ip_address(host)
+        return "不接受 IP 地址"          # 图片都在域名上，裸 IP 直接不代理
+    except ValueError:
+        pass
+    ips = _host_ips(host)
+    if not ips:
+        return "域名解析失败"
+    for s in ips:
+        if not _ip_is_public(s):
+            return "目标是内网地址"
+    return None
+
+
+def _note_item_hosts(items):
+    """把「我们正在下发的条目里的图片域名」登记进白名单。
+    /img 只代理这些域名 + SOURCES 登记源站的域名，别的域名一概 403。"""
+    got = set()
+    for it in items or []:
+        try:
+            h = urllib.parse.urlsplit(it.get("image") or "").hostname
+        except Exception:
+            h = None
+        if h:
+            got.add(h.lower().rstrip("."))
+    if not got:
+        return
+    with _IMG_HOSTS_LOCK:
+        _IMG_HOSTS_SEEN.update(got)
+
+
+def _img_host_allowed(host):
+    """域名是否在白名单里（登记源站域名，或我们自己的条目里出现过的图片域名）。"""
+    host = (host or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    with _IMG_HOSTS_LOCK:
+        if host in _IMG_HOSTS_SEEN:
+            return True
+    d = _parent_domain(host)
+    return any(d == x or host.endswith("." + x) for x in _SRC_DOMAINS)
 
 
 # 畸形协议前缀：https:https://x  或  https://https://x（RSS 里真实存在）
@@ -510,6 +793,9 @@ def _measure_image(url):
 
     【加速 2026-10-07】只读前 IMG_HEAD_BYTES 字节：JPEG/PNG/WEBP 的尺寸信息都在
     文件头部，整张图（常 100KB~1.5MB）根本不用下完。测不出则返回 None，_img_ok 保守放行。
+
+    【2026-10-09 修 阻断-2】这里拿到的是**片段**，_fetch 会把它存进专门的 _PROBE_CACHE，
+    绝不会再顶掉 /img 要的完整图（以前两者同一个缓存键，大图因此只显示上半张）。
     """
     try:
         res = _fetch(url, timeout=6, max_bytes=IMG_HEAD_BYTES)
@@ -908,7 +1194,7 @@ def _hot_thepaper():
     newsDetail_forward_<contId> 直达正文，列表看到的和点进去看到的是同一篇。
 
     【2026-10-07 修】原来 published 写死 0，而接口其实给了 pubTimeLong / publishTime ——
-    结果这 20 条全都算「无时间」，把时效过滤整个绕过去了
+    结果这 20 条全都算「无时间」，时效过滤被整段跳过
     （用户反馈「热榜上居然还有两天前的新闻」，这里是元凶之一）。
     现在按 pubTimeLong → trackPublishTime → publishTime 依次取值。"""
     out = []
@@ -1219,10 +1505,10 @@ _MEFCL_LAST = []
 def _parse_mefcl(src):
     """mefcl.com（用户投稿站点）：站方用 ge_js_validator JS cookie 验证拦截爬虫。
 
-    绕过流程（已实测）：
-      1. 先抓首页 → 若命中 278B 挑战页，正则抠出动态生成的合法 cookie 值
+    访问流程（已实测，按站方校验流程走）：
+      1. 先抓首页 → 若命中 278B 校验页，正则取到站方动态生成的合法 cookie 值
          （形如 1791287062@63@<32位hex>，max-age=1800，30 分钟内有效）；
-      2. 带合法 Cookie: ge_js_validator_63=<值> 回放首页 → 返回 102KB 真内容；
+      2. 带合法 Cookie: ge_js_validator_63=<值> 重新请求首页 → 返回 102KB 真内容；
       3. 解析 <article class="excerpt ..."> 块：标题取 <h2><a> 文本，链接取 <a href>，
          题图取 <img data-src>（src 只是占位 thumbnail.png），摘要取 <p class="note">。
 
@@ -1482,6 +1768,7 @@ def _parse_ifeng(src):
         return []
     html = raw.decode("utf-8", "ignore")
     items, seen = [], set()
+    no_ts = 0            # 【2026-10-09】源站没给时间的条数（只用于日志，不伪造时间）
     max_age = src.get("max_age_hours") or MAX_AGE_HOURS.get("cn", 24)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     for m in re.finditer(r'"type":"article","url":"(https://ent\.ifeng\.com/c/[^"]+)"', html):
@@ -1501,6 +1788,8 @@ def _parse_ifeng(src):
                 ts = 0
         if ts and ts < cutoff:
             continue
+        if not ts:
+            no_ts += 1      # 源站未给时间：published 写 0，当天列表里由 _select_fresh 统一收口
         img = _norm_url(ims[-1], src["base"]) if ims else ""
         seen.add(title)
         items.append({
@@ -1508,12 +1797,17 @@ def _parse_ifeng(src):
             "region": src["region"], "channel": src["id"],
             "label": src.get("label", src["id"]), "cls": src["cls"],
             "title": title, "desc": "", "link": url,
-            "image": img, "published": ts or int(datetime.now(CST).timestamp()),
+            # 【2026-10-09 修 中-1】解析不出时间就写 0（＝源站未给时间），**绝不伪造成"刚刚"**：
+            # 以前这里是 `ts or now()`，与 README「绝不伪造时间」的承诺直接矛盾，
+            # 而且旧稿会被标成"1 分钟前"顶到娱乐栏目第一位。0 值由 _select_fresh
+            # 按「未知时间不参与当天」统一过滤（但仍留在搜索池里，搜索照样搜得到）。
+            "image": img, "published": ts,
             "translated": False,
         })
         if len(items) >= 30:
             break
-    print(f"[ok] {src['id']}: 凤凰娱乐解析 {len(items)} 条")
+    print(f"[ok] {src['id']}: 凤凰娱乐解析 {len(items)} 条"
+          f"（另有 {no_ts} 条源站未给时间，不计入当天列表）")
     return items
 
 
@@ -1671,7 +1965,7 @@ def _article_meta(url):
     """
     if not url or not url.startswith("http"):
         return "", 0, ""
-    cached = _ART_CACHE.get(url)
+    cached = _ART_CACHE.get(url, None)
     if cached is not None:
         return cached          # (图, 发布时间, 栏目分类)
     # mefcl 的文章页和首页一样有 ge_js_validator JS 挑战，**必须带上同一个 cookie**，
@@ -1718,7 +2012,7 @@ def _article_meta(url):
     if _sm:
         sec = _sm.group(1).strip()
     if img or ts or sec:
-        _ART_CACHE[url] = (img, ts, sec)   # 只缓存有结果；失败不缓存，下次还有机会重试
+        _ART_CACHE.put(url, (img, ts, sec), 256)   # 只缓存有结果；失败不缓存，下次还有机会重试
     return img, ts, sec
 
 
@@ -1808,6 +2102,7 @@ def _collect_fast(region):
     if region == "cn":
         # 只留现成有图的（无图的等后台补图那一轮）
         items = [it for it in items if it.get("image")]
+    _note_item_hosts(items)       # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
     return _select_fresh(items, region)
 
 def _collect(region):
@@ -1830,6 +2125,7 @@ def _collect(region):
         print(f"[ok] hot: 时间筛后 {len(fresh_hot)} 条，补图带图 {len(keep)} 条；"
               f"按站方栏目分流 国内 {len(dom)} / 国际 {len(_intl)}")
         PRELOAD_ALL["hot"] = list(dom)
+        _note_item_hosts(dom)     # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
         return _select_fresh(dom, "hot")
     out = []
     with ThreadPoolExecutor(max_workers=16) as ex:
@@ -1944,6 +2240,7 @@ def _collect(region):
         items = [it for it in items if it.get("image")]
         print(f"[ok] {region}: 剔除无图 {before - len(items)} 条，剩 {len(items)} 条（低质图后台异步剔除）")
     PRELOAD_ALL[region] = hot + items
+    _note_item_hosts(hot + items)  # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
     return _select_fresh(hot + items, region)
 
 
@@ -1967,6 +2264,9 @@ def _enrich_quality_bg(region):
     dropped = len(items) - len(pruned)
     if dropped:
         print(f"[ok] {region}: 后台剔除低质图 {dropped} 条，剩 {len(pruned)} 条")
+    # 【2026-10-09 修 高-1】发布前把这批图的域名登记进 /img 白名单：
+    # 白名单要在浏览器来取图**之前**就已经登记好，否则我们自己的图也会被 403 挡掉。
+    _note_item_hosts(pruned)
     PRELOAD[region] = pruned
 
 
@@ -3671,6 +3971,88 @@ def _kick_collect(region):
     return True
 
 
+# ============ 本机令牌 + 同源校验（2026-10-09 新增，修 高-4）============
+# 背景：/api/quit 直接 os._exit、/api/update/install 会替换 exe，两个接口原来什么都不校验。
+# 任意网页只要写一个 <form method=POST action="http://127.0.0.1:8000/api/quit"> 就能把程序关掉
+# （表单是"简单请求"，不需要 CORS 预检；响应读不到，但副作用已经发生了）。
+# 现在有副作用的接口要过两道闸：
+#   ① 令牌：首屏 SSR 会把令牌写进页面（window.__SSR_DATA__.token），请求要带 X-HN-Token 头。
+#      跨站页面拿不到这个头（跨域读不到我们的响应体，我们也不给任何 CORS 头）；
+#   ② 同源 + 本机：Origin/Referer 若带了，必须是本机地址；客户端地址必须是回环地址。
+# 令牌落在 %LOCALAPPDATA%\hotnews\local_token：升级重启后旧页面不用刷新也还能用，
+# 而且是按 Windows 用户隔离的目录，别的用户与网页都读不到。
+_LOCAL_TOKEN_FILE = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "local_token")
+_TOKEN_HEADER = "x-hn-token"
+
+
+def _load_local_token():
+    try:
+        with open(_LOCAL_TOKEN_FILE, "r", encoding="utf-8") as f:
+            t = (f.read() or "").strip()
+        if len(t) >= 32:
+            return t
+    except Exception:
+        pass
+    t = os.urandom(24).hex()
+    try:
+        os.makedirs(os.path.dirname(_LOCAL_TOKEN_FILE), exist_ok=True)
+        with open(_LOCAL_TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(t)
+    except Exception:
+        pass      # 写不进去（只读盘）也不影响：本次进程内用随机令牌，重开换一个
+    return t
+
+
+TOKEN = _load_local_token()
+
+
+def _same_site(request):
+    """Origin/Referer 若带了，必须是本机地址（同源校验）。"""
+    for name in ("origin", "referer"):
+        v = (request.headers.get(name) or "").strip()
+        if not v:
+            continue
+        try:
+            host = (urllib.parse.urlsplit(v).hostname or "").lower()
+        except Exception:
+            return False
+        if host not in _LOOPBACK_HOSTS:
+            return False
+    return True
+
+
+def _is_local_client(request):
+    """客户端地址必须是回环（127.0.0.1 / ::1），别的地方来的请求一律拒绝。"""
+    h = (getattr(request.client, "host", "") or "").strip().lower()
+    if not h:
+        return False
+    if h in _LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def _guard_mutating(request):
+    """有副作用接口的统一闸门：通过返回 None，否则返回 403 响应。"""
+    if not _same_site(request):
+        return JSONResponse({"ok": False, "message": "请求来源不是本机页面，已拒绝"},
+                            status_code=403)
+    if not _is_local_client(request):
+        return JSONResponse({"ok": False, "message": "只允许本机发起该操作，已拒绝"},
+                            status_code=403)
+    tok = request.headers.get(_TOKEN_HEADER) or ""
+    if not (tok and hmac.compare_digest(tok, TOKEN)):
+        return JSONResponse({"ok": False, "message": "缺少本机访问令牌，已拒绝"},
+                            status_code=403)
+    return None
+
+
 @app.get("/api/news")
 def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Query(""), limit: int = Query(48, ge=1, le=200)):
     if region not in SOURCES:
@@ -3710,6 +4092,8 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     if q.strip():
         kw = q.strip().lower()
         items = [i for i in items if kw in i["title"].lower() or kw in i["desc"].lower()]
+    # 【修 高-1】把这一批图里出现过的域名登记进 /img 的来源白名单
+    _note_item_hosts(items)
     # 显式声明 charset=utf-8，避免个别客户端把 JSON 误判为 GBK 导致乱码
     return JSONResponse({"version": VERSION, "count": len(items), "items": items[:limit]},
                         media_type="application/json; charset=utf-8")
@@ -3741,8 +4125,13 @@ def api_update_check():
 
 
 @app.post("/api/update/install")
-def api_update_install():
+def api_update_install(request: Request):
     """已下载就绪则触发替换脚本，随后退出服务让脚本完成覆盖+重启"""
+    # 【2026-10-09 修 高-4】这个接口会替换正在运行的程序，必须先过本机令牌 + 同源校验
+    _deny = _guard_mutating(request)
+    if _deny:
+        print("[warn] /api/update/install 被拒绝：来源未通过本机校验")
+        return _deny
     print("[ok] 收到安装请求，开始替换")
     if not updater.trigger_replace():
         print("[warn] 替换未执行（没有待安装的更新或校验没过）")
@@ -3769,23 +4158,34 @@ def api_autostart_get():
 
 
 @app.post("/api/autostart")
-async def api_autostart_set(payload: dict = None):
+async def api_autostart_set(request: Request, payload: dict = None):
     """开关开机自启（写 HKCU 的 Run 项，不需要管理员权限）。
 
     【2026-10-07 用户要求「第一次使用时界面给个开关让用户选」】
     开机自启时用 --silent 启动：只后台把服务跑起来、把第一屏数据抓好，不弹浏览器。
     这样用户想看的时候点托盘右键「打开热点新闻」就是秒开（数据早准备好了）。
     """
+    # 【2026-10-09 修 高-4】写注册表也是有副作用的操作，一起挂到本机令牌校验上
+    _deny = _guard_mutating(request)
+    if _deny:
+        print("[warn] /api/autostart 被拒绝：来源未通过本机校验")
+        return _deny
     want = bool((payload or {}).get("enabled"))
     ok, msg = _autostart_set(want)
     return {"enabled": _autostart_enabled(), "ok": ok, "message": msg}
 
 @app.post("/api/quit")
-def api_quit():
+def api_quit(request: Request):
     """
     退出服务。打包成无窗口 exe 后没有控制台可按 Ctrl+C，只能由页面按钮触发。
     延迟 0.6s 再退，先让这次 HTTP 响应回到浏览器。
     """
+    # 【2026-10-09 修 高-4】原来谁都能 POST 一下就关掉程序（本地 CSRF），现在要带本机令牌
+    _deny = _guard_mutating(request)
+    if _deny:
+        print("[warn] /api/quit 被拒绝：来源未通过本机校验")
+        return _deny
+
     def _die():
         time.sleep(0.6)
         os._exit(0)
@@ -4000,6 +4400,16 @@ def api_translate(text: str = Query(""), target: str = "zh-CN"):
 def proxy_img(url: str = Query(...)):
     if not url.startswith(("http://", "https://")):
         return JSONResponse({"error": "bad url"}, status_code=400)
+    # 【2026-10-09 修 高-1】来源白名单 + 内网地址拦截。原来只校验协议前缀就直连，
+    # 任意网页都能拿它探内网（见上面 _img_url_block_reason 的说明）。
+    _why = _img_url_block_reason(url)
+    if not _why and not _img_host_allowed(urllib.parse.urlsplit(url).hostname):
+        _why = "非本项目登记来源"
+    if _why:
+        print(f"[warn] /img 拒绝代理（{_why}）: {url[:110]}")
+        return JSONResponse({"error": f"refused: {_why}"}, status_code=403)
+    # 这里**不带 max_bytes**：要的就是完整图。_fetch 会走 _IMG_CACHE（完整本体那条缓存），
+    # 不会命中 _measure_image 留下的探测片段（修 阻断-2）。
     res = _fetch(url)
     # _fetch 有两种返回：图片扩展名 → (bytes, content_type)；其余（如无扩展名的图床链接）→ bytes。
     # 以前一律按 tuple 解包，遇到后者 res[0] 是 int，触发 AttributeError 并让整个请求 500。
@@ -4009,6 +4419,7 @@ def proxy_img(url: str = Query(...)):
         blob, ctype = res, "image/jpeg"
     if not blob or not isinstance(blob, (bytes, bytearray)):
         return Response(status_code=404)
+    # ctype 一律用源站给的真实值（_fetch 已按响应头取好），不再写死 image/jpeg
     return Response(content=blob, media_type=ctype or "image/jpeg",
                     headers={"Cache-Control": f"public, max-age={IMG_CACHE_TTL}"})
 
@@ -4023,9 +4434,13 @@ def index(request: Request):
         payload = {
             "version": VERSION,
             "region": "cn",
+            # 【修 高-4】有副作用的接口（退出/更新/开机自启）要带这个令牌
+            "token": TOKEN,
             # 把预热好的条目直接塞进首屏，打开页面立刻有内容，不用等 JS 再拉一次
             "items": PRELOAD.get("cn", [])[:60],
         }
+        # 【修 高-1】首屏这几条的图片域名也登记进 /img 白名单
+        _note_item_hosts(payload["items"])
         blob = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
         ssr = tpl.replace("__SSR_DATA__", blob)
         ssr = ssr.replace('__SSR_REGION__', "cn")
@@ -4067,5 +4482,14 @@ def world_page():
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    # 【2026-10-09 修 高-1】默认只监听本机：这里原来写死 host="0.0.0.0"，
+    # 直接 `python server.py` 起服务等于把本机暴露给同网段（/img 会被当开放代理用）。
+    # 确实要让别的设备访问时，显式传 --host 0.0.0.0（那时有副作用的接口仍要求本机令牌）。
+    _ap = argparse.ArgumentParser(description="hotnews 服务（默认仅本机可访问）")
+    _ap.add_argument("--host", default="127.0.0.1",
+                     help="监听地址，默认 127.0.0.1；要对局域网开放时显式写 0.0.0.0")
+    _ap.add_argument("--port", type=int, default=8000, help="监听端口，默认 8000")
+    _args = _ap.parse_args()
+    uvicorn.run(app, host=_args.host, port=_args.port, log_level="info")
