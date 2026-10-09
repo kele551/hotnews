@@ -1,0 +1,142 @@
+# hotnews · 热点新闻检索 —— Windows 打包与产物校验
+#
+# 触发：推送到 main / master、对这两个分支的 PR、以及手动触发（Actions → build → Run workflow）。
+#
+# 这里打的是「正式发布用的那两个产物」：
+#   1) dist\热点新闻.exe        —— PyInstaller 单文件版（build_exe.spec，Release 附件就是它）
+#   2) hotnews-v<版本>.zip      —— 源码包（build.py 产出，解压后需系统 Python + pip install）
+#
+# 这里**不打绿色版**：build.py 还会产出一个 hotnews-v<版本>-绿色版.zip，它要把仓库外的
+#   runtime\（自带 embeddable Python，已在 .gitignore 里、不入库）一起打进去。
+#   CI 的检出里没有 runtime\，打出来的绿色包是缺运行时的残包，
+#   所以本流程把它删掉、也不上传 —— 绿色包只在维护者本机（有 runtime\ 的机器）打。
+#
+# ⚠ 步骤顺序不能换：build.py 只排除 .git / __pycache__ 等目录，
+#   **不排除 dist\ 与 build\**。所以必须先跑 build.py、再跑 PyInstaller；
+#   反过来的话，PyInstaller 的中间产物会被一起卷进源码包。
+
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build:
+    name: Windows 打包与校验
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"        # 与仓库自带 runtime\（Python 3.13）保持一致
+          cache: pip
+
+      - name: 安装依赖（requirements.txt + PyInstaller）
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+          python -m pip list
+          python -m PyInstaller --version
+
+      - name: 语法自检（py_compile）
+        shell: pwsh
+        run: |
+          python -m py_compile app.py server.py updater.py _ed25519.py build.py check_sources.py make_icon.py tools/patch_index.py
+          Write-Host "py_compile：8 个文件全部通过"
+
+      - name: 打源码包（build.py，必须先于 PyInstaller）
+        shell: pwsh
+        run: |
+          python build.py
+          Write-Host "--- 源码包打完，清掉缺 runtime 的绿色残包 ---"
+          $v = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $keep = "hotnews-v$v.zip"
+          Get-ChildItem -Path . -Filter *.zip -File | Where-Object { $_.Name -ne $keep } | ForEach-Object {
+            Write-Host "删除残包（CI 检出里没有 runtime\，绿色包不完整）：$($_.Name)"
+            Remove-Item -LiteralPath $_.FullName -Force
+          }
+          Get-ChildItem -Path . -Filter *.zip -File | Select-Object Name, Length
+
+      - name: 打单文件 exe（build_exe.spec）
+        shell: pwsh
+        run: |
+          python -m PyInstaller build_exe.spec --clean --noconfirm
+
+      - name: 校验版本号与署名（exe 文件属性 = version.json）
+        shell: pwsh
+        run: |
+          $v = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $exe = Get-ChildItem dist -Filter *.exe -File | Select-Object -First 1
+          if (-not $exe) { throw "dist 下没有产出 exe，打包失败" }
+
+          $info = $exe.VersionInfo
+          $fileVer = "$($info.FileVersion)".Trim()
+          $company = "$($info.CompanyName)".Trim()
+          $comments = "$($info.Comments)".Trim()
+          Write-Host "version.json      = $v"
+          Write-Host "产物              = $($exe.Name)  ($($exe.Length) 字节)"
+          Write-Host "FileVersion       = $fileVer"
+          Write-Host "ProductVersion    = $($info.ProductVersion)"
+          Write-Host "CompanyName       = $company"
+          Write-Host "LegalCopyright    = $($info.LegalCopyright)"
+          Write-Host "Comments          = $comments"
+
+          if (-not $fileVer.StartsWith($v)) {
+            throw "exe 文件版本（$fileVer）与 version.json（$v）不一致 —— version.json 与打包产物对不上"
+          }
+          if ($company -ne "HaiFeng (kele551)") { throw "CompanyName 署名不对：$company" }
+          if ($comments -ne "gitee.com/kele551/hotnews") { throw "Comments（仓库地址）不对：$comments" }
+
+          # version.json 不能带 BOM：带了会让本机打包当场 JSONDecodeError（spec 里已用 utf-8-sig 容忍，
+          # 但线上升级源必须是干净的无 BOM 版本，这里一并卡住）
+          $bytes = [System.IO.File]::ReadAllBytes((Join-Path (Get-Location) "version.json"))
+          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            throw "version.json 带了 UTF-8 BOM，必须重存为无 BOM"
+          }
+          Write-Host "版本号、署名、BOM 检查：全部通过"
+
+      # 将来若接入面向开源项目的免费代码签名，签名步骤加在这里
+      # （打包之后、算 SHA256 之前），私钥只放 CI secrets。
+      # 规则见仓库根目录 CODE_SIGNING_POLICY.md 第三节。
+
+      - name: 计算并打印 SHA256
+        shell: pwsh
+        run: |
+          $files = @()
+          $files += Get-ChildItem dist -Filter *.exe -File
+          $files += Get-ChildItem . -Filter *.zip -File
+          if (-not $files) { throw "没有任何产物可算 SHA256" }
+
+          $lines = foreach ($f in $files) {
+            $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash.ToLower()
+            Write-Host ("{0}  {1}  ({2} 字节)" -f $h, $f.Name, $f.Length)
+            "{0}  {1}" -f $h, $f.Name
+          }
+          $lines | Set-Content -Path SHA256SUMS.txt -Encoding utf8
+          Write-Host "--- SHA256SUMS.txt ---"
+          Get-Content SHA256SUMS.txt
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotnews-windows-${{ github.sha }}
+          path: |
+            dist/*.exe
+            hotnews-v*.zip
+            !hotnews-v*绿色版.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -413,12 +413,29 @@ def trigger_replace():
     _lau = _rm.get("launcher") or {}
     exp_sha = (_lau.get("sha256") or "").upper()
     exp_size = int(_lau.get("size", 0) or 0)
+
+    # 【2026-10-09 修 高-5：fail-closed】原来这里靠 `if exp_size and ...` / `if exp_sha and ...`
+    # 把关 —— 拿不到期望值就**整段跳过**，直接 _fast_swap 覆盖 exe。而 _state["latest"] 在
+    # 「已是最新版」时被显式置为 None（check() 行 148），%TEMP%\hotnews_update.exe 又是**固定文件名**，
+    # 上一次升级/旧版本留下的包会一直躺在那儿，于是会出现：
+    #   已经是最新 → latest=None → 期望值全空 → 校验整段跳过 → 把 %TEMP% 里的旧包静默覆盖上去（降级）。
+    # 现在改成：**先确认「确实有一个待安装的新版本」，再逐项校验 sha256 与尺寸，缺一项就不替换。**
+    if not _rm or not _rm.get("version"):
+        _state.update(status="error", message="没有待安装的新版本，已放弃替换")
+        return False
+    if not _lau.get("url"):
+        _state.update(status="error", message="远端未提供下载地址，已放弃替换")
+        return False
+    if not exp_sha:
+        # 远端没给 sha256 就没法确认这个包是谁 —— 宁可不升级（设计承诺：升级必须验 sha）
+        _state.update(status="error", message="远端未提供 sha256，已放弃替换")
+        return False
     if not os.path.exists(pkg):
         return False
     if exp_size and os.path.getsize(pkg) != exp_size:
         _state.update(status="error", message="升级包不完整，已放弃替换")
         return False
-    if exp_sha and _sha256(pkg) != exp_sha:
+    if _sha256(pkg) != exp_sha:
         _state.update(status="error", message="升级包校验失败，已放弃替换")
         return False
 

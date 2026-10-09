@@ -1,0 +1,110 @@
+name: Bug 反馈
+description: 程序报错、栏目空白、图片不显示、升级失败、气泡不弹等问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。下面填得越全，定位越快 —— 缺了版本号和复现步骤的反馈，通常只能来回问好几轮。
+
+        > **安全漏洞请不要发在这里**，按
+        > [SECURITY.md](https://github.com/kele551/hotnews/blob/master/SECURITY.md) 的私下渠道报告。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前请先确认（勾一下就好）
+      options:
+        - label: 我在 README 的「实测失败、**没有采用**的源」清单里找过 —— 排除了「这个源本来就没采用」
+          required: true
+        - label: 我贴出来的日志里**没有**自己的私人信息（真实邮箱、本机用户名、内网地址等）
+          required: true
+        - label: 我看过 README 的「自动更新机制」那一节的注意事项（`version.json` / 替换附件那几个坑）
+          required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: 程序版本
+      description: 页面右上角「检查更新」旁边的版本号，或 exe 文件属性里的 FileVersion
+      placeholder: "例如 v1.5.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 运行方式
+      options:
+        - 单文件 exe（热点新闻.exe，双击运行）
+        - 源码运行（python app.py）
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Windows 版本
+      placeholder: "例如 Windows 11 23H2（build 22631）64 位"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你看到的是什么？出现在哪个栏目、哪个按钮、哪个时间点？
+      placeholder: 例如「国内-软件栏目整块空白，刷新也没用，其它栏目正常」
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      value: |
+        1.
+        2.
+        3.
+
+        出现的频率：每次都出现 / 偶尔出现 / 只出现过一次
+    validations:
+      required: true
+
+  - type: textarea
+    id: expect
+    attributes:
+      label: 期望的结果
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志片段
+      description: |
+        exe 同目录的 `hotnews.log`（超过 1MB 会自动滚成 `hotnews.log.old`）。
+        贴报错前后 20~50 行就够，**不要贴整份日志**。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: sources
+    attributes:
+      label: 源自检结果（栏目空白 / 某个源没内容时请贴这个）
+      description: |
+        源码版跑 `python check_sources.py`，会把每个 Region 的条数、最新/最旧时间、带图数、
+        分类分布打出来。单文件版没有这个入口，直接写清是哪个栏目空即可。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图 / 其它补充
+      description: 截图可以直接拖进来。气泡类问题请说明是「没弹」还是「弹了但点不动」。
+    validations:
+      required: false

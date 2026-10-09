@@ -1,0 +1,78 @@
+name: 功能建议
+description: 想加的功能或改进（建议新增数据源也用这个模板）
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        说清「你想解决什么问题」比直接给方案更有用 —— 方案可以换，问题不会变。
+
+        > 想建议**新增数据源**：请把下面「仅新增数据源」那几项也填了。
+        > 本项目的硬标准是「真连通 + 带图（短边 ≥300）+ 有当天或近日内容」，
+        > **没实测过的源不会被采用**（README 里有一张「实测失败、没有采用」的表，可以先看一眼别重复踩）。
+
+  - type: textarea
+    id: pain
+    attributes:
+      label: 你想解决的问题
+      placeholder: 例如「国际板块全是英文，我不想等翻译」
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你希望的用法
+      description: 有具体想法就写，没有就留空
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及的部分
+      options:
+        - 数据源 / 栏目内容
+        - 界面与交互
+        - 气泡提醒
+        - 搜索 / 分类 / 筛选
+        - 自动更新
+        - 打包与发布
+        - 文档与治理
+        - 其它
+    validations:
+      required: true
+
+  - type: input
+    id: src_url
+    attributes:
+      label: 【仅新增数据源】源地址与目标栏目
+      placeholder: "例如 https://example.com/feed —— 国内科技"
+    validations:
+      required: false
+
+  - type: textarea
+    id: src_probe
+    attributes:
+      label: 【仅新增数据源】实测结果
+      description: 这四项是加入源的门槛，缺一项都不会被采纳
+      value: |
+        - 条目数：
+        - 带图数（短边 ≥300 的才算）：
+        - 最新一条的发布时间：
+        - 通道：RSS / JSON 接口 / 首页 HTML（没有 RSS 时请说明，并确认站方没有禁止抓取）
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: src_ok
+    attributes:
+      label: 【仅新增数据源】确认
+      options:
+        - label: 该源是公开可访问的接口或页面，不涉及登录态、不涉及付费内容
+          required: false
+        - label: 我已在本地跑过 `python check_sources.py`（或等价方式）确认真的能抓到
+          required: false
+        - label: 该源的内容来源清晰，聚合它不会明显侵犯原作者权益
+          required: false
