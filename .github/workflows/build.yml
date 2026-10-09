@@ -11,9 +11,11 @@
 #   CI 的检出里没有 runtime\，打出来的绿色包是缺运行时的残包，
 #   所以本流程把它删掉、也不上传 —— 绿色包只在维护者本机（有 runtime\ 的机器）打。
 #
-# ⚠ 步骤顺序不能换：build.py 只排除 .git / __pycache__ 等目录，
-#   **不排除 dist\ 与 build\**。所以必须先跑 build.py、再跑 PyInstaller；
-#   反过来的话，PyInstaller 的中间产物会被一起卷进源码包。
+# ⚠ 顺序建议保持「先 build.py、后 PyInstaller」：build.py 的排除清单已同步 .gitignore
+#   （dist\ / build\ / build_tmp\ / 历史 exe / 调试快照都不再进包，2026-10-09 修），
+#   所以反过来跑**不会再**把中间产物卷进源码包；但保持这个顺序最直观，
+#   也避免将来有人放宽排除规则时又踩一次这个坑。
+#   打包前可以用 `python build.py --list` 只列清单、不写文件，核对一遍。
 
 name: build
 
@@ -57,7 +59,7 @@ jobs:
           python -m py_compile app.py server.py updater.py _ed25519.py build.py check_sources.py make_icon.py tools/patch_index.py
           Write-Host "py_compile：8 个文件全部通过"
 
-      - name: 打源码包（build.py，必须先于 PyInstaller）
+      - name: 打源码包（build.py，沿用「先 build.py 后 PyInstaller」的顺序）
         shell: pwsh
         run: |
           python build.py

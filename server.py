@@ -95,11 +95,26 @@ def _read_version():
 
 VERSION = _read_version()
 
+# 【2026-10-09 修 中-5】进程启动时刻：/api/version 会把 uptime 带出去，
+# app.py 二次启动时据此判断"对面是不是一个正常服务的实例"（见 app.py 的 find_running）。
+_START_TS = time.time()
+
+# 【2026-10-09 升级体验口径】本进程是不是「后台静默实例」（开机自启那种）。
+# 决定发现新版本后"立刻装上重启"还是"退出时自动装"：静默实例没人看页面，立刻装最无感。
+# 与 app.py 的 _silent 判断同源（argv 与环境变量都认）。
+_SILENT_RUN = ("--silent" in sys.argv) or (os.environ.get("HOTNEWS_SILENT") == "1")
+
 # 由 app.py 在启动时写入真实访问地址（端口可能被自动顺延），供通知点击跳转使用
 APP_URL = "http://localhost:8000"
 
+# 【2026-10-09 换源·抓取礼貌】自报身份：
+#   站方要能在访问日志里认出「这是谁在抓、怎么联系、怎么让我停下」，所以 UA 必须带项目标识。
+#   但**不把浏览器 UA 整个换掉** —— 实测部分源（如 mefcl）会按 UA 判断是不是
+#   普通浏览器访问，纯 bot UA 会被挡在门外（等于把源打挂）。故采用「浏览器 UA + 追加标识」：
+#   既保留了兼容性，又满足自报身份的要求。
+BOT_ID = "HotnewsAggregator/1.5 (+https://gitee.com/kele551/hotnews)"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 " + BOT_ID)
 
 CST = timezone(timedelta(hours=8))
 CACHE_TTL = 300          # RSS 缓存 5 分钟
@@ -128,8 +143,10 @@ IMG_HEAD_BYTES = 256 * 1024
 # 采集阶段先用 24 小时窗口（放得够宽，便于凌晨做「当天不足则回退」的兜底），
 # 真正「只留当天」的收紧在 _collect 里由 _select_fresh 统一执行。
 # 国内 24 小时（用户要求「当天」）；国际放宽到 48 小时 ——
-# 实测国际源条目稀疏（CGTN 最新 32 小时前、UN News 23 小时前、France24 跨度可达两天），
-# 按 24 小时收口会把好几个刚加的源直接滤空。
+# 实测国际板块的条目跨度偏大：CGTN 世界频道从当天到两天前都有（实测最新 2.7 小时前、
+# 最旧 30 多小时前），加上从国内板块转来的国际条目，按 24 小时收口会白丢一批。
+# 【2026-10-09 换源】中新网·国际本身是分钟级更新的，48 小时这个窗口现在是
+# 「给 CGTN 与转入条目留的余量」，不是「源太稀疏」的妥协了。
 MAX_AGE_HOURS = {"cn": 24, "intl": 48}
 SAME_DAY = True          # True = 只留当天（当天条目过少时自动回退到 24 小时）
 FALLBACK_MIN = 8         # 当天条目少于这个数 → 放宽到最近 24 小时，避免凌晨打开是空页
@@ -141,7 +158,7 @@ FALLBACK_MIN = 8         # 当天条目少于这个数 → 放宽到最近 24 �
 # 所以：要闻/热榜等时效敏感栏目仍只留当天（走 MAX_AGE_HOURS=24h），
 # 垂类（科技/软件/娱乐）各自放宽，保证栏目内至少 3 家不同网站。
 CLS_MAX_AGE_HOURS = {
-    "科技": 96,     # 4 天：IT之家/快科技日更，爱范儿/雷峰网/NotebookCheck 慢一些
+    "科技": 96,     # 4 天：IT之家/快科技日更，爱范儿/雷峰网 慢一些
     "软件": 120,    # 5 天：小众软件、开源中国、少数派这类本来就不是日更
     "娱乐": 120,    # 5 天：新浪娱乐首页混着深度稿，窗口太窄会只剩一两条
     "国际娱乐": 120,
@@ -156,6 +173,14 @@ FRESH_MIN_SITES = 3
 # 2026-10-06 全量实测后重构：人民网 / 新浪 / 网易 / 央视 / 环球网 / 澎湃 的 RSS
 # 均已停更（人民网停在 2025-06-05，新浪停在 2025-09-23），仍返 200 但内容陈旧，
 # 是最初「新闻太旧」的根因。现改用仍在实时更新的源。
+#
+# 【2026-10-09 换源·合规】按工作区章程 §9.1「默认只用境内权威媒体源，不采用境外来源」：
+#   · 国际板块**删掉全部境外站点**，换成**境内媒体的国际版**
+#     （CGTN + 中新网·国际，再由凤凰/澎湃/红星/界面报的国际新闻补足）；
+#   · 国际热榜同步删掉那处境外热榜 API；
+#   · 新增财经 / 体育 / 社会 / 娱乐源，全部是境内站点。
+# 每个新源都做过真实联网实测（HTTP / 耗时 / 条数 / 带图数 / 最新时间），
+# 逐条数据见 logs\换源-境内国际版-20261009.md；没实测通过的一律不写进来。
 SOURCES = {
     "cn": [
         # 国内源只保留「稳定带图」的源；无图的中新网 6 频道已整体移除；
@@ -174,10 +199,7 @@ SOURCES = {
         {"id": "cn-geek",    "label": "极客公园", "url": "https://www.geekpark.net/rss",                  "base": "https://www.geekpark.net", "region": "cn", "cls": "科技"},
         # 软件类：小众软件 RSS，条条带图（feed 内 media:content 含图），内容偏软件推荐/效率工具
         {"id": "cn-soft",    "label": "小众软件", "url": "https://www.appinn.com/feed/",                  "base": "https://www.appinn.com",   "region": "cn", "cls": "软件"},
-        # 科技/硬件评测：notebookcheck-cn.com 是 TYPO3 站点、无 RSS，走 HTML 解析（parser=nbc）
         # 2026-10-07：改抓「新闻」列表页而不是首页——首页条目少且混着导航，
-        # Notebookcheck-NBC.22034.0.html 才是站方的新闻归档列表（用户指定）。
-        {"id": "cn-nbc",     "label": "NotebookCheck", "url": "https://www.notebookcheck-cn.com/Notebookcheck-NBC.22034.0.html", "base": "https://www.notebookcheck-cn.com", "region": "cn", "cls": "科技", "parser": "nbc"},
         # 【2026-10-07 补源】用户要求「每个栏目必须有三个以上的网站，要不然太单一」。
         # 以下三个都是**实测通过**（真连通 + 有题图 + 有当天/近日内容）：
         #   快科技 100 条 / 99 带图 / 当天 10:44 更新  ← 王牌
@@ -210,34 +232,43 @@ SOURCES = {
         # 混着汽车/养生/育儿/社会；加娱乐关键词过滤后 40 条只剩 3 条且有 2 条不是娱乐。
         # 用户 2026-10-07 决定不做这个源，别再挖了。
         {"id": "cn-sina-ent", "label": "新浪娱乐", "url": "https://ent.sina.com.cn/", "base": "https://ent.sina.com.cn", "region": "cn", "cls": "娱乐", "parser": "sina_ent"},
+        # ============ 【2026-10-09 换源】新增：财经 / 体育 / 社会 / 娱乐 ============
+        # 目标：① 每个栏目至少 3 家网站；② 只用境内站点（合规口径见 COMPLIANCE.md 第 7 节）。
+        # 下面每一条都做过真实联网实测（HTTP 状态 / 耗时 / 条数 / 带图数 / 最新时间），
+        # 逐项数据记在 logs\换源-境内国际版-20261009.md；没实测通过的一律不写在这里。
+        #
+        # 华尔街见闻：实测 200 / 0.37s / 61 条 / 35 条带图 / 最新 1.7 小时前（财经垂类里更新最勤）。
+        {"id": "cn-wscn", "label": "华尔街见闻", "url": "https://dedicated.wallstreetcn.com/rss.xml", "base": "https://wallstreetcn.com", "region": "cn", "cls": "财经"},
+        # 中新网系（财经 / 体育 / 社会）：实测 200 / 约 20ms / 各 30 条 / 当天分钟级更新，
+        # 但 **RSS 本身不带图** → 打 body_image 标记，走「正文页取首图」的图片策略
+        # （限时 3 秒/条、命中 _ART_CACHE 缓存、取不到就跳过该条，详见 _fill_missing_images）。
+        # 实测正文首图命中率 40%~60%，取到的多是 700x466 / 1080x783 这类达标大图。
+        {"id": "cn-cnfin",   "label": "中新网·财经", "url": "https://www.chinanews.com.cn/rss/finance.xml", "base": "https://www.chinanews.com.cn", "region": "cn", "cls": "财经", "body_image": True},
+        {"id": "cn-cnsport", "label": "中新网·体育", "url": "https://www.chinanews.com.cn/rss/sports.xml",  "base": "https://www.chinanews.com.cn", "region": "cn", "cls": "体育", "body_image": True},
+        {"id": "cn-cnsoc",   "label": "中新网·社会", "url": "https://www.chinanews.com.cn/rss/society.xml", "base": "https://www.chinanews.com.cn", "region": "cn", "cls": "社会", "body_image": True},
+        # 国际在线·娱乐（ent.cri.cn，中国国际广播电台 / 总台旗下）：影视综艺向。
+        # 实测 200 / 0.023s / 卡片 40 张 / 24 小时内 19 条 / 当天分钟级更新。
+        # ⚠ 卡片图是 **512x288 缩略图**（短边 288 差 12 像素过不了 300 的高清门槛，
+        #   直接用会被后台低质图环节整条剔除、等于白加）——程序按站方 URL 规则改写成原图
+        #   （实测 991x558 ~ 4052x2278，全部达标），见 _cri_image。
+        # 它是娱乐栏目里第 3 家网站，也是「列表页自带标题+图+时间」的第二个源
+        #（第一个是凤凰娱乐；新浪娱乐的列表页无图无时间，全靠逐条抓文章页）。
+        {"id": "cn-cri-ent", "label": "国际在线娱乐", "url": "http://ent.cri.cn/", "base": "http://ent.cri.cn", "region": "cn", "cls": "娱乐", "parser": "cri_ent"},
     ],
     "intl": [
-        {"id": "f24-main",    "label": "France24", "url": "https://www.france24.com/en/rss",         "base": "https://www.france24.com", "region": "intl", "cls": "要闻"},
-        {"id": "f24-sport",   "label": "France24", "url": "https://www.france24.com/en/sport/rss",   "base": "https://www.france24.com", "region": "intl", "cls": "体育"},
-        # 【2026-10-07 补源】用户要求「国际板块新闻源太少，多加入一些」。
-        # 以下 5 个都是**实测连通且带图**的（条目/带图/最新）：
-        #   CGTN 50/50/10-06、UN News 30/30/10-06、ABC News 25/25/10-07、
-        #   NPR 10/10/10-06、Sky News 6/6/10-07
-        # 实测**连不上、未采用**：BBC、CNN、NYT、Guardian、Al Jazeera、DW、SCMP、
-        #   纽约时报中文、联合早报（本机网络全部 ConnectTimeout）
-        # 实测**无图、未采用**：CBS（30 条但 0 张图，会被「没图不要」的规则剔除）
-        # 实测**停更、未采用**：人民网国际（最新 2025-06-05，停更一年多）
-        {"id": "intl-npr",     "label": "NPR",      "url": "https://feeds.npr.org/1001/rss.xml",                     "base": "https://www.npr.org",    "region": "intl", "cls": "要闻"},
-        {"id": "intl-sky",     "label": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml",          "base": "https://news.sky.com",   "region": "intl", "cls": "要闻"},
-        {"id": "intl-un",      "label": "UN News",  "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",  "base": "https://news.un.org",    "region": "intl", "cls": "要闻"},
-        {"id": "intl-cgtn",    "label": "CGTN",     "url": "https://www.cgtn.com/subscribe/rss/section/world.xml",    "base": "https://www.cgtn.com",   "region": "intl", "cls": "要闻"},
-        {"id": "intl-abc",     "label": "ABC News", "url": "https://abcnews.go.com/abcnews/internationalheadlines",  "base": "https://abcnews.go.com", "region": "intl", "cls": "要闻"},
-        # 娱乐栏目（国际）：f24-culture（文化）已按用户要求删除，改用国际娱乐八卦源。
-        # Variety 实测 10 条全带图；Billboard 10 条无图（音乐明星向），国际不做无图过滤，占位显示。
-        # 【2026-10-07 补源】实测连通且**全部带图**的国际娱乐源：
-        # NME 10条/10图、Stereogum 40条/40图、Consequence 15条/15图。
-        # 实测失败未采用：Deadline/Pitchfork/People/TheWrap/Vulture/Collider 连不上；
-        # HollywoodReporter/RollingStone/IndieWire 能连通但 0 张图（会被无图规则剔除）。
-        {"id": "intl-nme",       "label": "NME",        "url": "https://www.nme.com/feed",           "base": "https://www.nme.com",        "region": "intl", "cls": "娱乐", "max_age_hours": 72},
-        {"id": "intl-stereogum", "label": "Stereogum",  "url": "https://www.stereogum.com/feed/",     "base": "https://www.stereogum.com",  "region": "intl", "cls": "娱乐", "max_age_hours": 72},
-        {"id": "intl-consequence","label": "Consequence","url": "https://consequence.net/feed/",       "base": "https://consequence.net",    "region": "intl", "cls": "娱乐", "max_age_hours": 72},
-        {"id": "intl-variety",   "label": "Variety",   "url": "https://variety.com/feed/",    "base": "https://variety.com",   "region": "intl", "cls": "娱乐", "max_age_hours": 72},
-        {"id": "intl-billboard", "label": "Billboard", "url": "https://www.billboard.com/feed/", "base": "https://www.billboard.com", "region": "intl", "cls": "娱乐", "max_age_hours": 72},
+        # ============ 【2026-10-09 换源·合规】国际新闻只用境内媒体的国际版 ============
+        # 原来这一栏 12 个源**全是境外站点**（境外站点 /
+        # 境外站点），
+        # 与章程 §9.1「默认只用境内权威媒体源，不采用境外来源」冲突，已整段删除。
+        # 现在这一栏的构成（全部境内）：
+        #   ① CGTN（中国国际电视台）世界频道 —— 实测 15~50 条、全部带图、当天更新；
+        #   ② 中新网·国际 —— 实测 30 条 / 当天分钟级更新；RSS 不带图 → 正文页取首图；
+        #   ③ 凤凰网 / 澎湃新闻 / 红星新闻 / 界面新闻 报的国际新闻 —— 由
+        #      _split_cn_scope（国内要闻）与 _split_hot_by_scope（国内热榜）转过来，
+        #      channel 标为 cn-intl-news / cn-intl-hot，本来就是中文，不依赖翻译。
+        # 这样国际板块仍然「有要闻、有热榜、有娱乐/科技垂类」，只是**数据全部来自境内媒体**。
+        {"id": "intl-cgtn",    "label": "CGTN",        "url": "https://www.cgtn.com/subscribe/rss/section/world.xml", "base": "https://www.cgtn.com",         "region": "intl", "cls": "要闻"},
+        {"id": "intl-cnworld", "label": "中新网·国际", "url": "https://www.chinanews.com.cn/rss/world.xml",           "base": "https://www.chinanews.com.cn", "region": "intl", "cls": "要闻", "body_image": True},
     ],
     # 实时热点（今日头条热榜）走独立 _parse_hot，不走 RSS，这里仅占位以通过 region 校验
     "hot": [],
@@ -248,6 +279,14 @@ SOURCES = {
 # 因此原来的 NOIMG_SOURCES 豁免已全部取消——开源中国 / 少数派这类不配图的源，
 # 要么补上图，要么就从列表里消失（不再用渐变色块占位）。
 NOIMG_SOURCES = set()
+
+# 【2026-10-09 换源】「RSS 列表本身不带图、必须去正文页取首图」的源（SOURCES 里标 body_image）。
+# 为什么单独登记：
+#   · 图片策略与别家不同 —— 这些条目的图来自文章页正文，而中新网系**连 og:image 都没有**，
+#     正文容器另有取法（见 _art_site_rule / _cn_body_image）；
+#   · 要给它们**更短的超时**（BODY_IMG_TIMEOUT），别让一条慢页面把整轮补图拖住。
+BODY_IMAGE_CHANNELS = {s["id"] for _rg in SOURCES.values() for s in _rg if s.get("body_image")}
+BODY_IMG_TIMEOUT = 3.0     # 「去正文页取首图」的单条上限（秒）
 
 _MISS = object()    # 缓存「没有这条」的哨兵：None 本身是「抓取失败」的合法缓存值
 
@@ -308,6 +347,10 @@ _IMG_CACHE = _TTLCache(IMG_MEM_TTL, IMG_CACHE_MAX_ITEMS, IMG_CACHE_MAX_BYTES)   
 # 绝不与 _IMG_CACHE 里的完整图混放（键、缓存对象都分开）。
 _PROBE_CACHE = _TTLCache(IMG_MEM_TTL, IMG_CACHE_MAX_ITEMS, 8 * 1024 * 1024)
 PRELOAD = {"cn": [], "intl": [], "hot": []}   # 启动时预热好的条目，API 直接取用
+# 【2026-10-09 修 中-7】「低质图后台剔除」的单飞闸：同一 region 同时只允许一轮，
+# 并且写回 PRELOAD 前要比对「还是不是我开始时那一批」（防丢失更新，见 _enrich_quality_bg）。
+_ENRICH_LOCK = threading.Lock()
+_ENRICHING = set()
 # 「当天」过滤之前的完整池子（按各源窗口，含最近几天）。
 # 主列表只给当天（用户原则：常看常新、绝不看旧新闻），
 # 但**搜索必须能搜到更早的新闻** —— 程序名叫「热点新闻检索」，这是它的本分。
@@ -316,7 +359,11 @@ PRELOAD_ALL = {"cn": [], "intl": [], "hot": []}
 
 def _load_config():
     default = {
-        "update": {"enabled": True},
+        # 【2026-10-09 升级体验口径】
+        #   enabled     —— 总开关：关掉就完全不再检查更新
+        #   auto_update —— **默认开**：发现新版本就静默下载 + 验签 + 自动替换（不弹确认框）。
+        #                   关掉后回到"只提示、不自动升级"，由用户自己在页面点「检查更新」。
+        "update": {"enabled": True, "auto_update": True},
         # contact：MyMemory 用邮箱标识身份，带上可把免费额度从 5k/天 提到 50k/天。
         # 【2026-10-07 改动】原来写死的是假邮箱（kele551@example.com），既拿不到提额，
         # 又会被一起打进 exe 分发出去。
@@ -345,6 +392,7 @@ def _load_config():
                 data[k] = v
     data.setdefault("update", dict(default["update"]))
     data["update"].setdefault("enabled", True)
+    data["update"].setdefault("auto_update", True)
     data.setdefault("translate", dict(default["translate"]))
     for k, v in default["translate"].items():
         data["translate"].setdefault(k, v)
@@ -363,10 +411,21 @@ CONFIG = _load_config()
 # 【为什么】原来 _fetch 每次调用都 `with httpx.Client(...)`，等于每个请求都重做
 # 一次 TCP + TLS 握手。抓 30 条 HN、给热榜补 100 张图时，光握手就要几十秒。
 # httpx.Client 官方明确支持跨线程复用，所以全局建一个即可（按 host 保活连接）。
-_HTTP_LIMITS = httpx.Limits(max_connections=48, max_keepalive_connections=24,
+# 【2026-10-09 修 中-6】上限从 48/24 提到 96/48：同时可能存在的抓取线程是
+#   _hot_hn 30 + 完整/快速抓取 16~20 + 补图 14 + 后台测图 16，极端情况会超过 48 ——
+#   httpx 拿不到连接就抛 PoolTimeout，被 _fetch 的 except 吞掉后**当成"该源抓取失败"**，
+#   于是刷新高峰期偶发丢源、日志里只有一行"抓取失败"，很难定位。
+#   现在两手一起做：① 上限与最大线程规模对齐；② _fetch 把 PoolTimeout 单独识别，
+#   分开记日志、分开计数，并且给它多一次重试（它与"站点挂了"性质完全不同）。
+_HTTP_LIMITS = httpx.Limits(max_connections=96, max_keepalive_connections=48,
                             keepalive_expiry=30.0)
 _CLIENT = httpx.Client(follow_redirects=True, trust_env=False, timeout=10,
                        limits=_HTTP_LIMITS, headers={"User-Agent": UA})
+
+# 【修 中-6】连接池排队超时的累计次数（与"源站真的失败"分开统计，便于事后定位）。
+# 只用于诊断：/api/version 会带出去，日志里也会单独打一行。
+_POOL_TIMEOUTS = [0]
+
 
 # 文章页 → (题图, 发布时间, 站方栏目)。og:image 基本不会变，进程内记住，避免每轮刷新重抓一遍。
 # 【2026-10-09 修 高-2】原来是个裸 dict，只增不减 —— 跑一天就是几千条，换成带容量上限的缓存。
@@ -393,7 +452,7 @@ def _fetch_failed(out, key):
 
 def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
     # 按「是否图片」决定返回形态：图片返回 (bytes, ctype) 元组；文档/RSS 返回原始字节。
-    # 旧逻辑靠 URL 含 "rss" 判断文档，但小众软件(/feed/)、notebookcheck(/) 等源不含
+    # 旧逻辑靠 URL 含 "rss" 判断文档，但小众软件(/feed/) 这类源不含
     # "rss" 会被误判成图片 → feedparser 收到元组崩溃。改为按图片扩展名判定，覆盖所有源。
     _low = url.lower()
     _is_img = _low.startswith(("http://", "https://")) and (
@@ -431,10 +490,14 @@ def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
             print(f"[warn] 图片地址被拒（{_why}）: {url[:110]}")
             return (None, "")
     out, transient, truncated = None, False, False
-    for attempt in (0, 1):
+    # 【2026-10-09 修 中-6】pool_wait 单独标记「这次失败是连接池排队超时」：
+    # 它不是源站故障，重试一次往往就好，也**不应该**写进负缓存（否则等于把
+    # 自己的并发问题记成"这个源坏了"，后面十几秒都不再试）。
+    pool_wait = False
+    for attempt in (0, 1, 2):
         # 【2026-10-09】truncated 必须每次尝试都归零：否则上一次尝试的 True 会残留到重试，
         # 让「这次其实读完了整张图」的小图被误判成片段（不进 _IMG_CACHE，白丢一次缓存机会）。
-        out, transient, truncated = None, False, False
+        out, transient, truncated, pool_wait = None, False, False, False
         try:
             # trust_env=False：不走系统/沙箱代理，本机直连国内站点更快更稳
             hdrs = {}
@@ -485,15 +548,30 @@ def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
                     # 一旦源字节不是合法 utf-8（如中关村在线 RSS 是 GBK），标题就被换成 U+FFFD 乱码。
                     # 交给 feedparser.parse(bytes) 按各源 XML 声明的编码自行解码，才能正确还原中文。
                     out = r.content if r.status_code == 200 else None
+        except httpx.PoolTimeout:
+            # 【修 中-6】连接池排队等不到连接。这是**我们自己的并发**问题，不是源站故障：
+            # 单独计数 + 单独打日志（日志里出现这行说明该调池子，而不是"某源坏了"）。
+            out, transient, pool_wait = None, True, True
+            print(f"[warn] 连接池排队超时（非源站故障，第 {attempt + 1}/3 次尝试）: {url[:110]}")
         except Exception:
             out, transient = None, True
         # 【2026-10-09 修 高-3】偶发抖动（超时/连接错误/5xx）给一次带退避的重试：
         # 以前源抓取、_article_meta、_measure_image 全是单次尝试，抖一下这轮就没了。
-        if transient and attempt == 0:
-            time.sleep(RETRY_BACKOFF)
+        # 【修 中-6】池排队超时多给一次机会（共 3 次），它比网络抖动更容易靠等待恢复。
+        _tries = 2 if pool_wait else 1
+        if transient and attempt < _tries:
+            time.sleep(RETRY_BACKOFF * (attempt + 1))
             continue
         break
+    if pool_wait:
+        # 只统计「真的因为排队超时而没抓到」的次数（重试成功的不算），
+        # 这样 /api/version 里的 poolTimeouts 才是"丢了几次"而不是"试了几次"。
+        _POOL_TIMEOUTS[0] += 1
     if _fetch_failed(out, key):
+        if pool_wait:
+            # 池超时不写负缓存：不然下一次调用会命中"失败缓存"直接返回 None，
+            # 本来只是排队，结果被记成"这个源抓不到"（正是中-6 说的静默丢条目）。
+            return out
         # 【修 高-3】失败只写很短的负缓存（防同一瞬间重复打点），不再长期负缓存：
         # 以前文档失败要哑 5 分钟、图片 404 要哑一整天，难怪"栏目偶尔少一块"。
         cache.put(_ck, out, 0, ttl=IMG_FAIL_CACHE_TTL if key == "img" else FAIL_CACHE_TTL)
@@ -654,7 +732,7 @@ _IMG_DATE_PAT = (
 STALE_IMG_DAYS = 180      # 图比文章旧半年以上 → 判定为站方占位图，宁缺毋滥
 DUP_IMG_MIN = 3           # 同一源内被 3 条以上共用的图 → 判定为默认图
 # 题图短边门槛（用户要求「每条新闻必须有高清大图」，2026-10-07 由 200 提到 300）。
-# 定 300 的依据是实测：300 能保住界面新闻(580x330)、NotebookCheck(672x504)、小众软件多数图；
+# 定 300 的依据是实测：300 能保住界面新闻(580x330)、小众软件多数图；
 # 提到 400 会把界面新闻整个板块砍掉（它源站上限就是 580x330），故取 300。
 MIN_IMG_SHORT_SIDE = 300
 
@@ -826,10 +904,144 @@ def _clean(text):
     return re.sub(r"\s+", " ", s).strip()
 
 
+# ============ 【2026-10-09 换源】中文源的编码兜底 ============
+# 中新网系等中文源，正常情况都在 XML 声明里写对了 encoding="utf-8"，实测 24 个 feed
+# 的字节也确实是合法 utf-8（见 logs\换源-境内国际版-20261009.md 的编码核对）。
+# 但中文站历史上常有「声明 utf-8、实际 GBK/GD18030」的情况，一旦发生，
+# feedparser 会按声明解出满屏 U+FFFD 乱码 —— 标题全废。这里做两层防护：
+#   ① 我们自己按文本处理时（_decode_feed_bytes）：声明 → utf-8 → gb18030 依次回退；
+#   ② 交给 feedparser 的场合（_parse_one 一律传**原始字节**，让它按各源声明解码），
+#      解析完只在「确实出现 U+FFFD 且原始字节不是合法 utf-8」时按 gb18030 重解一次。
+# 两条都只在异常时触发，正常源一次都不会走到。
+_XML_DECL_ENC = re.compile(rb'(<\?xml[^>]*?encoding\s*=\s*["\'])([^"\']+)(["\'])', re.I)
+
+
+def _decode_feed_bytes(raw):
+    """把 feed / 页面的原始字节解成文本：按 XML 声明 → utf-8 → gb18030 依次回退。"""
+    if isinstance(raw, str):
+        return raw
+    if not raw:
+        return ""
+    encs = []
+    m = _XML_DECL_ENC.search(raw[:400])
+    if m:
+        encs.append(m.group(2).decode("ascii", "ignore"))
+    encs += ["utf-8", "gb18030"]
+    for e in encs:
+        try:
+            return raw.decode(e)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+# ============ 【2026-10-09 换源】条目发布时间：按字符串自己写的时区解析 ============
+# feedparser 会把时间**换算成 UTC** 再放进 `*_parsed`，这带来一个坑（实测 16 个 RSS 源）：
+#   · 写了时区的（`+0800` / `GMT`，实测 15 个源如此）→ 它换算得对，
+#     但如果再按东八区解释一次，新闻时间就**早了 8 小时**；
+#   · 没写时区的（实测快科技的 `2026-10-09 12:25:39`）→ 它只能当成 UTC，
+#     这时按 UTC 解释反而**晚了 8 小时**（页面上显示成未来时间）。
+# 两种源混在一起，统一按某一种解释必有一半是错的 → 以**原始字符串**为准：
+# 写了时区就用它写的，没写就按东八区（本程序与所有源的口径都是北京时间）。
+_DATE_FORMATS = (
+    "%a, %d %b %Y %H:%M:%S", "%a, %d %b %Y %H:%M", "%d %b %Y %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M",
+)
+_TZ_OFF_RE = re.compile(r'([+-])(\d{2}):?(\d{2})$')
+# ⚠ `Z` 必须单独一支：ISO-8601 的 `2026-10-09T12:25:39Z` 里 Z 紧贴数字，
+# 两侧都是 \w，`\b…Z$` 反而匹配不上（复查发现并修掉）。
+_TZ_UTC_RE = re.compile(r'(?:\b(?:UT|UTC|GMT)|Z)$', re.I)
+
+
+def _ts_from_date_str(raw):
+    """按字符串自己写的时区解析发布时间；写不出时区就按东八区。解析不了返回 0。"""
+    s = (raw or "").strip()
+    if not s:
+        return 0
+    # 尾巴上的时区名（"(CST)" / "[UTC]"）先去掉，免得挡住下面的格式匹配
+    s = re.sub(r'[\(\[][^\)\]]{0,20}[\)\]]\s*$', '', s).strip()
+    m = _TZ_OFF_RE.search(s)
+    if m:
+        mins = int(m.group(2)) * 60 + int(m.group(3))
+        tz = timezone(timedelta(minutes=(-mins if m.group(1) == "-" else mins)))
+        s = s[:m.start()].strip()
+    elif _TZ_UTC_RE.search(s):
+        tz = timezone.utc
+        s = _TZ_UTC_RE.sub("", s).strip()
+    else:
+        tz = CST
+    s = re.sub(r'\s+', ' ', s).strip().rstrip(",").strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return int(datetime.strptime(s, fmt).replace(tzinfo=tz).timestamp())
+        except ValueError:
+            continue
+    return 0
+
+
+def _entry_ts(e):
+    """RSS / Atom 条目的发布时间 → 秒级时间戳（见上面那段说明）。"""
+    ts = _ts_from_date_str(e.get("published") or e.get("updated") or "")
+    if ts:
+        return ts
+    # 字符串实在解析不出来（少见格式）→ 退回 feedparser 的 UTC 语义
+    p = e.get("published_parsed") or e.get("updated_parsed")
+    if p:
+        try:
+            return int(datetime(*p[:6], tzinfo=timezone.utc).timestamp())
+        except Exception:
+            return 0
+    return 0
+
+
+def _refeed_if_mojibake(raw, doc):
+    """feedparser 解出乱码时的兜底重解；没必要返回 None。
+
+    触发与接受条件都刻意保守（正常源一次都不会走到）：
+      · **触发**：原始字节不是合法 utf-8（说明声明的编码确实不对），
+        并且解出来的标题要么带替换字符 U+FFFD、要么**一个汉字都没有**。
+        为什么要看「有没有汉字」：feedparser 在声明解码失败时会退回 windows-1252，
+        实测解出来是「´íÉùÃ÷±àÂëµÄÖÐÎÄÔ´」这种西欧重音字母，**根本没有 U+FFFD**，
+        只按 U+FFFD 判断会漏掉真正的乱码。
+      · **接受**：按 gb18030 重解后确实解出了汉字才替换 ——
+        纯英文源（前后都没有汉字）永远不会被误改。
+    回退顺序 gb18030 → utf-8；重解前把 XML 声明改写成 utf-8 再交给 feedparser。
+    """
+    if not raw or isinstance(raw, str):
+        return None
+    try:
+        raw.decode("utf-8")
+        return None                      # 本来就是合法 utf-8 → 不乱动
+    except UnicodeDecodeError:
+        pass
+    _titles = [(e.get("title") or "") for e in (getattr(doc, "entries", None) or [])]
+    _has_fffd = any("\ufffd" in t for t in _titles)
+    if not (_has_fffd or not any(_has_cjk(t) for t in _titles)):
+        return None                      # 已经解出中文了 → 不乱动
+    txt = ""
+    for e in ("gb18030", "utf-8"):
+        try:
+            txt = raw.decode(e)
+            break
+        except (LookupError, UnicodeDecodeError):
+            continue
+    if not txt:
+        return None
+    fixed = txt.encode("utf-8")
+    if _XML_DECL_ENC.search(fixed[:400]):
+        fixed = _XML_DECL_ENC.sub(rb"\g<1>utf-8\g<3>", fixed, count=1)
+    try:
+        new = feedparser.parse(fixed)
+    except Exception:
+        return None
+    _new_titles = [(e.get("title") or "") for e in (getattr(new, "entries", None) or [])]
+    if any(_has_cjk(t) for t in _new_titles):
+        return new
+    return None
+
+
 def _parse_one(src):
-    # notebookcheck 走 HTML 解析分支（无 RSS）
-    if src.get("parser") == "nbc":
-        return _parse_nbc(src)
     # 凤凰娱乐：首页内联 JSON（newsstream），非 RSS，走专用解析
     if src.get("parser") == "ifeng":
         return _parse_ifeng(src)
@@ -840,9 +1052,14 @@ def _parse_one(src):
     # 新浪娱乐：首页 HTML 列表（无 RSS 可用，实测网易/中新网/时光网的娱乐 RSS 全废）
     if src.get("parser") == "sina_ent":
         return _parse_sina_ent(src)
-    # GitHub curated 软件集合仓库（awesome 列表）：抓 README raw 解析软件条目
-    if src.get("parser") == "github_readme":
-        return _parse_github_readme(src)
+    # 【2026-10-09 换源】国际在线娱乐：列表页 SSR 卡片（标题+原图+时间都在 HTML 里）
+    if src.get("parser") == "cri_ent":
+        return _parse_cri_ent(src)
+    # 【2026-10-09 修 低-6 删除死代码】这里原来还有一个 `parser == "github_readme"` 分支
+    # （抓 GitHub 上 awesome 列表仓库的 README 做成软件卡片）。SOURCES 里没有任何源用它
+    # —— 用户 2026-10-07 已明确要求「删除不易读的英文 GitHub 仓库，改用国内源」，
+    # 所以这个分支和它专用的 `_parse_github_readme` / `_clean_md` 一起删掉了。
+    # 逻辑留痕在 git 历史里，需要时按 commit 取回。
     raw = _fetch(src["url"])
     if not raw:
         print(f"[warn] RSS 抓取失败: {src['url']}")
@@ -852,6 +1069,11 @@ def _parse_one(src):
     except Exception as ex:
         print(f"[warn] RSS 解析失败: {src['url']} ({type(ex).__name__})")
         return []
+    # 【2026-10-09 换源】中文源编码兜底：声明与实际字节不符时按 gb18030 重解一次
+    _fixed = _refeed_if_mojibake(raw, doc)
+    if _fixed is not None:
+        print(f"[ok] {src['id']}: XML 声明编码与实际不符，已按 gb18030 回退重解")
+        doc = _fixed
     items = []
     max_age = (src.get("max_age_hours")
                or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
@@ -867,8 +1089,15 @@ def _parse_one(src):
         desc = re.sub(r":[a-z_]{2,20}:", "", desc)
         desc = re.sub(r"(查看全文|阅读原文|查看原文)\s*$", "", desc).strip()
         desc = desc[:220]
-        pub = e.get("published_parsed") or e.get("updated_parsed")
-        ts = int(datetime(*pub[:6], tzinfo=CST).timestamp()) if pub else 0
+        # 【2026-10-09 换源·自行发现的时区 bug】原来这里写成
+        # `datetime(*pub[:6], tzinfo=CST)`：feedparser 的 *_parsed 已经是 **UTC**，
+        # 再按东八区解释一次，等于把每条 RSS 新闻的时间**提前 8 小时**，后果很实在：
+        #   · 当天 00:00~08:00 发布的新闻会被标成前一天 → 被「只留当天」整个滤掉
+        #     （早上打开看到的是昨天的新闻）；
+        #   · 工具栏「最新 时间」显示偏早 8 小时；与热榜/文章页取到的时间混排时顺序也不对。
+        # 现在统一交给 _entry_ts：**按 feed 字符串自己写的时区**解析
+        #（写了 +0800/GMT 就用它，没写时区按东八区），两种源都对得上。
+        ts = _entry_ts(e)
         if ts and ts < cutoff:
             dropped += 1
             continue
@@ -916,83 +1145,25 @@ def _parse_one(src):
 #             公益页。故由凤凰网顶替。
 
 
-def _hot_baidu():
-    """百度实时热点：HTML 内嵌 <!--s-data:...--> JSON，解析 cards[].content[]。"""
-    try:
-        with httpx.Client(follow_redirects=True, timeout=8, trust_env=False, headers={"User-Agent": UA}) as c:
-            r = c.get("https://top.baidu.com/board?tab=realtime")
-        t = r.text if r.status_code == 200 else ""
-    except Exception as ex:
-        print(f"[warn] 百度热榜抓取异常: {type(ex).__name__}")
-        return []
-    m = re.search(r"<!--s-data:([\s\S]*?)-->", t)
-    if not m:
-        return []
-    try:
-        d = json.loads(m.group(1))
-    except Exception:
-        return []
-    out, rank = [], 0
-    for card in (d.get("data", {}).get("cards") or []):
-        for it in (card.get("content") or []):
-            word = (it.get("word") or "").strip()
-            if not word:
-                continue
-            rank += 1
-            u = it.get("rawUrl") or it.get("url") or ""
-            if u and u.startswith("/"):
-                u = "https://top.baidu.com" + u
-            if not u:
-                u = "https://www.baidu.com/s?wd=" + urllib.parse.quote(word)
-            heat = it.get("hotScore") or 0
-            out.append({
-                "id": hashlib.md5(("hot-baidu-" + word).encode("utf-8")).hexdigest()[:12],
-                "region": "hot", "channel": "baidu-hot", "label": "百度",
-                "cls": "热榜", "title": word, "desc": "", "link": u, "image": "",
-                "published": 0, "heat": int(heat) if str(heat).isdigit() else 0,
-                "rank": rank, "translated": False,
-            })
-    print(f"[ok] hot/百度: {len(out)} 条")
-    return out
-
-
-def _hot_bilibili():
-    """B站热门：api.bilibili.com/x/web-interface/popular JSON。"""
-    try:
-        with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
-                          headers={"User-Agent": UA, "Referer": "https://www.bilibili.com"}) as c:
-            r = c.get("https://api.bilibili.com/x/web-interface/popular?ps=20&pn=1")
-        j = r.json() if r.status_code == 200 else {}
-    except Exception as ex:
-        print(f"[warn] B站热榜抓取异常: {type(ex).__name__}")
-        return []
-    out = []
-    for idx, it in enumerate((j.get("data", {}).get("list") or [])[:20], 1):
-        title = (it.get("title") or "").strip()
-        if not title:
-            continue
-        bvid = it.get("bvid") or ""
-        u = f"https://www.bilibili.com/video/{bvid}" if bvid else ""
-        view = (it.get("stat") or {}).get("view") or 0
-        out.append({
-            "id": hashlib.md5(("hot-bili-" + title).encode("utf-8")).hexdigest()[:12],
-            "region": "hot", "channel": "bili-hot", "label": "B站",
-            "cls": "热榜", "title": title, "desc": "", "link": u, "image": "",
-            "published": 0, "heat": int(view) if str(view).isdigit() else 0,
-            "rank": idx, "translated": False,
-        })
-    print(f"[ok] hot/B站: {len(out)} 条")
-    return out
+# 【2026-10-09 修 低-6 删除死代码】这里原来还有两个热榜解析器，**没有任何调用方**：
+#   `_hot_baidu()`     —— 百度实时热点（上面已写"用户明确不要"）
+#   `_hot_bilibili()`  —— B站热门（内容全是视频，不是新闻列表）
+# 留着会让读代码的人以为"程序支持百度/B站热榜"，与 README 的数据源清单不符。
+# 两个函数的逻辑已完整留痕在 git 历史（提交 1276afb 之前的那一版），需要时按 commit 取回。
+# 上面那段"已下线、勿再加回"的说明**保留**，它才是真正有用的信息。
 
 
 def _hot_cn_intl():
     """中新社·国际（chinanews.com.cn/rss/world.xml）——国际热榜的中文底座。
 
-    为什么国际热榜必须有一家中文源：国际板块其余源（France24 / Variety / Billboard /
-    Hacker News）全是英文，要看得懂全靠后台机器翻译；而免费翻译额度一旦被限流，
-    整个板块当场退回英文（实测某次 120 段只译出 2 段）。这条 RSS 本身就是中文国际新闻，
+    为什么国际热榜必须有一家中文源：国际板块原来还有一堆英文外媒，
+    要看得懂全靠后台机器翻译；而免费翻译额度一旦被限流，整个板块当场退回英文
+    （实测某次 120 段只译出 2 段）。这条 RSS 本身就是中文国际新闻，
     不依赖任何翻译服务，保证「国际热榜」在任何情况下都看得懂。
-    中新网 RSS 和文章页都没有可用题图，但热榜是纯文本列表，本来也不需要图。"""
+    【2026-10-09 换源】从那以后国际板块**只剩境内媒体**（CGTN + 中新网 + 国产
+    综合源转来的国际条目），这条更稳了。图片说明订正：中新网 RSS 不带图、文章页
+    **也没有 og:image**，正文照片另有取法（见 _cn_body_image / _ART_SITE_IMG_RULES）；
+    热榜是纯文本列表，本来也不需要图，所以这里保持 image=""。"""
     raw = _fetch("https://www.chinanews.com.cn/rss/world.xml")
     if isinstance(raw, tuple):
         raw = raw[0]
@@ -1006,13 +1177,7 @@ def _hot_cn_intl():
         link = (e.get("link") or "").strip()
         if not title or not link:
             continue
-        ts = 0
-        tp = e.get("published_parsed") or e.get("updated_parsed")
-        if tp:
-            try:
-                ts = int(datetime(*tp[:6], tzinfo=timezone.utc).timestamp())
-            except Exception:
-                ts = 0
+        ts = _entry_ts(e)
         out.append({
             "id": hashlib.md5(("hot-cnworld-" + link).encode("utf-8")).hexdigest()[:12],
             "region": "intl", "channel": "cnworld-hot", "label": "中新社·国际",
@@ -1026,64 +1191,6 @@ def _hot_cn_intl():
     return out
 
 
-def _hot_hn():
-    """Hacker News 实时热门榜（国际热榜数据源）。
-
-    为什么选它：Reddit r/worldnews、BBC most-popular、Guardian、Al Jazeera、Google News
-    RSS、DW、EuroNews 在国内网络实测全部 ConnectTimeout，唯一既带「真实热度数值」又能连通的
-    国际榜单只剩 HN 的 Firebase 官方 API（免 key）。这里 score 是用户真实投票点数、
-    descendants 是评论条数，都能在点开的页面上对得上 —— 不像头条那种站内加权值。
-    内容偏科技/创投，但也覆盖国际重大事件，符合「国际上现在最热」的语义。"""
-    # 【加速】4 分钟内直接复用上次结果。原来 _HN_CACHE 定义了却从没被用过，
-    # 导致每次刷新都把这 30 条重新抓一遍。
-    if _HN_CACHE["items"] and (time.time() - _HN_CACHE["ts"]) < 240:
-        return _HN_CACHE["items"]
-    try:
-        # 复用全局连接池（同域长连接），不要再 new 一个 Client
-        r = _CLIENT.get("https://hacker-news.firebaseio.com/v0/topstories.json", timeout=8)
-        ids = r.json() if r.status_code == 200 else []
-    except Exception as ex:
-        print(f"[warn] HN 榜单抓取异常: {type(ex).__name__}")
-        return _HN_CACHE["items"]
-    ids = [i for i in (ids or []) if isinstance(i, int)][:30]
-
-    def one(i):
-        # 只试一次：原来失败要 5s + sleep + 5s = 10s，30 条一起就把整轮拖长一倍。
-        # HN 少一条对榜单毫无影响，速度优先。
-        try:
-            r = _CLIENT.get(f"https://hacker-news.firebaseio.com/v0/item/{i}.json", timeout=5)
-            return r.json() if r.status_code == 200 else None
-        except Exception:
-            return None
-
-    out = []
-    # 30 条一次性全放出去：16 线程会分 2 批，等于把超时时间乘 2（实测 19s）。
-    with ThreadPoolExecutor(max_workers=30) as ex:
-        for it in ex.map(one, ids):
-            if not it:
-                continue
-            title = _clean(it.get("title") or "")
-            if not title:
-                continue
-            iid = it.get("id")
-            url = it.get("url") or f"https://news.ycombinator.com/item?id={iid}"
-            out.append({
-                "id": hashlib.md5(("hot-hn-" + str(iid)).encode("utf-8")).hexdigest()[:12],
-                "region": "intl", "channel": "hn-hot", "label": "Hacker News",
-                "cls": "热榜", "title": title, "desc": "", "link": url, "image": "",
-                "published": int(it.get("time") or 0),
-                "heat": int(it.get("score") or 0),
-                "comments": int(it.get("descendants") or 0),
-                "rank": len(out) + 1, "translated": False,
-            })
-    print(f"[ok] hot/HN: {len(out)} 条")
-    _HN_CACHE["ts"] = time.time()
-    _HN_CACHE["items"] = out
-    return out
-
-
-_HN_CACHE = {"ts": 0, "items": []}
-
 # 澎湃 rightSidebar 的共享缓存（被 cn 要闻和热榜两个入口共用，见 _thepaper_data）
 _THEPAPER_CACHE = {"ts": 0.0, "data": None}
 _THEPAPER_LOCK = threading.Lock()
@@ -1091,30 +1198,26 @@ _THEPAPER_LOCK = threading.Lock()
 
 def _parse_hot_intl():
     """国际实时热榜 = 中新社·国际（中文，不依赖翻译，永远读得懂）
-                   + Hacker News（英文科技/创投，能译则译）。
+                   + 凤凰网 / 澎湃新闻 / 红星新闻 报的国际条目（中文）。
 
-    两家独立，任一失败不影响另一家：
-      - 中新社每次都抓（RSS 轻快，实测 0.1~1.4s）。中文条目已标记 translated=True，
+    【2026-10-09 换源·合规】原来这里还有一路境外热榜（其公开 API，
+    逐条请求 Firebase 取分数与评论数）。按章程 §9.1「默认只用境内权威媒体源，
+    不采用境外来源」，**连同 `_hot_hn()` 与它专用的 `_HN_CACHE` 一起整段删除**。
+    删掉后国际热榜反而更快（少 30 次 Firebase 请求）也更好读（不再有英文条目）。
+
+    两家来源互相独立，任一失败不影响另一家：
+      - 中新社·国际每次都抓（RSS 轻快，实测 20~80ms）。中文条目已标记 translated=True，
         后台翻译会跳过，不会拿去「中译中」。
-      - HN 要逐个 item 请求 Firebase，慢得多，故带 3 分钟本地缓存（榜单变动慢，不必每次请求）。
+      - 国内综合源（凤凰/澎湃/红星）的国际条目排在后面，用来把热榜做厚。
     中新社排在前面，保证热榜靠前的部分一定是可读的中文。"""
     parts = []
     try:
         parts.extend(_hot_cn_intl())
     except Exception as ex:
         print(f"[warn] 国际热榜子源异常: {type(ex).__name__}")
-    now = time.time()
-    hn = None
-    if _HN_CACHE["items"] and now - _HN_CACHE["ts"] < 180:
-        hn = _HN_CACHE["items"]
-    else:
-        hn = _hot_hn()
-        _HN_CACHE["ts"], _HN_CACHE["items"] = now, hn
-    if hn:
-        parts.extend(hn)
     # 【2026-10-07 用户建议】「灵活一点，国际板块的热榜也可以用凤凰、澎湃、红星的
     # 国际新闻来体现」—— 国内热榜里被剔掉的国际新闻**不丢**，转来充实国际热榜。
-    # 好处：国际热榜从 2 家（中新社/HN）变成最多 5 家，且都是中文，不用等翻译。
+    # 好处：删掉那处境外热榜之后，国际热榜仍由境内多家媒体撑起来，且全是中文，不用等翻译。
     try:
         # 优先用 _collect("hot") 里已经抓好文章页、按站方栏目分好类的那批；
         # 没有时退回关键词判定（首次启动国内还没抓完的情况）。
@@ -1426,97 +1529,21 @@ def _parse_hot():
             it["score"] = (n - i + 1) / n
     parts.sort(key=lambda x: x.get("score") or 0, reverse=True)
     return parts
-
-
-def _parse_nbc(src):
-    """NotebookCheck 中文版（notebookcheck-cn.com）：TYPO3 站点无 RSS，抓首页新闻列表解析。
-    HTML 块结构稳定：<a class="introa_*" href="...html"> 内含
-      <picture><img src="fileadmin/_processed_/.../csm_*.jpg">          （列表缩略图，仅 ~126px，低质）
-      <source srcset=".../_nc5/xxx-q82-w672-h.webp ...">                （同图更大尺寸，用这个保高清）
-      <h2 class="introa_title">标题</h2>
-      <div class="introa_rm_abstract">摘要</div>
-      <span class="itemdate itemdate_<ts>" data-crdate="<ts>">日期</span>
-    图片优先取 <picture> 里最大的 webp（w672，约 672px 宽），回落 csm_ jpg；均经 _norm_url 补全为绝对地址。
-    仅保留 72h 内条目（与国内源时效一致）。站点退化时返回 []，不影响其它源。"""
-    raw = _fetch(src["url"])
-    if isinstance(raw, tuple):
-        raw = raw[0]
-    if not raw:
-        print(f"[warn] notebookcheck 抓取失败: {src['url']}")
-        return []
-    html = raw.decode("utf-8", "ignore")
-    items = []
-    cutoff = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get("cn", 72) * 3600
-    for m in re.finditer(r'<a\s+class="introa_[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.S):
-        link, blk = m.group(1), m.group(2)
-        if "notebookcheck-cn.com" not in link:
-            continue
-        t = re.search(r'introa_title"[^>]*>([^<]+)<', blk)
-        if not t:
-            continue
-        title = _clean(t.group(1))
-        if not title:
-            continue
-        d = re.search(r'introa_rm_abstract"[^>]*>(.*?)</div>', blk, re.S)
-        desc = _clean(d.group(1))[:200] if d else ""
-        # 图片：<picture> 里挑含 w672 的 webp（最大尺寸），否则取第一条 webp，再回落 csm_ jpg
-        img = ""
-        ss = re.search(r'srcset="([^"]+_nc5/[^"]+\.webp[^"]*)"', blk)
-        if ss:
-            cands = [s.strip().split()[0] for s in ss.group(1).split(",") if "w672" in s]
-            pick = cands[0] if cands else re.search(r'(/fileadmin/_processed_/webp/[^" ]+\.webp)', ss.group(1))
-            if isinstance(pick, str):
-                img = pick
-        if not img:
-            csm = re.search(r'src="([^"]*csm_[^"]*\.(?:jpg|jpeg|png|webp))"', blk)
-            if csm:
-                img = csm.group(1)
-        if img:
-            img = _norm_url(img, src["base"])
-        ts_m = re.search(r'itemdate_(\d+)', blk) or re.search(r'data-crdate="(\d+)"', blk)
-        ts = int(ts_m.group(1)) if ts_m else 0
-        if ts and ts < cutoff:
-            continue
-        items.append({
-            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
-            "region": "cn",
-            "channel": src["id"],
-            "label": src.get("label", src["id"]),
-            "cls": src["cls"],
-            "title": title,
-            "desc": desc,
-            "link": link if link.startswith("http") else src["base"] + link,
-            "image": img or "",
-            "published": ts,
-            "translated": False,
-        })
-    print(f"[ok] {src['id']}: notebookcheck 解析 {len(items)} 条（72h 内）")
-    return items
-
-
-# mefcl 挑战 cookie 缓存：站方每次生成的 cookie 30 分钟内有效，有效期内复用，
-# 避免每次刷新都打一次挑战页。失效（被挑战页挡回）时把 ts 置 0 强制重新取。
-_MEFCL_COOKIE = {"value": None, "ts": 0}
-# 最近一次成功解析的结果：抓取瞬时失败（超时/被拦）时回退，避免实时刷新偶发
-# 网络抖动把整个 mefcl 板块清空（用户明确要这个源）。
-_MEFCL_LAST = []
-
-
 def _parse_mefcl(src):
-    """mefcl.com（用户投稿站点）：站方用 ge_js_validator JS cookie 验证拦截爬虫。
+    """mefcl.com（用户投稿站点）：站方用 ge_js_validator 的 JS cookie 校验来访者身份。
 
     访问流程（已实测，按站方校验流程走）：
-      1. 先抓首页 → 若命中 278B 校验页，正则取到站方动态生成的合法 cookie 值
+      1. 先抓首页 → 若拿到 278B 的校验页，正则取到站方动态生成的合法 cookie 值
          （形如 1791287062@63@<32位hex>，max-age=1800，30 分钟内有效）；
       2. 带合法 Cookie: ge_js_validator_63=<值> 重新请求首页 → 返回 102KB 真内容；
       3. 解析 <article class="excerpt ..."> 块：标题取 <h2><a> 文本，链接取 <a href>，
          题图取 <img data-src>（src 只是占位 thumbnail.png），摘要取 <p class="note">。
 
-    /feed/ 仍返回 403，故改抓首页 HTML。解析失败 / 被拦返回 []，不影响其它源。"""
+    /feed/ 仍返回 403，故改抓首页 HTML。解析失败 / 拿不到内容时返回 []，不影响其它源。"""
     import time as _t
     now = _t.time()
-    # 先直接抓首页：站方若已不再弹 JS 挑战，正文（含 article.excerpt）直接返回，
-    # 这时无需 cookie，直接解析即可——否则会误判「无挑战字段」而整源消失。
+    # 先直接抓首页：站方若已不再返回校验页，正文（含 article.excerpt）直接返回，
+    # 这时无需 cookie，直接解析即可——否则会误判「没有校验字段」而整源消失。
     try:
         with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
                           headers={"User-Agent": UA}) as c:
@@ -1530,12 +1557,12 @@ def _parse_mefcl(src):
         # 正常返回正文，直接解析
         html = html0
     else:
-        # 命中 JS 验证挑战页 → 抠合法 cookie 回放
+        # 拿到站方校验页 → 取合法 cookie 后重新请求（按站方校验流程访问）
         cookie = _MEFCL_COOKIE.get("value")
         if not cookie or (now - _MEFCL_COOKIE.get("ts", 0)) > 1500:
             m = re.search(r'ge_js_validator_63=([^";\s]+)', html0)
             if not m:
-                print("[warn] mefcl 无文章块也无挑战 cookie 字段，可能被改版（回退上次结果）")
+                print("[warn] mefcl 无文章块也无校验 cookie 字段，可能被改版（回退上次结果）")
                 return _MEFCL_LAST
             cookie = m.group(1)
             _MEFCL_COOKIE["value"] = cookie
@@ -1549,13 +1576,13 @@ def _parse_mefcl(src):
             print(f"[warn] mefcl 抓取异常: {type(ex).__name__}（回退上次结果）")
             return _MEFCL_LAST
         if not raw:
-            print("[warn] mefcl 抓取失败（可能被 JS 验证拦截，回退上次结果）")
+            print("[warn] mefcl 抓取失败（可能未通过站方校验，回退上次结果）")
             return _MEFCL_LAST
         html = raw.decode("utf-8", "ignore")
-        # 仍被挑战页挡住（有 cookie 字段但无文章块）→ cookie 失效，下次重取
+        # 仍是校验页（有 cookie 字段但无文章块）→ cookie 失效，下次重取
         if "ge_js_validator" in html and "excerpt" not in html:
             _MEFCL_COOKIE["ts"] = 0
-            print("[warn] mefcl 仍返回 JS 验证页，cookie 失效需重试（回退上次结果）")
+            print("[warn] mefcl 仍返回校验页，cookie 失效需重试（回退上次结果）")
             return _MEFCL_LAST
     items = []
     cutoff = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get("cn", 72) * 3600
@@ -1623,83 +1650,6 @@ def _parse_mefcl(src):
     if items:
         _MEFCL_LAST = items
     print(f"[ok] {src['id']}: mefcl 解析 {len(items)} 条")
-    return items
-
-
-def _clean_md(s):
-    """清理 GitHub README 描述里的 markdown 垃圾：图片徽章、引用式/内联链接、行内标记。
-    例：[![Open-Source Software][oss]](https://...) ![star] → 全部去掉，只留人话。
-    循环剥离以处理嵌套（外层链接的文本本身又是一张引用式图片）。"""
-    if not s:
-        return ""
-    for _ in range(5):
-        before = s
-        s = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', s)      # 内联图片 ![x](y)
-        s = re.sub(r'!\[[^\]]*\]\[[^\]]*\]', '', s)     # 引用式图片 ![x][ref]
-        s = re.sub(r'!\[[^\]]*\]', '', s)               # 裸图片 ![x]
-        s = re.sub(r'\[[^\]]*\]\[[^\]]*\]', '', s)      # 引用式链接 [x][ref]
-        s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', s)  # 内联链接 [x](y) → x
-        if s == before:
-            break
-    s = re.sub(r'<[^>]+>', '', s)                       # HTML 标签
-    s = re.sub(r'[`*_~]+', '', s)                       # 行内标记符
-    s = re.sub(r'\s+', ' ', s).strip()
-    s = re.sub(r'^[\s\-–—:：.,，、]+', '', s).strip()     # 开头残留符号
-    return s
-
-
-def _parse_github_readme(src):
-    """GitHub curated 软件集合仓库（README 维护的 awesome 列表）：
-    抓 README.md raw，解析列表项「- [名称](链接) - 描述」做成软件推荐卡片。
-    无题图，_collect 对该源豁免无图过滤（前端走渐变块样式）。
-    抓取失败 / 被拦返回 []，不影响其它源。"""
-    repo = src.get("repo") or ""
-    if not repo:
-        m = re.search(r"github\.com/([^/#?]+/[^/#?]+)", src.get("url", ""))
-        repo = m.group(1) if m else ""
-    if not repo:
-        print(f"[warn] {src['id']} 无法解析仓库地址")
-        return []
-    raw = None
-    for b in (src.get("branch") or "master", "main", "master"):
-        u = f"https://raw.githubusercontent.com/{repo}/{b}/README.md"
-        r = _fetch(u)
-        if r:
-            raw = r
-            break
-    if not raw:
-        print(f"[warn] {src['id']} README 抓取失败（可能被拦 / 分支名不符）")
-        return []
-    text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else raw
-    # 软件条目行：- [名称](url) - 描述（锚点 # 链接、图片链接不匹配 https?://，自然排除）
-    rows = re.findall(
-        r'^\s*[-*]\s*\[([^\]]+)\]\((https?://[^)\s]+)\)\s*[-–—:]\s*(.+)$',
-        text, re.M)
-    items, limit = [], src.get("limit", 24)
-    ts = int(datetime.now(CST).timestamp())
-    for name, link, desc in rows:
-        if len(items) >= limit:
-            break
-        title = _clean(name)
-        if not title or len(title) > 60:
-            continue
-        if "!" in link or link.lower().endswith((".png", ".svg", ".jpg", ".jpeg", ".md", ".gif")):
-            continue
-        d = _clean(_clean_md(desc))
-        if len(d) > 100:                                  # 描述截短，避免卡片太密
-            cut = d[:100].rsplit(" ", 1)[0] or d[:100]
-            d = cut + "…"
-        if not d:
-            continue
-        items.append({
-            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
-            "region": src["region"], "channel": src["id"],
-            "label": src.get("label", src["id"]), "cls": src["cls"],
-            "title": title, "desc": d,
-            "link": _norm_url(link, src.get("base") or "https://github.com"),
-            "image": "", "published": ts, "translated": False,
-        })
-    print(f"[ok] {src['id']}: 解析 {len(items)} 条软件（README {len(text)} 字节，候选 {len(rows)}）")
     return items
 
 
@@ -1953,7 +1903,85 @@ def _parse_article_time(txt):
     return 0
 
 
-def _article_meta(url):
+# ============ 【2026-10-09 换源】按站点登记的「正文首图」取法 ============
+# 背景：中新网系 RSS **不带图**，连文章页也没有 og:image，正文首图在固定的正文容器里；
+# 而通用正文 img 规则会先命中站头 logo（中新网页面里第一张 .png 是 164x50 的导航图），
+# 那属于张冠李戴 —— 所以给这类站点登记专门的取法，**命中登记就不再退回通用规则**。
+_CN_ZW_START = re.compile(r'class=["\']left_zw["\']', re.I)
+# 正文窗口的**结束标记**（按可靠性排序）：`<!--正文end-->` 是站方自己标的正文结尾，
+# 退而求其次才是「相关新闻」注释与图片频道容器。
+# ⚠ 这里不能用「固定长度窗口」了事：中新网正文之后紧跟着「相关新闻」卡片
+# （bigpic_list / intermoren_box / news_title），那里的缩略图与本条新闻毫无关系，
+# 取它就是张冠李戴 —— 实测 https://…/sh/2026/10-09/10709549.shtml 的窗口里
+# 唯一一张图就是另一条新闻的缩略图，必须靠这个结束标记把它挡在外面。
+_CN_ZW_STOP = re.compile(
+    r'<!--\s*正文\s*end\s*-->|<!--\s*相关新闻|id=["\']zhengwenpic["\']', re.I)
+# 中新网的正文图床有**两个**域名，别只写一个（实测漏写 i2.chinanews.com 会让大半条目
+# 明明有图却取不到：「//i2.chinanews.com/simg/hnhd/...」不含 "i2.chinanews.com.cn" 这个子串）。
+_CN_IMG_HOSTS = ("i2.chinanews.com", "image.chinanews.com", "poss-videocloud.cns.com.cn")
+
+
+def _cn_body_image(txt, url):
+    """中新网文章页的正文首图：<div class="left_zw"> 容器里的第一张站内图床图。
+
+    只认站内图床（i2.chinanews.com / i2.chinanews.com.cn / image.chinanews.com /
+    poss-videocloud.cns.com.cn），导航、页脚、App 推广图都在
+    www.chinanews.com.cn/fileftp/ 或 image.cns.com.cn/default/ 下，天然被排除。
+    找不到就返回 ""，调用方按「这条没图」处理（宁缺毋滥）。
+
+    优先取**带图说**的那张：站方给正文照片配了 `<div class="pictext">图说</div>`，
+    而相关新闻缩略图没有图说。一篇文章里若第一张是边栏图、第二张才是正文照片，
+    这个优先级就能挑对。
+    """
+    m = _CN_ZW_START.search(txt)
+    if not m:
+        return ""
+    seg = txt[m.end(): m.end() + 40000]
+    stop = _CN_ZW_STOP.search(seg)
+    if stop:
+        seg = seg[:stop.start()]
+    first = ""
+    for mm in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', seg, re.I):
+        u = _norm_url(mm.group(1), url)
+        if not u or any(j in u.lower() for j in _IMG_JUNK):
+            continue
+        if not any(h in u for h in _CN_IMG_HOSTS):
+            continue
+        if not first:
+            first = u
+        # 站方给正文照片配了 <div class="pictext">图说</div>，紧跟在图后面（中间隔着
+        # `alt="" />` 这类标签尾巴）。两点都踩过坑，别再改回去：
+        #   ① 窗口要从**整个 <img …> 标签结束处**起算，不能从 src="…" 结束处起算；
+        #   ② 窗口要在**下一张图之前**截断 —— 否则前一张图会「借走」后一张图的图说，
+        #      把边栏图当成正文照片（自测里专门有一条断言盯着这个）。
+        _after = seg[mm.end(): mm.end() + 400]
+        _nxt = _after.lower().find("<img")
+        if _nxt >= 0:
+            _after = _after[:_nxt]
+        if re.search(r'<div[^>]+class=["\']pictext', _after, re.I):
+            return u
+    return first
+
+
+# 域名后缀 → 取图函数（取不到返回 ""）
+_ART_SITE_IMG_RULES = (
+    ("chinanews.com.cn", _cn_body_image),
+)
+
+
+def _art_site_rule(url):
+    """这个地址有没有登记「正文首图」的站点规则；没有返回 None。"""
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except Exception:
+        return None
+    for suffix, fn in _ART_SITE_IMG_RULES:
+        if host == suffix or host.endswith("." + suffix):
+            return fn
+    return None
+
+
+def _article_meta(url, timeout=8):
     """抓一次文章页，同时取回「题图」和「真实发布时间」。
 
     【为什么合并】补图和校准时间都需要文章页，分两次抓纯属浪费。
@@ -1962,14 +1990,18 @@ def _article_meta(url):
     加速要点（2026-10-07）：
       1) 只要 <head> 里的 og:image 和时间元数据，所以**只读前 ART_PAGE_BYTES 字节**
       2) 结果放进 _ART_CACHE 永久记住（文章元数据不会变）
+
+    【2026-10-09 换源】参数 timeout：单条抓取上限。RSS 不带图的源
+    （BODY_IMAGE_CHANNELS，中新网系）传 BODY_IMG_TIMEOUT=3 秒 —— 它们条目多
+    （一个源 30 条），不能让个别慢页面把整轮补图拖住；失败就跳过该条，不重试。
     """
     if not url or not url.startswith("http"):
         return "", 0, ""
     cached = _ART_CACHE.get(url, None)
     if cached is not None:
         return cached          # (图, 发布时间, 栏目分类)
-    # mefcl 的文章页和首页一样有 ge_js_validator JS 挑战，**必须带上同一个 cookie**，
-    # 否则抓回来的是挑战页（几百字节），og:image 取不到 → mefcl 只能留在列表页那张
+    # mefcl 的文章页和首页一样有 ge_js_validator 校验，**必须带上同一个 cookie**，
+    # 否则抓回来的是校验页（几百字节），og:image 取不到 → mefcl 只能留在列表页那张
     # 220x150 缩略图上 → 被高清门槛剔除 → 整个「软件」栏目消失（用户实际反馈）。
     _eh = None
     if "mefcl.com" in url:
@@ -1977,7 +2009,7 @@ def _article_meta(url):
         if _cv:
             _eh = {"Cookie": "ge_js_validator_63=" + _cv}
     try:
-        raw = _fetch(url, timeout=8, max_bytes=ART_PAGE_BYTES, extra_headers=_eh)
+        raw = _fetch(url, timeout=timeout, max_bytes=ART_PAGE_BYTES, extra_headers=_eh)
     except Exception:
         return "", 0, ""
     if not raw:
@@ -1997,7 +2029,15 @@ def _article_meta(url):
             if not any(x in u.lower() for x in _IMG_JUNK):
                 img = u
                 break
-    if not img:
+    # 【2026-10-09 换源】og:image 没有时，先按**站点登记规则**取正文首图（中新网系）；
+    # 命中登记的站点不再退回下面的通用正文 img 规则（那里的第一张往往是站头 logo）。
+    _site_fn = _art_site_rule(url)
+    if not img and _site_fn:
+        try:
+            img = _site_fn(txt, url) or ""
+        except Exception:
+            img = ""
+    if not img and not _site_fn:
         m = _BODY_IMG_RE.search(txt)
         if m:
             u = _norm_url(m.group(1), url)
@@ -2016,16 +2056,35 @@ def _article_meta(url):
     return img, ts, sec
 
 
-def _article_image(url):
-    """只要题图（保留旧接口，内部走 _article_meta）。"""
-    return _article_meta(url)[0]   # (图, 时间, 栏目)[0]
+def _round_robin_by_channel(pool):
+    """按来源（channel）轮流取，保证补图名额不会被某一家全吃掉。
+
+    【2026-10-09 换源】为什么需要：补图名额（max_fetch）原来是按列表顺序切的，
+    而列表顺序 = SOURCES 的登记顺序。新增的 4 个「RSS 不带图」的中新网系源条目多
+    （每源 30 条），不轮流取的话排在前面的源会把名额占满，排在后面的源整轮补不到图、
+    在页面上直接消失 —— 正是用户反复反馈过的「某个栏目只剩一家网站」。
+    """
+    buckets = {}
+    for it in pool:
+        buckets.setdefault(it.get("channel") or "", []).append(it)
+    out, i = [], 0
+    while buckets:
+        for k in list(buckets):
+            b = buckets[k]
+            if i < len(b):
+                out.append(b[i])
+            else:
+                buckets.pop(k, None)
+        i += 1
+    return out
 
 
 def _fill_missing_images(items, region, max_fetch=24, workers=14, force_all=False):
     """给缺图的条目去文章页补一张图。补不到的由调用方丢弃。
 
     热榜（澎湃/红星/凤凰）是纯文字榜，mefcl 列表页只给 220x150 缩略图，
-    这两类都必须靠这一步续命，否则按「没图不要」的新规矩会整块消失。
+    「RSS 不带图」的源（中新网系 / 新浪娱乐）列表页也没有图 ——
+    这几类都必须靠这一步续命，否则按「没图不要」的新规矩会整块消失。
     """
     if not items:
         return items
@@ -2044,12 +2103,18 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14, force_all=Fals
                 or not it.get("image")
                 or (it.get("channel") in TIME_FIX_CHANNELS and not it.get("published")))
 
-    need = [it for it in items if needs(it)][:max_fetch]
+    # 【2026-10-09 换源】名额按来源轮流分配（见 _round_robin_by_channel），
+    # 免得新建的中新网系源把补图名额占满、其它源整轮补不到图。
+    need = _round_robin_by_channel([it for it in items if needs(it)])[:max_fetch]
     if not need:
         return items
     print(f"[ok] {region}: {len(need)} 条需要补图，去文章页取")
+    # 【2026-10-09 换源】「RSS 不带图」的源单条限时 3 秒（用户要求），
+    # 其余源保持原来的 8 秒；失败就跳过该条，由调用方按「没图不要」处理。
+    def _tmo(it):
+        return BODY_IMG_TIMEOUT if it.get("channel") in BODY_IMAGE_CHANNELS else 8
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        got = list(ex.map(lambda it: _article_meta(it.get("link") or ""), need))
+        got = list(ex.map(lambda it: _article_meta(it.get("link") or "", timeout=_tmo(it)), need))
     filled = fixed_time = 0
     for it, _meta in zip(need, got):
         img, ts = _meta[0], _meta[1]
@@ -2084,7 +2149,7 @@ def _collect_fast(region):
     因为热榜要逐个抓文章页补图、无图源也要逐个抓文章页补图。首屏一直空着等很难受。
     所以先把这个快的结果发布出去，慢活交给完整 _collect 在后台补完再覆盖发布。
 
-    代价：这一版里「RSS 本身不带图」的源（澎湃/界面/新浪娱乐/网易娱乐）暂时不出现，
+    代价：这一版里「RSS 本身不带图」的源（澎湃/界面/新浪娱乐/中新网系）暂时不出现，
     等后台补图补时间完成后自动补上（前端每 15 秒轮询会自动重绘）。
     """
     out = []
@@ -2099,9 +2164,12 @@ def _collect_fast(region):
         seen.add(title)
         items.append(it)
     items = _drop_shared_images(items)
-    if region == "cn":
-        # 只留现成有图的（无图的等后台补图那一轮）
-        items = [it for it in items if it.get("image")]
+    # 【2026-10-09 换源】国内/国际**都**只留现成有图的（无图的等后台补图那一轮）。
+    # 为什么国际也要加：换源后国际通道多了「RSS 不带图」的中新网·国际，
+    # 不过滤的话预热阶段会先把这一批无图条目发到页面上（前端渲染成占位色块），
+    # 与「没图的就不要上」的口径不一致；过滤后首屏只有自带图的 CGTN，
+    # 几十秒后完整 _collect 补好图再覆盖发布。
+    items = [it for it in items if it.get("image")]
     _note_item_hosts(items)       # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
     return _select_fresh(items, region)
 
@@ -2166,7 +2234,11 @@ def _collect(region):
                      or it.get("channel") in BIG_IMAGE_CHANNELS
                      or (it.get("channel") in TIME_FIX_CHANNELS and not it.get("published"))]
         if _needmeta:
-            _fill_missing_images(_needmeta, "cn-noimg", max_fetch=80)
+            # 【2026-10-09 换源】名额 80 → 96：新增的中新网·财经/体育/社会三个源
+            # 每源最多 24 条且都不带图，加上界面/华尔街见闻/少数派/开源中国原有的缺图条目，
+            # 80 个名额会被占满。名额内部按来源轮流分配（_round_robin_by_channel），
+            # 所以这个数字只是上限，不会让某一家独占。
+            _fill_missing_images(_needmeta, "cn-noimg", max_fetch=96)
         before = len(items)
         cn_only = [it for it in items if it.get("image")]
         print(f"[ok] {region}: 补图后仍无图 {before - len(cn_only)} 条已剔除，剩 {len(cn_only)} 条（低质图后台异步剔除）")
@@ -2220,7 +2292,7 @@ def _collect(region):
         # 【加速 2026-10-07】同样先按时间筛掉旧闻再补图（理由见上面 hot 分支）。
         _icut = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get("intl", 48) * 3600
         hot = [h for h in hot if not h.get("published") or h["published"] >= _icut]
-        # 2026-10-07：国际热榜同样是纯文字榜（中新社国际 / Hacker News），
+        # 2026-10-07：国际热榜同样是纯文字榜（当时那一路是境外热榜），
         # 按「每条新闻必须有高清大图」的规矩，必须先补图，补不到的丢掉。
         hot = _fill_missing_images(hot, f"{region}-hot", max_fetch=80, force_all=True)
         hot = [h for h in hot if h.get("image")]
@@ -2233,12 +2305,17 @@ def _collect(region):
         print(f"[warn] 合并国际热榜失败: {type(ex).__name__}")
 
     if region == "intl":
-        # 国际 RSS（France24 等）均带题图，与国内保持一致：先剔除无图条目，
-        # 再合并（无图的）国际热榜（Hacker News），保证国际栏目的图片展示
-        # 与国内栏目体验一致（用户要求国内/国际一致）。翻译在后台补，见 _warmup。
+        # 【2026-10-09 换源】国际板块改用境内媒体的国际版后，中新网系 RSS **本身不带图**，
+        # 与国内板块同一套做法：先给缺图的条目去正文页取首图
+        # （限时 3 秒/条、结果进 _ART_CACHE 缓存、取不到就跳过该条），
+        # 补完仍然没图的才按「没图不要」剔除。
+        _needmeta = [it for it in items if not it.get("image")]
+        if _needmeta:
+            _fill_missing_images(_needmeta, "intl-noimg", max_fetch=48)
         before = len(items)
         items = [it for it in items if it.get("image")]
-        print(f"[ok] {region}: 剔除无图 {before - len(items)} 条，剩 {len(items)} 条（低质图后台异步剔除）")
+        print(f"[ok] {region}: 补图后剔除无图 {before - len(items)} 条，剩 {len(items)} 条"
+              f"（低质图后台异步剔除）")
     PRELOAD_ALL[region] = hot + items
     _note_item_hosts(hot + items)  # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
     return _select_fresh(hot + items, region)
@@ -2246,28 +2323,53 @@ def _collect(region):
 
 def _enrich_quality_bg(region):
     """后台异步：下载题图测真实尺寸，剔除低质图（短边过小）。测不出则保留，不因网络误杀。"""
-    items = PRELOAD.get(region) or []
-    if not items:
-        return
-    with ThreadPoolExecutor(max_workers=16) as ex:
-        # 【2026-10-07 定论】mefcl 的题图**站方自己就是 220x150** ——
-        # 实测列表页的 <img data-src> 和文章页 og:image 是同一个文件（220x150），
-        # 去正文页换大图也换不出更大的。所以它**永远达不到 300 的高清线**。
-        # 要么给这个站开豁免（图偏小但能用），要么整个「软件」栏目消失。
-        # 用户明确说「我重点关注的网站」就是 mefcl，所以选择开豁免（仍必须有图）。
-        # 其余源一个都不放过，照旧按 MIN_IMG_SHORT_SIDE 剔除。
-        keep = list(ex.map(
-            lambda it: (_img_ok(it["image"]) if it.get("image") else False)
-            or (it.get("channel") in MIN_IMG_EXEMPT_CHANNELS and bool(it.get("image"))),
-            items))
-    pruned = [it for it, k in zip(items, keep) if k]
-    dropped = len(items) - len(pruned)
-    if dropped:
-        print(f"[ok] {region}: 后台剔除低质图 {dropped} 条，剩 {len(pruned)} 条")
-    # 【2026-10-09 修 高-1】发布前把这批图的域名登记进 /img 白名单：
-    # 白名单要在浏览器来取图**之前**就已经登记好，否则我们自己的图也会被 403 挡掉。
-    _note_item_hosts(pruned)
-    PRELOAD[region] = pruned
+    # 【2026-10-09 修 中-7】同一 region 同一时刻只允许一轮剔除：
+    # 刷新循环与按需抓取都可能各起一个线程，两轮同时下载同一批图纯属浪费。
+    with _ENRICH_LOCK:
+        if region in _ENRICHING:
+            print(f"[ok] {region}: 已有一轮低质图剔除在进行，本轮跳过")
+            return
+        _ENRICHING.add(region)
+    try:
+        items = PRELOAD.get(region) or []
+        if not items:
+            return
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            # 【2026-10-07 定论】mefcl 的题图**站方自己就是 220x150** ——
+            # 实测列表页的 <img data-src> 和文章页 og:image 是同一个文件（220x150），
+            # 去正文页换大图也换不出更大的。所以它**永远达不到 300 的高清线**。
+            # 要么给这个站开豁免（图偏小但能用），要么整个「软件」栏目消失。
+            # 用户明确说「我重点关注的网站」就是 mefcl，所以选择开豁免（仍必须有图）。
+            # 其余源一个都不放过，照旧按 MIN_IMG_SHORT_SIDE 剔除。
+            keep = list(ex.map(
+                lambda it: (_img_ok(it["image"]) if it.get("image") else False)
+                or (it.get("channel") in MIN_IMG_EXEMPT_CHANNELS and bool(it.get("image"))),
+                items))
+        pruned = [it for it, k in zip(items, keep) if k]
+        dropped = len(items) - len(pruned)
+        if dropped:
+            print(f"[ok] {region}: 后台剔除低质图 {dropped} 条，剩 {len(pruned)} 条")
+        # 【2026-10-09 修 高-1】发布前把这批图的域名登记进 /img 白名单：
+        # 白名单要在浏览器来取图**之前**就已经登记好，否则我们自己的图也会被 403 挡掉。
+        _note_item_hosts(pruned)
+        # 【2026-10-09 修 中-7 丢失更新竞态】上面下载测尺寸要花好几秒，这期间
+        # refresh_loop（或按需抓取）完全可能已经把 PRELOAD[region] 换成**新的一批**。
+        # 原来无条件 `PRELOAD[region] = pruned` 会把新数据盖回旧的这一批（页面数据回退一轮）。
+        # 现在：只有「还是我开始时的那一批」才整体写回；否则只把**这一批里被剔除的 id**
+        # 从新数据里摘掉（等于只同步交集，绝不覆盖）。
+        cur = PRELOAD.get(region)
+        if cur is items:
+            PRELOAD[region] = pruned
+        else:
+            drop_ids = {it.get("id") for it in items if it.get("id")} - \
+                       {it.get("id") for it in pruned if it.get("id")}
+            if drop_ids:
+                PRELOAD[region] = [it for it in (cur or []) if it.get("id") not in drop_ids]
+            print(f"[ok] {region}: 剔除完成时数据已换新，只同步被剔除的 {len(drop_ids)} 条"
+                  f"（没有覆盖新数据）")
+    finally:
+        with _ENRICH_LOCK:
+            _ENRICHING.discard(region)
 
 
 # ===================== Windows 右下角气泡通知（纯 ctypes，无第三方依赖） =====================
@@ -2331,8 +2433,37 @@ def _open_app_window():
         pass
 
 
+def _install_ready_update():
+    """退出前调用：若已有一个「下载完 + 验签验 sha 都通过」的新版本，现在就把它装上。
+
+    【2026-10-09 升级体验口径】自动升级的落地时机之一就是这个 ——
+    用户退出程序时**自动**完成替换，不需要点任何按钮、不弹任何确认框。
+    （另一个时机见 _warmup 的 check_update：后台静默实例发现新版会立刻装。）
+    返回 True 表示已经交给替换流程（调用方可以放心退出了）。
+    注意：这里只做「取回已就绪的替换」，验证与 fail-closed 闸门全在 updater.trigger_replace 里，
+    所以"没有待安装的新版本"或"校验没过"时它会老实返回 False，退出的还是原来那份程序。
+    """
+    try:
+        if not (updater.state().get("latest") or {}).get("version"):
+            return False            # 没有待安装的新版本：静默退出，什么都不做
+        ok = updater.trigger_replace()
+        if ok:
+            print("[update] 退出前已自动完成替换（无确认框）")
+        else:
+            print(f"[warn] 退出前安装未执行：{updater.last_message()}")
+        return bool(ok)
+    except Exception as ex:
+        print(f"[warn] 退出前安装异常: {type(ex).__name__}")
+        return False
+
+
 def _quit_app_now():
-    """退出程序（跟网页上「退出程序」按钮同一条路）。"""
+    """退出程序（跟网页上「退出程序」按钮同一条路）。
+
+    【2026-10-09 升级体验口径】退出前先把「已就绪的新版本」自动装上 ——
+    这是自动升级真正落地的时刻（页面上的「退出程序」与托盘菜单的「退出程序」都走这里）。
+    """
+    _install_ready_update()
     def _die():
         time.sleep(0.2)
         os._exit(0)
@@ -3123,7 +3254,7 @@ def _notify_news(items):
     NEWS_LAST_TOAST = now
     fresh = [it for it in items if it.get("id") in added]
     # 【2026-10-07 用户反馈「还是有英文新闻播报」】气泡里**只留中文条目**。
-    # 国际热榜里有 Hacker News 这种英文源，之前"优先中文"只是排序、挡不住它
+    # 国际热榜里曾有境外英文源，之前"优先中文"只是排序、挡不住它
     # 从热榜那 2 个名额挤进来。这里直接按"标题有没有汉字"过滤，最干脆。
     fresh = [x for x in fresh if _has_cjk(x.get("title"))]
     if not fresh:
@@ -3174,7 +3305,8 @@ def _notify_news(items):
     sort_key = lambda x: x.get("published", 0)          # noqa: E731
     # 【2026-10-07 用户反馈「气泡轮播国际新闻都是英文的，我怎么看得懂」】
     # 国际板块里混着两类：①国内媒体报的国际新闻（澎湃/凤凰/红星，**中文**）；
-    # ②France24/NPR/Sky 这些外媒（英文，翻译额度用完时就是英文原文）。
+    # ②CGTN 这类对外报道（英文，翻译额度用完时就是英文原文）。
+    # 【2026-10-09 换源】境外源已全部删除，②只剩 CGTN 一家，英文条目大幅减少。
     # 气泡优先推第①类 —— 既是国际大事，又是中文，用户能直接看懂。
     _intl_all = sorted([it for it in fresh if it.get("region") == "intl"],
                        key=sort_key, reverse=True)
@@ -3234,97 +3366,71 @@ def _notify_news(items):
 # 所以只能在内容层面把国际新闻挑出去，国内热榜只留国内条目。
 # 说明：这是**关键词黑名单**，做不到 100% 准确；但配上澎湃/红星两个纯国内源，
 # 国内热榜的观感就正常了。宁可漏掉一两条国内的，也不要满屏外国新闻。
-FOREIGN_MARKERS = (
-    # 国家 / 地区
-    "美国", "日本", "韩国", "朝鲜", "俄罗斯", "俄国", "乌克兰", "伊朗", "以色列",
-    "巴勒斯坦", "加沙", "印度", "巴基斯坦", "英国", "法国", "德国", "意大利", "西班牙",
-    "加拿大", "澳大利亚", "巴西", "阿根廷", "墨西哥", "土耳其", "埃及", "南非", "泰国",
-    "柬埔寨", "缅甸", "越南", "菲律宾", "马来西亚", "新加坡", "印尼", "阿富汗", "叙利亚",
-    "伊拉克", "黎巴嫩", "也门", "沙特", "卡塔尔", "阿联酋", "波兰", "荷兰", "瑞士",
-    "瑞典", "挪威", "丹麦", "希腊", "葡萄牙", "奥地利", "匈牙利", "捷克", "塞尔维亚",
-    "尼泊尔", "孟加拉", "斯里兰卡", "蒙古", "哈萨克", "乌兹别克", "格鲁吉亚", "亚美尼亚",
-    "委内瑞拉", "古巴", "智利", "秘鲁", "哥伦比亚", "尼日利亚", "肯尼亚", "埃塞俄比亚",
-    "苏丹", "利比亚", "索马里", "刚果", "卢旺达", "新西兰", "爱尔兰", "芬兰", "比利时",
-    # 城市 / 地标
-    "白宫", "五角大楼", "国会山", "克里姆林宫", "唐宁街", "爱丽舍宫", "青瓦台", "首相官邸",
-    "洛杉矶", "旧金山", "纽约", "华盛顿", "芝加哥", "西雅图", "波士顿", "底特律",
-    "伦敦", "巴黎", "柏林", "莫斯科", "东京", "大阪", "首尔", "平壤", "新德里",
-    "迪拜", "悉尼", "多伦多", "温哥华", "罗马", "马德里", "阿姆斯特丹", "日内瓦",
-    "冲绳", "关岛", "夏威夷", "阿拉斯加", "硅谷", "华尔街", "妙瓦底", "缅北",
-    # 国际组织 / 军事
-    "北约", "欧盟", "联合国", "世卫", "国际货币基金", "世界银行", "欧佩克",
-    "驻日美军", "驻韩美军", "美军", "俄军", "乌军", "以军", "哈马斯", "真主党",
-    "塔利班", "胡塞", "伊斯兰国", "基地组织",
-    # 外国政要 / 名人
-    "特朗普", "拜登", "哈里斯", "普京", "泽连斯基", "马克龙", "朔尔茨", "默克尔",
-    "岸田", "石破", "尹锡悦", "李在明", "金正恩", "莫迪", "内塔尼亚胡", "哈梅内伊",
-    "冯德莱恩", "苏纳克", "斯塔默", "特鲁多", "米莱", "马杜罗", "埃尔多安",
-    "马斯克", "C罗", "梅西", "姆巴佩", "贝克汉姆", "泰勒·斯威夫特",
-    # 常见国际赛事 / 事件
-    "世界杯", "欧洲杯", "欧冠", "奥运会", "北约峰会", "G7", "G20", "APEC",
-    "美国大选", "中期选举", "弹劾", "国情咨文",
-    # 【补漏】实测漏网的两类：缩写式（美伊/俄乌/巴以）和人名简称
-    "中东", "万斯", "美伊", "俄乌", "巴以", "以巴", "美方", "日方", "韩方", "俄方", "乌方",
-    "德黑兰", "特拉维夫", "耶路撒冷", "海外", "境外", "半岛电视台", "路透社", "法新社",
-    "美联社", "彭博社", "外媒", "白宫发言人", "五角大楼发言人",
-    # 【2026-10-07 娱乐/体育向】用户强调「娱乐栏目也不例外」。
-    # 娱乐标题常常**不带国家名**，光靠国家词抓不住：
-    #   "孔蒂暗示愿执教曼联" / "罗马诺：前皇马后卫卡瓦哈尔加盟赫塔费" / "拉塞尔遭到罚退"
-    "曼联", "皇马", "巴萨", "切尔西", "阿森纳", "利物浦", "曼城", "热刺", "拜仁",
-    "尤文", "国米", "AC米兰", "巴黎圣日耳曼", "多特", "英超", "西甲", "意甲", "德甲",
-    "法甲", "欧冠", "欧联", "NBA", "F1", "罗马诺", "孔蒂", "卡瓦哈尔", "赫塔费",
-    "拉塞尔", "汉密尔顿", "维斯塔潘", "好莱坞", "格莱美", "奥斯卡", "艾美", "戛纳",
-    "泰勒·斯威夫特", "比伯", "卡戴珊", "贝克汉姆", "姆巴佩", "内马尔", "本泽马",
-    "迪拜", "韩娱", "日娱", "欧美", "韩团", "日漫", "美剧", "英剧", "韩剧",
-    # 【2026-10-07 再补】用户反馈国内要闻里还有国际新闻，实测漏的是这几类：
-    # 外国奖项（诺奖/奥斯卡）、外国球员（德约）、外国科技公司（Claude/GPT/英伟达）
-    "诺贝尔", "诺奖", "奥斯卡", "格莱美", "金球奖", "艾美奖", "普利策",
-    "德约", "纳达尔", "费德勒", "穆雷", "小威廉姆斯", "阿尔卡拉斯", "辛纳",
-    "温网", "美网", "法网", "澳网", "大师赛", "大满贯", "世界杯", "欧洲杯",
-    "GPT", "ChatGPT", "Claude", "Gemini", "OpenAI", "Copilot", "Llama",
-    "英伟达", "特斯拉", "SpaceX", "谷歌", "OpenAI", "Anthropic", "Meta",
-    "奈飞", "Netflix", "迪士尼",
-    # 【2026-10-07 回退】这里曾把大厂简称（苹果/微软/谷歌/英伟达/三星/索尼…）也登记成
-    # 国际特征词，想拦住「苹果一号电脑拍卖」这类。结果**过头了**：中国科技媒体几乎每条
-    # 都会提到这些公司，国内科技被整个划走、栏目清空（实测 0 条）。
-    # 教训：判断"是不是国际"要看**事情发生在哪 / 主体是谁**，不能看"提到了哪家公司"。
-    # 所以这里只留外国机构/奖项，公司名一律不放（华为报苹果、小米报高通都是国内科技新闻）。
-    "推特", "X平台", "脸书", "Instagram", "TikTok", "YouTube",
-    "纳斯达克", "道琼斯", "标普", "华尔街", "美联储", "欧洲央行", "日本央行",
-    "哈佛", "耶鲁", "斯坦福", "麻省理工", "牛津", "剑桥",
-)
+# 【2026-10-07 回退】这里曾把大厂简称（苹果/微软/谷歌/英伟达/三星/索尼…）也登记成
+# 国际特征词，想拦住「苹果一号电脑拍卖」这类。结果**过头了**：中国科技媒体几乎每条
+# 都会提到这些公司，国内科技被整个划走、栏目清空（实测 0 条）。
+# 教训：判断"是不是国际"要看**事情发生在哪 / 主体是谁**，不能看"提到了哪家公司"。
+# 所以 data/keywords.txt 的 [foreign] 组里只留外国机构/奖项，公司名一律不放
+#（华为报苹果、小米报高通都是国内科技新闻）。
+# ============ 关键词表：数据文件 data/keywords.txt（2026-10-09 从代码正文挪出）============
+# 【为什么要挪】下面这几张表原来是**整段写在 .py 正文里**的字符串常量：连续几百个
+# 国家 / 地区 / 机构 / 赛事名。Gitee 侧对 server.py 的 raw 取回曾返回 HTTP 451
+# （平台内容审查），最可能命中的就是这种「成串专有名词」的密度。
+# 现在只把**纯数据**放进 data/keywords.txt，代码里只剩加载逻辑；
+# 判定逻辑、阈值、分流顺序一个字没改（分组与原来的常量一一对应）。
+#   · `[组名]` 单独一行表示分组；一行一个词；`#` 开头是注释；空行忽略；
+#   · 读不到文件时各组退回空集合（fail-safe：不崩，只是不做这一层筛选）；
+#   · 打包：build_exe.spec 的 datas 会带上 data/（见那里的注释）。
+_KEYWORDS_PATH = _res(os.path.join("data", "keywords.txt"))
+
+
+def _load_keywords():
+    """读 data/keywords.txt → {组名: frozenset(词)}。任何异常都退回空表，绝不因此启动失败。"""
+    groups = {}
+    try:
+        with open(_KEYWORDS_PATH, "r", encoding="utf-8") as f:
+            cur = None
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if s.startswith("[") and s.endswith("]"):
+                    cur = s[1:-1].strip()
+                    groups.setdefault(cur, set())
+                    continue
+                if cur:
+                    groups[cur].add(s)
+    except Exception as ex:
+        print(f"[warn] 关键词表读取失败（{type(ex).__name__}: {_KEYWORDS_PATH}），"
+              f"相关筛选本轮按空表处理")
+    return {k: frozenset(v) for k, v in groups.items()}
+
+
+_KW = _load_keywords()
+
+
+def _kw(name):
+    """取一组关键词；缺组时返回空集合（等价于"这层筛选不生效"，不抛异常）。"""
+    return _KW.get(name) or frozenset()
+
+
+FOREIGN_MARKERS = _kw("foreign")
+FOREIGN_SECTIONS = _kw("foreign_sections")
+DOMESTIC_SECTIONS = _kw("domestic_sections")
 
 
 # 【2026-10-07 用户反馈「国际版要闻还是充次着国内新闻」】
 # 光判断"像不像国际"不够 —— 「外交部：美方应慎重处理台湾问题」「法德要求欧盟…商务部回应」
 # 这类标题里有外国名，但其实是**中国官方表态/国内新闻**，被误判成国际后塞进了国际要闻。
 # 所以再加一层「强国内特征」排除：命中这些词就是国内新闻，不给国际板块。
-DOMESTIC_MARKERS = (
-    "我国", "中方", "中国内地", "外交部", "商务部", "国防部", "国台办", "国务院",
-    "发改委", "教育部", "公安部", "文旅部", "财政部", "工信部", "住建部", "农业农村部",
-    "全国人大", "全国政协", "中央", "省委", "市委", "县委", "区政府", "两岸", "台海",
-    "解放军", "东部战区", "南部战区", "火箭军", "驻华", "中国队", "国足", "中超", "CBA",
-    "春晚", "央视", "人民日报", "新华社", "光明日报", "中国影片", "华语片", "国产片",
-    "申报奥斯卡", "国内", "全省", "全市", "我县", "村民", "社区",
-    # 【2026-10-07 补】标题里出现「中国」的，对国内热榜来说就是国内新闻
-    #（「中国拟推候选人角逐世卫总干事」这类不该跑到国际去）
-    "中国", "中方", "我国", "国产",
-)
+DOMESTIC_MARKERS = _kw("domestic")
 
 
 # 【2026-10-07 用户反馈「国际版娱乐还是有国内明星的新闻」】
 # 娱乐栏目不能用通用规则：中国明星出国（「蔡少芬和张晋现身韩国」）会因为"韩国"
 # 两个字被误判成国际娱乐。娱乐栏目要求标题里出现**外国的具体对象**
 # （外国艺人 / 球队 / 奖项 / 作品），光有外国地名不算。
-ENT_FOREIGN_MARKERS = (
-    "好莱坞", "格莱美", "奥斯卡", "艾美", "戛纳", "柏林电影节", "威尼斯", "金球奖",
-    "公告牌", "Billboard", "Netflix", "奈飞", "迪士尼", "漫威", "DC",
-    "C罗", "梅西", "姆巴佩", "内马尔", "本泽马", "贝克汉姆", "泰勒·斯威夫特",
-    "比伯", "卡戴珊", "德约", "纳达尔", "费德勒", "穆雷",
-    "曼联", "皇马", "巴萨", "切尔西", "阿森纳", "利物浦", "曼城", "热刺", "拜仁",
-    "尤文", "国米", "英超", "西甲", "意甲", "德甲", "法甲", "欧冠", "NBA", "F1",
-    "韩娱", "日娱", "韩团", "日漫", "美剧", "英剧", "韩剧", "欧美", "宝莱坞",
-)
+ENT_FOREIGN_MARKERS = _kw("ent_foreign")
 
 
 def _looks_ent_foreign(title):
@@ -3332,33 +3438,15 @@ def _looks_ent_foreign(title):
     t = title or ""
     return any(k in t for k in ENT_FOREIGN_MARKERS)
 
-# 【2026-10-07】国际大奖 / 国际赛事类关键词 —— 这类**优先判国际**，
-# 即使标题里同时出现「中国科学家」「中国影片」也不改判。
-# 起因：把「中国」加进国内特征词后，「诺贝尔物理学奖将揭晓，中国科学家薛其坤受关注」
-# 被锁在国内要闻/热榜里，用户反馈"国内还是有国际新闻"。
+
 # 【2026-10-07 用户反馈「气泡里快科技播的是国际新闻」】
 # 科技栏目必须按**品牌归属**判，不能只看国家名：
 #   「DLSS 5 体验：英伟达怎么让它以假乱真」没有国家名，但讲的是美国公司 → 国际
 #   「华为徐直军：昇腾950超节点」讲的是中国公司 → 国内
 # 先看是不是中国品牌（是就留国内），再看是不是外国品牌（是就走国际），
 # 两者都没有才退回原来的关键词判定。
-CN_TECH_BRANDS = (
-    "华为", "小米", "OPPO", "oppo", "vivo", "荣耀", "一加", "真我", "realme", "红米",
-    "比亚迪", "蔚来", "小鹏", "理想", "吉利", "长安", "奇瑞", "五菱", "极氪", "问界",
-    "中兴", "联想", "大疆", "紫光", "京东方", "中芯国际", "长江存储", "寒武纪", "地平线",
-    "摩尔线程", "龙芯", "飞腾", "统信", "麒麟", "鸿蒙", "澎湃", "玄戒",
-    "阿里", "阿里巴巴", "腾讯", "百度", "字节", "抖音", "京东", "美团", "拼多多",
-    "宁德时代", "海康", "科大讯飞", "商汤", "旷视", "月之暗面", "智谱", "DeepSeek",
-    "宇树", "大模型", "国产", "我国", "中国", "国内",
-)
-
-FOREIGN_TECH_BRANDS = (
-    "谷歌", "苹果", "微软", "英伟达", "OpenAI", "ChatGPT", "Claude", "Gemini", "Copilot",
-    "三星", "索尼", "任天堂", "特斯拉", "马斯克", "高通", "英特尔", "AMD", "Meta",
-    "亚马逊", "台积电", "ASML", "诺基亚", "爱立信", "波音", "空客", "NASA", "SpaceX",
-    "Netflix", "奈飞", "迪士尼", "丰田", "大众", "宝马", "奔驰", "保时捷", "现代",
-    "DLSS", "GeForce", "Radeon", "Ryzen", "骁龙", "Exynos", "iOS", "macOS", "Windows",
-)
+CN_TECH_BRANDS = _kw("cn_tech")
+FOREIGN_TECH_BRANDS = _kw("foreign_tech")
 
 
 def _tech_scope(title):
@@ -3371,18 +3459,18 @@ def _tech_scope(title):
     return None
 
 
-STRONG_INTL_MARKERS = (
-    "诺贝尔", "诺奖", "奥斯卡", "格莱美", "艾美奖", "金球奖", "戛纳", "柏林电影节",
-    "威尼斯电影节", "普利策", "图灵奖", "菲尔兹奖",
-    "奥运会", "冬奥会", "世界杯", "欧洲杯", "亚洲杯", "世乒赛", "世锦赛",
-    "欧冠", "英超", "西甲", "意甲", "德甲", "法甲", "NBA", "F1",
-)
+# 【2026-10-07】国际大奖 / 国际赛事类关键词 —— 这类**优先判国际**，
+# 即使标题里同时出现「中国科学家」「中国影片」也不改判。
+# 起因：把「中国」加进国内特征词后，「诺贝尔物理学奖将揭晓，中国科学家薛其坤受关注」
+# 被锁在国内要闻/热榜里，用户反馈"国内还是有国际新闻"。
+STRONG_INTL_MARKERS = _kw("strong_intl")
 
 
 def _strong_intl(title):
     """国际大奖/赛事 → 一律算国际，不受国内特征词影响。"""
     t = title or ""
     return any(k in t for k in STRONG_INTL_MARKERS)
+
 
 def _looks_domestic(title):
     """粗判一条新闻是不是「国内新闻」（含中国官方表态、国内事务）。
@@ -3450,6 +3538,83 @@ def _parse_sina_ent(src):
     return out
 
 
+# 【2026-10-09 换源】国际在线·娱乐（ent.cri.cn）的列表卡片：
+#   标题链 + <div class="eff-img"> 里的图 + <div class="eff-mes"><i>时间</i> 三件套
+# 都在服务端渲染好的 HTML 里，正则一把抓；页面是 GB 系老站的写法，但声明正确、实测 utf-8。
+_CRI_CARD_RE = re.compile(
+    r'<a[^>]+href="(/20\d{6}/[0-9a-f\-]{20,}\.html)"[^>]*>\s*([^<>]{6,90}?)\s*</a>'
+    r'(.*?)<div class="eff-mes"><i>([\d\-: ]{10,19})</i>', re.S)
+# ⚠ 卡片里的图是**缩略图**：URL 形如 `…/image/<hash>.<原图W>x<原图H>.<下发W>x<下发H>.jpg`，
+# 实测列表给的是 512x288（短边 288 < 高清门槛 300）—— 直接用会被后台低质图环节
+# **整条剔除**，等于这个源白加。站方同一路径去掉最后一节尺寸就是原图
+# （实测改写后 2496x1404 / 991x558 / 960x540 / 4052x2278，全部达标）。
+_CRI_THUMB_RE = re.compile(
+    r'^(.*?)\.(\d{2,5})x(\d{2,5})\.(\d{2,5})x(\d{2,5})(\.(?:jpe?g|png|webp))$', re.I)
+
+
+def _cri_image(url):
+    """把国际在线卡片的缩略图地址改写成原图地址；改写不了就原样返回。"""
+    m = _CRI_THUMB_RE.match(url or "")
+    return (m.group(1) + "." + m.group(2) + "x" + m.group(3) + m.group(6)) if m else (url or "")
+
+
+def _parse_cri_ent(src):
+    """国际在线·娱乐（ent.cri.cn）：列表页 SSR 卡片，标题 / 原图 / 时间一次拿全。
+
+    【为什么加它】2026-10-09 换源时娱乐栏目只剩凤凰娱乐 + 新浪娱乐两家：
+    新浪娱乐的列表页**既无图也无时间**、全靠逐条抓文章页，栏目内站点数不达标。
+    逐家实测后，只有这家同时满足「当天分钟级更新 + 列表页自带题图 + 境内权威媒体
+    （中国国际广播电台 / 总台旗下）」。实测数据见
+    logs\\换源-境内国际版-20261009.md；实测失败的仍不采用（见 README 那张表）。
+
+    图片取自卡片（并按 _cri_image 改写成原图）→ 不需要再去文章页，
+    也不占 BODY_IMAGE_CHANNELS 的名额。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 国际在线娱乐抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)      # 中文站：按声明 → utf-8 → gb18030 依次回退解码
+    max_age = (src.get("max_age_hours")
+               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
+               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    out, seen, dropped = [], set(), 0
+    for m in _CRI_CARD_RE.finditer(page):
+        path, title, mid, ttxt = m.group(1), _clean(m.group(2)), m.group(3), m.group(4)
+        link = _norm_url(path, src["base"])
+        if not title or len(title) < 6 or not link or link in seen:
+            continue
+        try:
+            ts = int(datetime.strptime(ttxt.strip(), "%Y-%m-%d %H:%M:%S")
+                     .replace(tzinfo=CST).timestamp())
+        except Exception:
+            ts = 0
+        if ts and ts < cutoff:
+            dropped += 1
+            continue
+        img = ""
+        mi = re.search(r'<img[^>]+src="([^"]+\.(?:jpe?g|png|webp)[^"]*)"', mid, re.I)
+        if mi:
+            u = _norm_url(mi.group(1), src["base"])
+            if u and not any(x in u.lower() for x in _IMG_JUNK):
+                img = _cri_image(u)      # 缩略图 → 原图（见 _CRI_THUMB_RE 的说明）
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": img, "published": ts, "translated": False,
+        })
+        if len(out) >= 30:
+            break
+    print(f"[ok] {src['id']}: 国际在线娱乐解析 {len(out)} 条"
+          f"（带图 {sum(1 for x in out if x['image'])} 条，滤除过期 {dropped} 条）")
+    return out
+
+
 # 国内板块里要做「国内 / 国际」内容分流的栏目（用户 2026-10-07 要求）：
 #   · 热榜：原来就分流了
 #   · 要闻：「国内板块里的要闻充次着国际新闻，全部移到国际板块」
@@ -3476,11 +3641,8 @@ def _split_cn_scope(items):
     # 凤凰会把 "独家原创" 也塞进 articleSection，那是内容类型不是栏目，
     # 若一律信它，「特朗普称可让伊朗摧毁洛杉矶」「冲绳县知事：驻日美军…」
     # 这些会被当成国内新闻留在国内榜里。
-    FOREIGN_SECTIONS = ("国际", "军事", "全球", "海外", "国际新闻", "环球", "国际时局")
-    DOMESTIC_SECTIONS = ("社会", "台湾", "大陆", "国内", "时政", "地方", "法治", "教育",
-                         "健康", "体育", "娱乐", "科技", "财经", "文化", "评论", "要闻",
-                         "新时代", "港澳", "舆论场", "直击现场", "一号专案", "运动家",
-                         "科学湃", "澎湃号", "公益", "智库", "中国政库", "浦江头条")
+    # 【2026-10-09】FOREIGN_SECTIONS / DOMESTIC_SECTIONS 已挪到 data/keywords.txt
+    #（模块级常量，见上面 _load_keywords），这里直接用，判定顺序不变。
     dom, intl = [], []
     for it in items:
         _sec = (it.get("section") or "").strip()
@@ -3546,7 +3708,7 @@ def _split_hot_by_scope(items):
 
     凤凰网/澎湃 这类综合源的热榜里混着国际新闻。国内热榜要纯国内，
     但这些国际条目**不该丢掉** —— 转手拿去充实国际热榜（那边原来只有
-    中新社国际 + Hacker News 两家）。
+    中新社国际 + CGTN 两家）。
     返回 (国内条目, 国际条目)；国际条目的 region 改成 intl。
     """
     # 【2026-10-07】优先用**站方自己的栏目分类**（凤凰文章页 JSON-LD 的 articleSection，
@@ -3557,11 +3719,8 @@ def _split_hot_by_scope(items):
     # 凤凰会把 "独家原创" 也塞进 articleSection，那是内容类型不是栏目，
     # 若一律信它，「特朗普称可让伊朗摧毁洛杉矶」「冲绳县知事：驻日美军…」
     # 这些会被当成国内新闻留在国内榜里。
-    FOREIGN_SECTIONS = ("国际", "军事", "全球", "海外", "国际新闻", "环球", "国际时局")
-    DOMESTIC_SECTIONS = ("社会", "台湾", "大陆", "国内", "时政", "地方", "法治", "教育",
-                         "健康", "体育", "娱乐", "科技", "财经", "文化", "评论", "要闻",
-                         "新时代", "港澳", "舆论场", "直击现场", "一号专案", "运动家",
-                         "科学湃", "澎湃号", "公益", "智库", "中国政库", "浦江头条")
+    # 【2026-10-09】FOREIGN_SECTIONS / DOMESTIC_SECTIONS 已挪到 data/keywords.txt
+    #（模块级常量，见上面 _load_keywords），这里直接用，判定顺序不变。
     dom, intl = [], []
     for it in items:
         _sec = (it.get("section") or "").strip()
@@ -3612,12 +3771,9 @@ def _split_hot_by_scope(items):
     return dom, intl
 
 
-def _filter_hot_domestic(items):
-    """国内热榜专用：只留国内条目（国际的那些由 _split_hot_by_scope 转给国际热榜）。"""
-    kept, dropped = _split_hot_by_scope(items)
-    if dropped:
-        print(f"[ok] hot: 国内热榜剔出 {len(dropped)} 条国际新闻（转给国际热榜）")
-    return kept
+# 【2026-10-09 修 低-6 删除死代码】这里原来还有一个 `_filter_hot_domestic()`：
+# 它只是把 `_split_hot_by_scope()` 的「国内」那一半包一层日志，**没有任何调用方**
+# （_collect("hot") 直接调 _split_hot_by_scope）。删掉后不影响分流结果。
 
 
 # ============ 「我发布的软件」专属提醒（2026-10-07 用户要求） ============
@@ -3677,12 +3833,7 @@ def _notify_my_software(items):
 # 判定取两条规则的并集：
 #   ① 关键词命中：标题里出现地震/爆炸/战争/坠机/暴跌 这类重大事件词
 #   ② 多家同时报道：同一条新闻被 3 家以上不同来源同时报（标题 2-gram 重合度 >= 0.6 归并）
-MAJOR_KEYWORDS = (
-    "地震", "海啸", "爆炸", "袭击", "战争", "开战", "坠机", "空难", "沉船",
-    "遇难", "身亡", "死亡", "失联", "坍塌", "火灾", "山洪", "台风", "红色预警",
-    "暴跌", "熔断", "停牌", "崩盘", "破产", "降息", "加息", "制裁", "断交",
-    "重大事故", "紧急", "突发", "疫情", "核泄漏",
-)
+MAJOR_KEYWORDS = _kw("major")
 MAJOR_MIN_SOURCES = 3        # 同一条新闻被这么多家同时报 → 判为大事
 MAJOR_TOAST_MIN = 30 * 60    # 大事提醒最小间隔（秒），免得刷屏
 _MAJOR_SEEN = set()
@@ -3754,17 +3905,88 @@ def _notify_major(items):
 
 
 
+def _check_update_once():
+    """启动后的静默检查 + **默认自动升级**（2026-10-09 升级体验口径）。
+
+    行为（与产品口径一一对应，故意抽成模块级函数以便单测）：
+      · 静默检查 → 有新版 → 静默下载 → Ed25519 验签 + sha256/尺寸校验 → 自动替换运行；
+      · **全程不弹任何确认框、不要求用户点"确定"**；
+      · 只有**失败**才提示一次（人话 + 一句怎么办），且旧版本保持可用；
+      · `config.update.auto_update=false` → 回到"只提示、不自动升级"；
+      · `config.update.enabled=false` → 连检查都不做。
+    检查本身失败（连不上更新源）只写日志，不打扰用户。
+    """
+    try:
+        cfg = CONFIG.get("update", {})
+        if cfg.get("enabled", True) is False:
+            print("[ok] 自动更新已关闭（config.update.enabled=false）")
+            return
+        st = updater.check()
+        if st["status"] == "latest":
+            print(f"[ok] 已是最新 v{st['remote']}")
+            return
+        if st["status"] != "update":
+            # 连不上更新源不是用户的错、也不影响使用 —— 只写日志，不打扰
+            print(f"[warn] 更新检查: {st['message']}")
+            return
+
+        rv = st["remote"]
+        if cfg.get("auto_update", True) is False:
+            # 自动升级被关掉 → 只提示一次，由用户自己在页面点「检查更新」
+            print(f"[update] 发现新版本 v{rv}（auto_update=false，仅提示不自动升级）")
+            _show_toast(f"发现新版本 v{rv}",
+                        "自动升级已关闭：可在页面点「检查更新」手动升级")
+            return
+
+        # —— 自动升级：静默下载 + 校验，**不弹任何确认框** ——
+        print(f"[update] 发现新版本 v{rv}，静默下载并校验")
+        ok, msg = updater.download_and_prepare(st["latest"])
+        print(f"[update] {msg}")
+        if not ok:
+            # 失败才提示一次：说人话 + 一句怎么处理；旧版本照常可用
+            _show_toast("升级没成功，已继续使用当前版本",
+                        f"{msg}。可以稍后再点「检查更新」，或到发布页手动下载覆盖。")
+            return
+
+        if _SILENT_RUN:
+            # 后台静默实例（开机自启那种，没有页面在看）→ 立刻替换并重启，用户完全无感
+            print("[update] 当前是后台静默运行，立即替换并重启")
+            if updater.trigger_replace():
+                threading.Timer(0.2, lambda: os._exit(0)).start()
+            else:
+                _show_toast("升级没装成，已继续使用当前版本",
+                            f"{updater.last_message()}。可以稍后再点「检查更新」。")
+        else:
+            # 前台实例（用户可能正在看页面）→ 不打断：退出程序时自动安装（见 _install_ready_update）
+            print("[update] 新版已就绪，将在退出程序时自动替换（无需确认）")
+    except Exception as ex:
+        print(f"[warn] 更新检查异常: {type(ex).__name__}")
+
+
 @app.on_event("startup")
 def _warmup():
     """后台预热两个 Region + 静默检查更新"""
-    _load_trans_cache()
+    _load_trans_cache()          # 载入历史译文缓存，避免重复消耗免费翻译额度
+    # 【2026-10-09 修 中-4】cleanup_leftovers 现在会**返回上一次替换脚本留下的回执**
+    # （成功 / 失败 / 失败原因）。失败说明"上次升级没落地"，要在日志与气泡里说清楚，
+    # 不能再像以前那样静默什么都不做。
+    _last_swap = ""
     try:
-        updater.cleanup_leftovers()   # 清理上次升级留下的 .old/.new
+        _last_swap = updater.cleanup_leftovers() or ""
+        if _last_swap:
+            print(f"[update] 上次替换回执: {_last_swap}")
     except Exception:
-        pass          # 载入历史译文缓存，避免重复消耗免费翻译额度
+        _last_swap = ""
     TRAY.start()                 # 右下角托盘图标（非 Windows 静默降级）
     BALLOON.start()              # 右下角自绘气泡（系统通知被关也照样弹）
     def run():
+        # 【2026-10-09 修 中-4】上次升级失败过 → 开机就说清楚，并给出可执行的动作
+        if _last_swap.upper().startswith("FAIL"):
+            try:
+                _show_toast("上次升级没有完成", "程序仍是原版本，可以照常使用；"
+                                               "请重新点「检查更新」或手动双击程序图标")
+            except Exception:
+                pass
         # 【2026-10-07 分两阶段】用户反馈「抓取时间让我等的焦虑」。
         # 完整抓一轮要 30~50 秒（热榜/无图源都要逐个抓文章页），首屏一直空着等。
         # 阶段一：只跑 RSS/HTML 源，几秒内先发布一次，让页面立刻有东西看。
@@ -3779,12 +4001,16 @@ def _warmup():
         # 顺序上国内先做，这样「国内要闻剔出的国际新闻」能顺手并进国际板块。
         def do_intl():
             try:
-                items = _collect("intl")
-                PRELOAD["intl"] = items
-                print(f"[ok] 预热 intl: {len(items)} 条")
+                # 【2026-10-09 修 中-7】与 refresh_loop / 页面按需抓取共用单飞闸：
+                # 预热期间用户就把页面打开了也不会并发抓同一个 region 两轮。
+                items = _collect_exclusive("intl")
             except Exception as ex:
                 print(f"[warn] 预热 intl 失败: {type(ex).__name__}")
                 return
+            if items is None:
+                print("[ok] 预热 intl: 已有一轮在跑，本轮跳过（单飞）")
+                return
+            print(f"[ok] 预热 intl: {len(items)} 条")
             try:
                 # 低质图后台异步剔除（与国内一致）
                 if items:
@@ -3807,8 +4033,11 @@ def _warmup():
 
         for region in ("hot", "cn"):
             try:
-                items = _collect(region)
-                PRELOAD[region] = items
+                # 【2026-10-09 修 中-7】同上，走单飞闸，避免与页面按需抓取重复跑一轮
+                items = _collect_exclusive(region)
+                if items is None:
+                    print(f"[ok] 预热 {region}: 已有一轮在跑，本轮跳过（单飞）")
+                    continue
                 print(f"[ok] 预热 {region}: {len(items)} 条")
                 # 国内源：后台异步剔除低质图（下载测尺寸），不阻塞首屏
                 if region == "cn" and items:
@@ -3877,15 +4106,17 @@ def _warmup():
     def refresh_loop():
         # 用户要求：所有栏目统一每 10 分钟自动刷新（不分国内/国际），无需手动。
         # 一轮内重建 热榜 + 国内源 + 国际源，刷新后弹气泡（更新提醒 / 大事提醒）。
+        # 【2026-10-09 修 中-7】改走 _collect_exclusive：与页面按需抓取（_kick_collect）
+        # 共用同一把「正在抓取」的闸，保证同一 region 同一时刻只有一轮。
+        # 已被占着就跳过本轮（下一轮 10 分钟后再来），绝不并发跑两轮。
         while True:
             time.sleep(600)          # 10 分钟一轮
             try:
-                PRELOAD["hot"] = _collect("hot")
+                _collect_exclusive("hot")
             except Exception:
                 pass
             try:
-                cn_items = _collect("cn")
-                PRELOAD["cn"] = cn_items
+                cn_items = _collect_exclusive("cn")
                 # 2026-10-07 修复：以前刷新时漏掉了国内的「低质图异步剔除」，
                 # 导致跑久了低质图不会被清，跟刚启动时的表现不一致。
                 if cn_items:
@@ -3893,12 +4124,11 @@ def _warmup():
             except Exception:
                 pass
             try:
-                items = _collect("intl")
-                PRELOAD["intl"] = items
+                items = _collect_exclusive("intl")
                 if items:
                     threading.Thread(target=_enrich_quality_bg, args=("intl",), daemon=True).start()
-                if not _TRANS_BUSY[0]:
-                    threading.Thread(target=_translate_intl_bg, args=(items,), daemon=True).start()
+                    if not _TRANS_BUSY[0]:
+                        threading.Thread(target=_translate_intl_bg, args=(items,), daemon=True).start()
             except Exception:
                 pass
             # 一轮刷新结束：合并所有栏目，弹「更新提醒」（内部已节流）+「大事提醒」+「我的软件」
@@ -3912,28 +4142,9 @@ def _warmup():
                 pass
 
     def check_update():
-        # 延迟几秒再查，避免和预热抢网络/CPU；失败静默不影响使用
+        # 延迟几秒再查，避免和预热抢网络/CPU
         time.sleep(5)
-        try:
-            cfg = CONFIG.get("update", {})
-            if cfg.get("enabled", True) is False:
-                print("[ok] 自动更新已关闭（config.update.enabled=false）")
-                return
-            st = updater.check()
-            if st["status"] == "update":
-                print(f"[update] 发现新版本 v{st['remote']}，开始后台下载")
-                # 用户要求「更新提醒」气泡：发现新版本必须让你看见，不能只写日志
-                _show_toast(f"发现新版本 v{st['remote']}", "正在后台下载，退出程序时自动替换重启")
-                ok, msg = updater.download_and_prepare(st["latest"])
-                print(f"[update] {msg}")
-                if ok:
-                    _show_toast(f"新版本 v{st['remote']} 已就绪", "退出程序时自动替换并重启")
-            elif st["status"] == "latest":
-                print(f"[ok] 已是最新 v{st['remote']}")
-            else:
-                print(f"[warn] 更新检查: {st['message']}")
-        except Exception as ex:
-            print(f"[warn] 更新检查异常: {type(ex).__name__}")
+        _check_update_once()
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
@@ -3951,12 +4162,46 @@ _COLLECTING = {}
 _COLLECT_LOCK = threading.Lock()
 
 
-def _kick_collect(region):
-    """后台抓一轮并写进 PRELOAD。已在抓就不重复起。返回是否新起了线程。"""
+# ============ 单飞（single-flight）：同一个 region 同时只允许一轮抓取 ============
+# 【2026-10-09 修 中-7】原来只有 `_kick_collect`（页面按需抓取）会登记 _COLLECTING，
+# `refresh_loop`（每 10 分钟一轮的定时刷新）**不登记** —— 于是两者可以对同一个 region
+# 同时抓两轮：白耗网络与源站配额，而且两条链路交替写 PRELOAD，页面数据会来回跳。
+# 现在两条链路共用下面这一对函数，保证「同一时刻只有一轮」：
+#   _collect_exclusive(region) —— 抢到闸就抓并发布，抢不到就直接跳过本轮（不排队、不阻塞）。
+def _try_begin_collect(region):
+    """抢「正在抓取」的闸。抢到返回 True，否则 False。"""
     with _COLLECT_LOCK:
         if _COLLECTING.get(region):
             return False
         _COLLECTING[region] = True
+        return True
+
+
+def _end_collect(region):
+    with _COLLECT_LOCK:
+        _COLLECTING[region] = False
+
+
+def _collect_exclusive(region):
+    """单飞抓取：抢到闸才抓，抓到就发布。已被别人占着则返回 None（本轮跳过）。"""
+    if not _try_begin_collect(region):
+        print(f"[ok] {region}: 已有一轮抓取在进行，本轮跳过（单飞）")
+        return None
+    try:
+        items = _collect(region)
+        PRELOAD[region] = items
+        return items
+    except Exception as ex:
+        print(f"[warn] 抓取 {region} 失败: {type(ex).__name__}")
+        return None
+    finally:
+        _end_collect(region)
+
+
+def _kick_collect(region):
+    """后台抓一轮并写进 PRELOAD。已在抓就不重复起。返回是否新起了线程。"""
+    if not _try_begin_collect(region):
+        return False
 
     def _run():
         try:
@@ -3964,8 +4209,7 @@ def _kick_collect(region):
         except Exception as ex:
             print(f"[warn] 后台抓取 {region} 失败: {type(ex).__name__}")
         finally:
-            with _COLLECT_LOCK:
-                _COLLECTING[region] = False
+            _end_collect(region)
 
     threading.Thread(target=_run, daemon=True).start()
     return True
@@ -4101,7 +4345,14 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
 
 @app.get("/api/version")
 def api_version():
-    return JSONResponse({"version": VERSION, "updatedAt": datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")},
+    # 【2026-10-09 修 中-5 / 中-6】多带三个诊断字段（只增不减，不影响老调用方）：
+    #   pid / uptime    —— 二次启动时 app.py 用它判断"对面是不是一个正常服务的实例"
+    #   poolTimeouts    —— 连接池排队超时的累计次数，排查"偶发丢源"时一眼就能看到
+    return JSONResponse({"version": VERSION,
+                         "pid": os.getpid(),
+                         "uptime": int(time.time() - _START_TS),
+                         "poolTimeouts": _POOL_TIMEOUTS[0],
+                         "updatedAt": datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")},
                         media_type="application/json; charset=utf-8")
 
 
@@ -4134,8 +4385,12 @@ def api_update_install(request: Request):
         return _deny
     print("[ok] 收到安装请求，开始替换")
     if not updater.trigger_replace():
-        print("[warn] 替换未执行（没有待安装的更新或校验没过）")
-        return {"ok": False, "message": "没有待安装的更新"}
+        # 【2026-10-09 修 中-4】替换没有真的落地时**绝不能退出** —— 以前这里无条件返回 True
+        # 之后主进程就 os._exit 了，于是"替换失败 + 程序已经消失"同时发生（详见 updater 的
+        # 可写性预检）。现在把 updater 给出的具体原因原样回给页面，程序继续运行。
+        _why = updater.last_message() or "没有待安装的更新或校验没通过"
+        print(f"[warn] 替换未执行：{_why}（程序未退出，可继续使用）")
+        return {"ok": False, "message": _why}
     print("[ok] 替换已触发，准备退出让新版本接管端口")
 
     # 【2026-10-07 修「升级后不自动重启」】
@@ -4186,12 +4441,15 @@ def api_quit(request: Request):
         print("[warn] /api/quit 被拒绝：来源未通过本机校验")
         return _deny
 
+    # 【2026-10-09 升级体验口径】退出即自动安装已就绪的新版本（不弹确认框、不要求用户点确定）
+    _installing = _install_ready_update()
+
     def _die():
         time.sleep(0.6)
         os._exit(0)
 
     threading.Thread(target=_die, daemon=True).start()
-    return {"ok": True, "message": "服务正在退出"}
+    return {"ok": True, "message": "正在更新并重启" if _installing else "服务正在退出"}
 
 
 # ---------------- 翻译（国际栏目 英 → 中） ----------------
@@ -4382,11 +4640,21 @@ def _translate_intl_bg(items):
         _TRANS_BUSY[0] = False
 
 
+# 【2026-10-09 修 低-8】/api/translate 的单次长度上限。
+# 这个接口没有鉴权（本机页面用），不设限的话任何本机脚本都能拿它把
+# MyMemory 的免费额度刷光（额度用完国际板块就整体退回英文）。
+TRANS_MAX_CHARS = 2000
+
+
 @app.get("/api/translate")
 def api_translate(text: str = Query(""), target: str = "zh-CN"):
     cfg = CONFIG.get("translate", {})
     if not cfg.get("enabled", True) or not text:
         return {"ok": False, "reason": "disabled"}
+    # 【2026-10-09 修 低-8】限长（不截断，直接拒绝）：让调用方知道超了，而不是悄悄翻一半
+    if len(text) > TRANS_MAX_CHARS:
+        return {"ok": False,
+                "reason": f"文本过长：{len(text)} 字，单次上限 {TRANS_MAX_CHARS} 字"}
     out = _translate_text(text)
     if out:
         with _TRANS_LOCK:
@@ -4428,9 +4696,8 @@ def proxy_img(url: str = Query(...)):
 def index(request: Request):
     v = _load_version()
     ssr = ""
-    if os.path.exists(os.path.join(STATIC_DIR, "index.html")):
-        with open(os.path.join(STATIC_DIR, "index.html"), "r", encoding="utf-8") as f:
-            tpl = f.read()
+    tpl = _html_template("index.html")      # 【修 低-8】启动时读过一次就不再读盘
+    if tpl:
         payload = {
             "version": VERSION,
             "region": "cn",
@@ -4447,6 +4714,23 @@ def index(request: Request):
         ssr = ssr.replace("__SSR_VERSION__", VERSION)
         return HTMLResponse(ssr, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
     return HTMLResponse("<h1>hotnews</h1>")
+
+
+# 【2026-10-09 修 低-8】静态 HTML 模板缓存：`/` 与 `/world` 原来**每个请求都读一次盘**
+# （首页每次刷新都重新读 30KB 的 index.html）。模板是随程序分发的静态资源，
+# 启动时读一次就够；改了模板需要重启程序（对单文件 exe 而言本来也是这样）。
+_HTML_TPL = {}
+
+
+def _html_template(name):
+    """读并缓存 static/<name>；读不到返回空串（调用方各自兜底）。"""
+    if name not in _HTML_TPL:
+        try:
+            with open(os.path.join(STATIC_DIR, name), "r", encoding="utf-8") as f:
+                _HTML_TPL[name] = f.read()
+        except Exception:
+            _HTML_TPL[name] = ""
+    return _HTML_TPL[name]
 
 
 def _load_version():
@@ -4472,12 +4756,11 @@ def world_page():
     交给浏览器自带的整页翻译（Edge/Chrome）接管 —— 用的是浏览器自己的翻译服务，
     速度快、没有额度限制，也不需要我们的服务器去做任何请求。
     顶部也写了中文操作提示，用户进来就能看懂怎么一键变中文。"""
-    for name in ("intl.html",):
-        p = os.path.join(STATIC_DIR, name)
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return HTMLResponse(f.read(),
-                                    headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    # 【2026-10-09 修 低-8】与首页同样走模板缓存，不再每次请求读盘
+    tpl = _html_template("intl.html")
+    if tpl:
+        return HTMLResponse(tpl,
+                            headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
     return HTMLResponse("<h1>world page missing</h1>")
 
 

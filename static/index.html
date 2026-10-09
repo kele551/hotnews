@@ -226,7 +226,7 @@ function fmtHeat(n){
   return String(n);
 }
 const EXCLUDED_CLS = new Set(["热榜","数码"]);  // 热榜置顶单独展示不入筛选；数码源已移除
-const CLS_ORDER = ["科技","软件","要闻","国内","国际","社会","体育","娱乐"];  // 财经、文化已移除（无源）；娱乐：国内=凤凰娱乐八卦，国际=Variety/Billboard
+const CLS_ORDER = ["科技","软件","要闻","国内","国际","财经","社会","体育","娱乐"];  // 【2026-10-09 换源】财经已重新有源（华尔街见闻 / 中新网·财经）；文化仍无源；娱乐：国内=凤凰娱乐+新浪娱乐+国际在线娱乐，国际=境内媒体报的国际娱乐
 function buildClsOptions(){
   const sel = document.getElementById("cls");
   const cur = sel.value;
@@ -239,6 +239,14 @@ function buildClsOptions(){
   sel.value = set.includes(cur) ? cur : "";
 }
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+// 【2026-10-09 修 低-1】源站给的 link 只允许 http/https。
+// 原来只做 HTML 转义（esc），被篡改的 RSS 可以塞 javascript: 或 data: 链接，
+// 用户一点就在本程序页面的同源上下文里执行脚本。其余协议一律置 "#"。
+// 思路与后端 _norm_url 一致（那边用于图片地址，这里是跳转链接）。
+function safeLink(u){
+  const s = String(u==null?"":u).trim();
+  return /^https?:\/\//i.test(s) ? s : "#";
+}
 function toast(msg){
   const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show");
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2200);
@@ -255,14 +263,12 @@ function shortLabel(s){
 }
 // 热度文案：不同平台的口径不一样，显示时要说清是什么数字，别含糊地丢一个整数给用户。
 //   澎湃新闻 → 站方页面上的真实互动数（能在原文页核对）
-//   红星新闻 / 凤凰网 → 只给名次不给热度值，后端置 0，这里不显示
-//   Hacker News → 真实投票点数 + 评论数（都能在页面上一一核对）
+//   红星新闻 / 凤凰网 / 中新社·国际 → 只给名次不给热度值，后端置 0，这里不显示
+// 【2026-10-09 换源】原来这里还有一条 Hacker News 的「▲点数 · N 评」分支，
+// HN（境外接口）已按合规要求删除，这个分支随之删掉，不再留死代码。
 function heatText(it){
   const h = Number(it.heat) || 0;
   if(!h) return "";
-  if(it.label === "Hacker News"){
-    return `▲${h}` + (it.comments ? ` · ${it.comments} 评` : "");
-  }
   return fmtHeat(h);
 }
 
@@ -273,7 +279,7 @@ function hotlistHTML(rows){
       <li class="hotrow">
         <span class="rank">${i + 1}</span>
         <div class="hmain">
-          <a class="htitle" href="${esc(it.link)}" target="_blank" rel="noopener"
+          <a class="htitle" href="${esc(safeLink(it.link))}" target="_blank" rel="noopener"
              title="${esc(it.title_en||it.title)}">${esc(it.title)}</a>
           <div class="hmeta"><span class="src src-${esc(it.label)}">${esc(it.label)}</span>${hs?`<span class="heat">${esc(hs)}</span>`:""}</div>
         </div>
@@ -288,14 +294,15 @@ function cardHTML(it, showCls){
     ? `<img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt="">`
     : `<i>${esc(shortLabel(it.label||it.channel))}</i>`;
   const cls = `thumb${it.image ? "" : " ph"}`;
-  const thumb = it.link
-    ? `<a class="${cls}" href="${esc(it.link)}" target="_blank" rel="noopener" title="打开原文">${inner}</a>`
+  const link = safeLink(it.link);   // 【修 低-1】非 http/https 一律当"没有链接"
+  const thumb = link !== "#"
+    ? `<a class="${cls}" href="${esc(link)}" target="_blank" rel="noopener" title="打开原文">${inner}</a>`
     : `<div class="${cls}">${inner}</div>`;
   return `<article class="card">
     ${thumb}
     <div class="body">
       <div class="tags">${showCls?`<span class="tag cls">${esc(it.cls)}</span>`:""}<span class="tag">${esc(it.label||it.channel)}</span>${it.heat?`<span class="tag hot">${fmtHeat(it.heat)}</span>`:""}</div>
-      <h2><a href="${esc(it.link)}" target="_blank" rel="noopener" title="${esc(it.title_en||it.desc_en||"")}">${esc(it.title)}</a></h2>
+      <h2><a href="${esc(link)}" target="_blank" rel="noopener" title="${esc(it.title_en||it.desc_en||"")}">${esc(it.title)}</a></h2>
       <p class="desc">${esc(it.desc||"")}</p>
       <span class="time">${fmt(it.published)}</span>
     </div></article>`;
@@ -369,7 +376,9 @@ function render(){
     return;
   }
 
-  // 国际：实时热榜（Hacker News）置顶 + 其余卡片网格
+  // 国际：实时热榜置顶 + 其余卡片网格
+  // 【2026-10-09 换源】热榜来源已从 Hacker News 换成境内媒体（中新社·国际 + 凤凰/澎湃/红星），
+  // 小标题跟着改，别再挂着已经删掉的那家名字误导人。
   const isWorld = state.region === "intl";
   // 【2026-10-07】原来这里会按国际/国内切换「浏览器翻译」按钮的显示；
   // 按钮已移除，这行必须一起删 —— 否则 getElementById 返回 null，抛错会让整个 render 挂掉。
@@ -386,7 +395,10 @@ function render(){
     document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
     return;
   }
-  let html2 = hotItems.length ? `<h2 class="sech">国际实时热榜 · Hacker News</h2>` + hotlistHTML(hotItems) : "";
+  // 小标题只写栏目名：热榜的来源是**每轮按实际抓到的条目**动态变的
+  //（中新社·国际 / 凤凰网 / 澎湃新闻 / 红星新闻…），把站名写死在这里迟早会与事实不符。
+  // 每行的来源标签本来就显示在标题下面。
+  let html2 = hotItems.length ? `<h2 class="sech">国际实时热榜</h2>` + hotlistHTML(hotItems) : "";
   if(!list.length){
     grid.innerHTML = html2;
   } else {
@@ -480,9 +492,9 @@ document.getElementById("checkUpdate").onclick = async ()=>{
     const r = await fetch("/api/update/check", {signal: ctrl.signal});
     const js = await r.json();
     if(js.status === "update"){
-      const notes = js.notes ? "\n\n更新内容：\n" + js.notes : "";
-      toast(`发现新版本 v${js.remote}，正在后台下载…`);
-      setTimeout(()=>promptInstall(js.remote, notes), 3000);
+      const notes = js.notes ? "　更新内容：" + String(js.notes).replace(/\s+/g," ").slice(0, 60) : "";
+      toast(`发现新版本 v${js.remote}，正在下载并自动安装…${notes}`);
+      setTimeout(()=>promptInstall(js.remote), 3000);
     } else if(js.status === "latest"){
       toast(`已是最新版本 v${js.current}`);
     } else if(js.status === "checking"){
@@ -498,22 +510,25 @@ document.getElementById("checkUpdate").onclick = async ()=>{
   }
 };
 
-async function promptInstall(remote, notes){
-  if(!confirm(`已下载新版本 v${remote}。\n\n是否立即更新并重启？\n${notes||""}`)) return;
+// 【2026-10-09 升级体验口径】手动升级也**不再弹确认框**：
+// 用户已经点了「检查更新」，再拦一道"是否立即更新并重启？"就是多余的确认。
+// 自动升级那条路（启动 5 秒后静默检查）压根不会走到这里，全程无提示。
+async function promptInstall(remote){
   try{
     const r = await fetch("/api/update/install", {method:"POST", headers:POST_HEADERS});
     const js = await r.json();
     if(js.ok){
       document.getElementById("grid").innerHTML =
-        '<div class="empty">正在更新并重启，请稍候…</div>';
+        '<div class="empty">正在更新并重启，请稍候…<br>页面会在新版起来后自动恢复。</div>';
     } else {
-      toast(js.message || "更新失败");
+      // （失败才提示：说清原因，旧版本继续可用）
+      toast(js.message || "更新失败，已继续使用当前版本");
     }
   }catch(e){}
 }
 
 document.getElementById("quit").onclick = async ()=>{
-  if(!confirm("停止服务并退出程序？退出后此页面将无法继续访问。")) return;
+  if(!confirm("停止服务并退出程序？退出后此页面将无法继续访问。\n（若已有下载好的新版本，退出时会自动完成升级）")) return;
   const btn = document.getElementById("quit");
   btn.disabled = true; btn.textContent = "正在退出…";
   try{ await fetch("/api/quit", {method:"POST", headers:POST_HEADERS}); }catch(e){}

@@ -106,6 +106,13 @@
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
 
+// 【2026-10-09 修 低-1】与 index.html 同一处修复：源站给的 link 只允许 http/https，
+// 其余（javascript: / data: 等）一律置 "#"，防止被篡改的 RSS 在本页同源执行脚本。
+function safeLink(u){
+  const s = String(u==null?"":u).trim();
+  return /^https?:\/\//i.test(s) ? s : "#";
+}
+
 function shortLabel(s){
   s = String(s||"");
   if(!s) return "";
@@ -142,7 +149,7 @@ function card(it){
         ${it.cls?`<span class="tag cls">${esc(it.cls)}</span>`:""}
         <span class="tag">${esc(it.label||it.channel||"")}</span>
       </div>
-      <h2><a href="${esc(it.link||"#")}" target="_blank" rel="noopener">${esc(title)}</a></h2>
+      <h2><a href="${esc(safeLink(it.link))}" target="_blank" rel="noopener">${esc(title)}</a></h2>
       <p class="desc">${esc(desc)}</p>
       <span class="time">${esc(fmt(it.published))}</span>
     </div></article>`;

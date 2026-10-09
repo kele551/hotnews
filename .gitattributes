@@ -1,0 +1,33 @@
+# 行尾策略（2026-10-09 新增，修 中-3）
+# ------------------------------------------------------------------
+# 背景：Gitee(master) 与 GitHub(main) 两端的提交 sha 一直对不上，差异恰好等于
+# 「CRLF 个数」——.gitignore / build_exe.spec / static/intl.html / 说明.txt
+# 在 Gitee 侧是 LF、在 GitHub 侧是 CRLF。而本机 core.autocrlf=true，
+# 从工作区（CRLF）整文件推送就会把这几个文件**整文件重写**，产生"全文件都变了"的假 diff。
+#
+# 现在把策略写进仓库本身（不再依赖每台机器的 core.autocrlf）：
+#   · 入库 blob 一律 LF；
+#   · 检出到工作区也一律 LF（server.py / updater.py / static/index.html 等本来就是 LF）；
+#   · 只有「说明.txt」历史上一直是 CRLF，用 eol=crlf 单独保留，不做变更。
+* text=auto eol=lf
+
+# 说明.txt：保持 CRLF 现状（改它会产生整文件假 diff）
+说明.txt text eol=crlf
+
+# 二进制文件不做任何行尾/编码转换
+*.exe   binary
+*.dll   binary
+*.pyd   binary
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.zip   binary
+*.mp4   binary
+
+# 打包产物 / 中间目录：只用于显式标注，不参与 diff 统计
+dist/**      linguist-generated=true
+build/**     linguist-generated=true
+build_tmp/** linguist-generated=true

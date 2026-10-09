@@ -119,14 +119,37 @@ def decodepoint(s):
     return P
 
 
+def is_small_order(P):
+    """P 是否落在 8 阶小子群里（含单位点 [0,1]）。
+
+    【为什么需要】Ed25519 的公开密钥是 32 字节编码、共 8 个点的小子群（阶为 8）。
+    如果公钥恰好是这类点，那么**任何人都能对任意消息伪造一个能验过的签名**
+    （签名验证只做 [S]B == R + [h]A，A 落在小子群时 h 的贡献被"吃掉"）。
+    本项目的公钥是内置固定值、不是这类点，但验签器是通用实现，必须按规范拒绝。
+    """
+    return scalarmult(P, 8) == [0, 1]
+
+
 def checkvalid(sig, m, pk):
-    """验签：sig(64) / m(bytes) / pk(32)。通过返回 True，不通过返回 False。"""
+    """验签：sig(64) / m(bytes) / pk(32)。通过返回 True，不通过返回 False。
+
+    【2026-10-09 修 低-2】按 RFC 8032 §5.1.7 的实现要求补两条校验：
+      · S 必须 < l（群阶）。签名是对 l 取模算出来的，所以 S、S+l、S+2l… 都能验过 ——
+        不拦住就等于"同一个签名有无数个等价变形"，会让幂等/去重类的上层判断失效；
+      · 公钥不得是小阶点（含单位点）。理由见 is_small_order 的说明。
+    本项目的公钥是内置常量、签名来自维护者离线私钥，两条都不会被触发，
+    属于"按实现规范补齐"，对正常签名没有任何影响。
+    """
     try:
         if len(sig) != 64 or len(pk) != 32:
             return False
-        R = decodepoint(sig[:32])
-        A = decodepoint(pk)
         S = int.from_bytes(sig[32:], "little")
+        if S >= l:                      # 规范要求：S < l
+            return False
+        A = decodepoint(pk)
+        if is_small_order(A):           # 规范要求：拒绝小阶/单位点公钥
+            return False
+        R = decodepoint(sig[:32])
         h = int.from_bytes(H(sig[:32] + pk + m), "little")
         return scalarmult(B, S) == edwards(R, scalarmult(A, h))
     except Exception:
