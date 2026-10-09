@@ -36,7 +36,12 @@ def alert(msg, title="热点新闻"):
 
 
 def find_running():
-    """探测 8000-8014 上是否已有本程序在跑；有则返回其端口（用于直接复用）"""
+    """探测 8000-8014 上是否已有本程序在跑；有则返回 (端口, 已运行秒数)。
+
+    【2026-10-09 修 中-5】返回值从"端口"改成 (端口, uptime)：
+    uptime 取自对方 /api/version，用来在日志里说清"对面这个实例已经服务了多久"。
+    端口那道判断不变 —— 必须能返回带 version 的 JSON 才算"是本程序"。
+    """
     import httpx
     for p in range(PORT_START, PORT_START + PORT_TRIES):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -46,11 +51,13 @@ def find_running():
         # 端口有人监听，还得确认是本程序（认 /api/version 的返回结构）
         try:
             r = httpx.get(f"http://127.0.0.1:{p}/api/version", timeout=1.5, trust_env=False)
-            if r.status_code == 200 and "version" in r.json():
-                return p
+            if r.status_code == 200:
+                js = r.json()
+                if "version" in js:
+                    return p, int(js.get("uptime") or 0)
         except Exception:
             pass
-    return 0
+    return 0, 0
 
 
 def pick_port(prefer=PORT_START, tries=PORT_TRIES):
@@ -86,21 +93,33 @@ def main():
     # 带 --silent 启动时**不开浏览器**，只在后台把服务跑起来、把第一屏数据抓好。
     # 这样用户任何时候右键点「打开热点新闻」，页面都是现成的，秒开。
     _silent = ("--silent" in sys.argv) or (os.environ.get("HOTNEWS_SILENT") == "1")
+    # 【2026-10-09 修 中-5】--handoff：本进程是**升级后被新版本拉起来的**（见 updater._fast_swap），
+    # 这时旧进程还占着端口、马上就会退出，所以需要等它让位。
+    # 普通"用户又双击了一次"不带这个标记 —— 那种情况应该**立刻开浏览器**，
+    # 原来一律空转 75 次 × 0.4 秒（≈30 秒）才开页面，用户只会以为程序卡死了。
+    _handoff = ("--handoff" in sys.argv) or (os.environ.get("HOTNEWS_HANDOFF") == "1")
+
     # 1) 已有实例 → 直接把它调到前台（开浏览器），自己退出，避免起第二个
-    # 【2026-10-07 修「升级后不自启」】升级时的时序是：
-    #   旧进程把 exe 换掉 → 立刻拉起新进程 → 自己 0.6 秒后才退出。
-    # 于是新进程起来时**旧进程还占着端口**，被这里判成"已有实例"，开个浏览器就退了
-    # —— 用户看到的现象就是"升级完了程序没起来"。
-    # 所以端口被占时先**等一等再重试**（最多 12 秒）：升级场景下旧实例马上就会退出，
-    # 等到了就正常启动；真的已有实例（不是升级）等完仍占用，才走"打开浏览器"的老路。
-    running = find_running()
+    running, _uptime = find_running()
     if running:
-        for i in range(75):        # 最多等 30 秒（原来 12 秒，遇到慢退的旧进程不够）
+        if not _handoff:
+            # 正在正常服务的实例：立刻把页面调出来，一秒都不等
+            if _silent:
+                print(f"[ok] 已有实例在 {running} 端口运行（静默模式，不弹浏览器）")
+                return
+            print(f"[ok] 已有实例在 {running} 端口运行（已服务 {_uptime}s），直接打开浏览器")
+            webbrowser.open(f"http://127.0.0.1:{running}")
+            return
+        # 【2026-10-07 修「升级后不自启」/ 中-5】升级交接：旧进程马上让出端口，
+        # 等它退出再接管。上限从 30 秒降到 **10 秒**（25 × 0.4s）——
+        # 就绪替换（_fast_swap）只要几十毫秒，慢退的旧进程也远用不到 10 秒。
+        for i in range(25):
             time.sleep(0.4)
-            if not find_running():
-                running = None
+            running, _uptime = find_running()
+            if not running:
                 break
         if running:
+            # 等了 10 秒还在：那就当"确实已有实例"，照样把页面打开（不再让用户干等）
             if _silent:
                 print(f"[ok] 已有实例在 {running} 端口运行（静默模式，不弹浏览器）")
                 return

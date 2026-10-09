@@ -1,4 +1,7 @@
-fastapi
-uvicorn
-feedparser
-httpx
+# Python 3.13（开发、打包与 CI 都用 3.13；3.11+ 亦可运行）
+# 版本按维护者本机实测可用的版本固定（==），避免上游大版本变动悄悄改变抓取/解析行为。
+# 升级依赖时请连带跑一遍 check_sources.py 与升级演练，再改这里的版本号。
+fastapi==0.142.2
+uvicorn==0.54.0
+feedparser==6.0.14
+httpx==0.28.1

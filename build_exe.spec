@@ -75,6 +75,11 @@ datas = [
     (os.path.join(BASE, "static"), "static"),
     (os.path.join(BASE, "config.json"), "."),
     (os.path.join(BASE, "version.json"), "."),
+    # 【2026-10-09 新增】关键词表（国家/地区/机构/赛事等纯数据）。
+    # server.py 的 _load_keywords() 用 _res("data/keywords.txt") 定位，
+    # 单文件 exe 下就是 _MEIPASS/data/keywords.txt —— 少了这条，打包后关键词表读不到，
+    # 国内/国际分流会整体退化（每组退回空集合）。源码包/绿色包由 build.py 整树带上。
+    (os.path.join(BASE, "data"), "data"),
     # 通知区图标：托盘用它做首选来源（取不到就退回 exe 自身资源），
     # 否则打包后 _MEIPASS 与 exe 同级都找不到 hotnews.ico
     (os.path.join(BASE, "hotnews.ico"), "."),
@@ -113,7 +118,7 @@ exe = EXE(
     upx=False,
     runtime_tmpdir=None,
     console=False,                # 不弹黑窗口；日志走 hotnews.log，退出走页面按钮
-    version=_version_info_path,   # 嵌入版本资源：悬停显示版本号 + 作者/邮箱
+    version=_version_info_path,   # 嵌入版本资源：悬停显示版本号 + 署名人 HaiFeng (kele551) + 仓库地址
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

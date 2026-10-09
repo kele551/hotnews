@@ -74,9 +74,12 @@ python make_icon.py                                        # 重新生成图标�
    `build_exe.spec` 已改成按 `utf-8-sig` 读来容忍，但**线上升级源必须是干净的无 BOM 版本**。
    手改请用：
    `[System.IO.File]::WriteAllText($p, $txt, (New-Object System.Text.UTF8Encoding($false)))`
-2. **`python build.py` 必须在干净检出上跑**。它只排除 `.git` / `__pycache__` 等目录，
-   **不排除 `dist/` 与 `build/`**；先跑过 PyInstaller 再跑 `build.py`，
-   打包产物会被一起卷进源码包。
+2. **`python build.py` 的排除清单与 `.gitignore` 同步**（2026-10-09 起）：
+   `dist/`、`build/`、`build_tmp/`、`hotnews_build_archive/`、历史 `*.exe`、
+   `_home*.html` / `_probe*.py` / `_smoke_*.json` 这类本机调试产物都**不会**进包。
+   打包前建议先跑 **`python build.py --list`** 只列清单、不写文件，核对一遍。
+   ⚠ 两条**不能**加进排除清单的规则：`runtime/` 下的 `python.exe` / `pythonw.exe`（绿色包的解释器）
+   和 `runtime/python313.zip`（标准库本体）—— 一刀切写 `*.exe` / `*.zip` 会让绿色包直接启动失败。
 3. **绿色版 zip 依赖仓库外的 `runtime/`**（自带 embeddable Python，已在 `.gitignore` 里）。
    只有本机有 `runtime/` 的维护者能打出完整绿色包；CI 里打出来的绿色包是残包，
    所以 `.github/workflows/build.yml` 会把它删掉、不上传。
