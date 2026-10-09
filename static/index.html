@@ -146,6 +146,9 @@
   .src-澎湃新闻{background:#d0021b}
   .src-红星新闻{background:#c0392b}
   .src-凤凰网{background:#b8860b}
+  .src-中新社·国际{background:#2b6cb0}
+  /* 【2026-10-09】热榜出处行：「来源：凤凰网热榜 · 第4名」 */
+  .srcline{font-size:14px;color:var(--muted);display:inline-flex;align-items:center;gap:2px}
   @media (max-width:640px){
     header{padding:16px 18px}
     h1{font-size:24px}
@@ -226,7 +229,16 @@ function fmtHeat(n){
   return String(n);
 }
 const EXCLUDED_CLS = new Set(["热榜","数码"]);  // 热榜置顶单独展示不入筛选；数码源已移除
-const CLS_ORDER = ["科技","软件","要闻","国内","国际","财经","社会","体育","娱乐"];  // 【2026-10-09 换源】财经已重新有源（华尔街见闻 / 中新网·财经）；文化仍无源；娱乐：国内=凤凰娱乐+新浪娱乐+国际在线娱乐，国际=境内媒体报的国际娱乐
+// 【2026-10-09 栏目定稿】国内 = 头条 / 科技 / 财经 / 娱乐 / 软件 / 热榜；
+// 国际 = 要闻 / 科技 / 财经 / 娱乐 / 体育 / 热榜（体育只有国际频道有）。
+// 这个数组只决定**下拉与分块标题的排序**，不是栏目白名单（栏目是跟着数据走的）；
+// 但它必须跟着定稿走：国内那一类民生栏目已整栏下线、国内也不再设体育栏目（国际频道照旧保留
+// 「要闻 / 体育」，本数组里的这两项只为国际栏排序），所以别把国内已经取消的栏目再列出来。
+//   头条：界面新闻 + 澎湃新闻 + 红星/凤凰实时热点并入（2026-10-09 按用户口径定名「头条」）
+//   财经：华尔街见闻 + 中新网·财经（＋标题命中财经特征词、被 _fix_finance_cls 改判过来的条目）
+//   娱乐：国内=凤凰娱乐+新浪娱乐+国际在线娱乐；国际=境内媒体报的国际娱乐 + CGTN文化
+//   要闻 / 体育：**只属于国际频道**（国内两者都没有），所以这里保留它们只为国际栏排序。
+const CLS_ORDER = ["头条","要闻","科技","软件","财经","娱乐","体育","国内","国际"];
 function buildClsOptions(){
   const sel = document.getElementById("cls");
   const cur = sel.value;
@@ -272,16 +284,23 @@ function heatText(it){
   return fmtHeat(h);
 }
 
+// 多平台热榜：按平台分组 + 平台标 + 名次
+// （后端已按「平台内归一化百分位」跨平台混排，这里只负责渲染）
 function hotlistHTML(rows){
   return `<ol class="hotlist">` + rows.map((it, i) => {
     const hs = heatText(it);
+    // 【2026-10-09 用户点名「热榜必须有来源出处」】统一渲染成「来源：凤凰网热榜 · 第4名」。
+    // source 由后端热榜聚合统一给出（_hot_source_of），取不到时退回 label。
+    const src = it.source || it.label || it.channel || "";
+    const rk = Number(it.rank) || 0;
     return `
       <li class="hotrow">
         <span class="rank">${i + 1}</span>
         <div class="hmain">
           <a class="htitle" href="${esc(safeLink(it.link))}" target="_blank" rel="noopener"
              title="${esc(it.title_en||it.title)}">${esc(it.title)}</a>
-          <div class="hmeta"><span class="src src-${esc(it.label)}">${esc(it.label)}</span>${hs?`<span class="heat">${esc(hs)}</span>`:""}</div>
+          <div class="hmeta"><span class="srcline">来源：<b class="src src-${esc(it.label||"")}">${esc(src)}</b>${
+            rk?` · 第${rk}名`:""}</span>${hs?`<span class="heat">${esc(hs)}</span>`:""}</div>
         </div>
       </li>`;
   }).join("") + `</ol>`;

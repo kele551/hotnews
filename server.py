@@ -155,7 +155,7 @@ FALLBACK_MIN = 8         # 当天条目少于这个数 → 放宽到最近 24 �
 # 但「当天」这条硬规则会把更新频率低的垂类源整个饿死 —— 实测 24 小时筛完：
 #   小众软件 0 条 / 少数派 0 条 / 开源中国 0 条 / iplaysoft 1 条 / 极客公园 1 条，
 #   结果「软件」栏目只剩 mefcl 一个源、「科技」只剩 IT之家 —— 正是用户反馈的现象。
-# 所以：要闻/热榜等时效敏感栏目仍只留当天（走 MAX_AGE_HOURS=24h），
+# 所以：头条 / 热榜等时效敏感栏目仍只留当天（走 MAX_AGE_HOURS=24h），
 # 垂类（科技/软件/娱乐）各自放宽，保证栏目内至少 3 家不同网站。
 CLS_MAX_AGE_HOURS = {
     "科技": 96,     # 4 天：IT之家/快科技日更，爱范儿/雷峰网 慢一些
@@ -178,7 +178,9 @@ FRESH_MIN_SITES = 3
 #   · 国际板块**删掉全部境外站点**，换成**境内媒体的国际版**
 #     （CGTN + 中新网·国际，再由凤凰/澎湃/红星/界面报的国际新闻补足）；
 #   · 国际热榜同步删掉那处境外热榜 API；
-#   · 新增财经 / 体育 / 社会 / 娱乐源，全部是境内站点。
+#   · 国内新增财经 / 娱乐源，全部是境内站点。
+#     （有两个栏目后来按用户口径**整栏下线**：国内体育整栏不要（国际频道不受影响）、
+#      民生类那一栏整栏去掉 —— 详见下面 SOURCES["cn"] 里的两段说明。）
 # 每个新源都做过真实联网实测（HTTP / 耗时 / 条数 / 带图数 / 最新时间），
 # 逐条数据见 logs\换源-境内国际版-20261009.md；没实测通过的一律不写进来。
 SOURCES = {
@@ -189,12 +191,15 @@ SOURCES = {
         # 界面 / IT之家 / 极客公园（科技）/ 小众软件（软件）实测有图且更新活跃；
         # 任一道退化无图，会被 _collect 的 no-image 过滤自动剔除。
         # 财经栏目按用户要求删除（界面 RSS 仅 1 条带图，达不到"出图"标准）。
-        # 界面新闻本身保留，改归「要闻」，避免把你要求加的 jiemian 也一并砍掉。
-        {"id": "cn-finance", "label": "界面",   "url": "https://a.jiemian.com/index.php?m=article&a=rss", "base": "https://www.jiemian.com", "region": "cn", "cls": "要闻"},
+        # 界面新闻本身保留，改归「头条」，避免把你要求加的 jiemian 也一并砍掉。
+        # 【2026-10-09 栏目定稿】该栏目按用户口径定名为「头条」：
+        # 界面 / 澎湃这两家是头条的主力源；标题命中财经特征词的条目会被
+        # _fix_finance_cls 改判到「财经」（用户点名「股市/ETF/A股…必须落财经」）。
+        {"id": "cn-finance", "label": "界面",   "url": "https://a.jiemian.com/index.php?m=article&a=rss", "base": "https://www.jiemian.com", "region": "cn", "cls": "头条"},
         # 澎湃新闻：官方 JSON 接口（parser=thepaper），自带标题/题图/直达链接/真实互动数。
         # 2026-10-06 用户点名要加；同批实测腾讯/网易/新浪的 RSS 全部 404、首页又是 JS 动态渲染
         # （新浪娱乐首页 45 条链接全是「站点地图/好莱坞/排行」这类导航），只有澎湃给出了干净的结构化数据。
-        {"id": "cn-thepaper", "label": "澎湃新闻", "url": "https://cache.thepaper.cn/contentapi/wwwIndex/rightSidebar", "base": "https://www.thepaper.cn", "region": "cn", "cls": "要闻", "parser": "thepaper"},
+        {"id": "cn-thepaper", "label": "澎湃新闻", "url": "https://cache.thepaper.cn/contentapi/wwwIndex/rightSidebar", "base": "https://www.thepaper.cn", "region": "cn", "cls": "头条", "parser": "thepaper"},
         {"id": "cn-tech",    "label": "IT之家", "url": "https://www.ithome.com/rss/",                     "base": "https://www.ithome.com",   "region": "cn", "cls": "科技"},
         {"id": "cn-geek",    "label": "极客公园", "url": "https://www.geekpark.net/rss",                  "base": "https://www.geekpark.net", "region": "cn", "cls": "科技"},
         # 软件类：小众软件 RSS，条条带图（feed 内 media:content 含图），内容偏软件推荐/效率工具
@@ -229,23 +234,31 @@ SOURCES = {
         # 实测国内娱乐 RSS 全废（网易/中新网无条目、搜狐无图、人民网停更、时光网连不上），
         # 只能用新浪娱乐的 SSR HTML；它的列表页无图无时间，靠 _fill_missing_images 补。
         # 【已试过并放弃】网易娱乐 ent.163.com：首页 415 条带标题条目，图可改写 thumbnail参数放大到 660x440，但它是**网易号泛频道推荐流**（每次请求内容都不同），
-        # 混着汽车/养生/育儿/社会；加娱乐关键词过滤后 40 条只剩 3 条且有 2 条不是娱乐。
+        # 混着汽车/养生/育儿等泛频道内容；加娱乐关键词过滤后 40 条只剩 3 条且有 2 条不是娱乐。
         # 用户 2026-10-07 决定不做这个源，别再挖了。
         {"id": "cn-sina-ent", "label": "新浪娱乐", "url": "https://ent.sina.com.cn/", "base": "https://ent.sina.com.cn", "region": "cn", "cls": "娱乐", "parser": "sina_ent"},
-        # ============ 【2026-10-09 换源】新增：财经 / 体育 / 社会 / 娱乐 ============
+        # ============ 【2026-10-09 换源】新增：财经 / 娱乐 ============
         # 目标：① 每个栏目至少 3 家网站；② 只用境内站点（合规口径见 COMPLIANCE.md 第 7 节）。
         # 下面每一条都做过真实联网实测（HTTP 状态 / 耗时 / 条数 / 带图数 / 最新时间），
         # 逐项数据记在 logs\换源-境内国际版-20261009.md；没实测通过的一律不写在这里。
         #
         # 华尔街见闻：实测 200 / 0.37s / 61 条 / 35 条带图 / 最新 1.7 小时前（财经垂类里更新最勤）。
         {"id": "cn-wscn", "label": "华尔街见闻", "url": "https://dedicated.wallstreetcn.com/rss.xml", "base": "https://wallstreetcn.com", "region": "cn", "cls": "财经"},
-        # 中新网系（财经 / 体育 / 社会）：实测 200 / 约 20ms / 各 30 条 / 当天分钟级更新，
+        # 中新网系（财经）：实测 200 / 约 20ms / 30 条 / 当天分钟级更新，
         # 但 **RSS 本身不带图** → 打 body_image 标记，走「正文页取首图」的图片策略
         # （限时 3 秒/条、命中 _ART_CACHE 缓存、取不到就跳过该条，详见 _fill_missing_images）。
         # 实测正文首图命中率 40%~60%，取到的多是 700x466 / 1080x783 这类达标大图。
         {"id": "cn-cnfin",   "label": "中新网·财经", "url": "https://www.chinanews.com.cn/rss/finance.xml", "base": "https://www.chinanews.com.cn", "region": "cn", "cls": "财经", "body_image": True},
-        {"id": "cn-cnsport", "label": "中新网·体育", "url": "https://www.chinanews.com.cn/rss/sports.xml",  "base": "https://www.chinanews.com.cn", "region": "cn", "cls": "体育", "body_image": True},
-        {"id": "cn-cnsoc",   "label": "中新网·社会", "url": "https://www.chinanews.com.cn/rss/society.xml", "base": "https://www.chinanews.com.cn", "region": "cn", "cls": "社会", "body_image": True},
+        # 【2026-10-09 用户口径：国内不要体育，国际频道保留】原 `cn-cnsport`（中新网那一路体育 RSS）已整条移除 ——
+        # 用户原话「国际板块，留体育，国内的体育不值得看」。它的 30 条**不带图**、要靠正文页补图
+        # （实测命中率低），本来也过不了「自带图」这一关，所以直接删掉、**没有**改挂到财经或别的栏目。
+        # 国内这一栏随之消失（栏目跟着数据走）；国际频道的体育由下面的 intl-xinhua-sport /
+        # intl-cgtn-sport 两家境内源供给，实测数据见 logs\国际栏增补带图源-20261009.md。
+        # 【2026-10-09 栏目定稿：民生类那一栏整栏下线】原 `cn-cnsoc`（中新网那一路民生 RSS）
+        # 已删除，国内不再有这一栏（用户口径：整栏去掉）。它原来那 4 条（实测）是
+        # 地方事故/天气类，**按内容归入「头条」，没有一条被塞进财经** —— 用户点名「绝不塞进财经」。
+        # 分类规则里也一并删掉这个栏目名：`data/keywords.txt` 的 domestic_sections 里那一条
+        # 站方栏目名提示已移除（它只影响国内/国际判定，不影响任何栏目命名）。
         # 国际在线·娱乐（ent.cri.cn，中国国际广播电台 / 总台旗下）：影视综艺向。
         # 实测 200 / 0.023s / 卡片 40 张 / 24 小时内 19 条 / 当天分钟级更新。
         # ⚠ 卡片图是 **512x288 缩略图**（短边 288 差 12 像素过不了 300 的高清门槛，
@@ -254,6 +267,22 @@ SOURCES = {
         # 它是娱乐栏目里第 3 家网站，也是「列表页自带标题+图+时间」的第二个源
         #（第一个是凤凰娱乐；新浪娱乐的列表页无图无时间，全靠逐条抓文章页）。
         {"id": "cn-cri-ent", "label": "国际在线娱乐", "url": "http://ent.cri.cn/", "base": "http://ent.cri.cn", "region": "cn", "cls": "娱乐", "parser": "cri_ent"},
+        # ============ 【2026-10-09 补源·娱乐】实测结论：**没有可新增的境内娱乐频道** ============
+        # 用户再次点名「娱乐栏目新闻太少」，逐家实测了 20 多个境内娱乐入口，结论如下（详细表格见
+        # logs\国际栏增补带图源-20261009.md）：
+        #   · 唯一「自带图 + 当天更新 + 图≥300」达标的，是国际在线（ent.cri.cn）自己的垂直子频道
+        #     （/movie 电影 20 卡·24h 内 5 条、/tv 电视剧 20 卡·8 条、/focus 焦点 20 卡·11 条）。
+        #   · 但**实测它们相对 ent.cri.cn 首页新增 0 条**（四个源并集 = 首页 22 条，标题去重后完全重合）——
+        #     同一个编辑部的同一批稿子。按用户「不要凑数」「每个栏目必须有三家以上网站」的要求，
+        #     **没有接入**这三个子频道：看着多三个源，实际还是同一家、同一条新闻。
+        #   · 其它家全部不达标（图片过小/停更/403/JS 空壳）：新华网娱乐（图 184~225）、人民网娱乐
+        #     （9 张图卡里只有 2 张是当天的）、光明网娱乐（当周只有 1 条）、北青网娱乐（图固定 292x390）、
+        #     中国日报娱乐（停在 2022）、央视网娱乐（JS 空壳）、1905（403）、环球网娱乐（JS 空壳）、
+        #     中新网娱乐（403/404）、网易娱乐（用户 2026-10-07 已否决）、央广网娱乐（内容停在 2023-01）、
+        #     芒果TV/湖南娱乐/腾讯娱乐（JS 空壳）、搜狐娱乐（停在 2017）、南都/上游/大众网/潇湘晨报/扬子晚报
+        #     （当天无图或响应 15 秒以上）、观察者网/界面（无娱乐频道或卡片无图）。
+        # 所以国内「娱乐」这一轮**维持原样**（凤凰娱乐 + 新浪娱乐 + 国际在线娱乐）；
+        # 国际板块的「娱乐」栏目改由 CGTN 文化分区直供（见 SOURCES["intl"]），实测 2 条 → 8 条。
     ],
     "intl": [
         # ============ 【2026-10-09 换源·合规】国际新闻只用境内媒体的国际版 ============
@@ -261,14 +290,56 @@ SOURCES = {
         # 境外站点），
         # 与章程 §9.1「默认只用境内权威媒体源，不采用境外来源」冲突，已整段删除。
         # 现在这一栏的构成（全部境内）：
-        #   ① CGTN（中国国际电视台）世界频道 —— 实测 15~50 条、全部带图、当天更新；
-        #   ② 中新网·国际 —— 实测 30 条 / 当天分钟级更新；RSS 不带图 → 正文页取首图；
-        #   ③ 凤凰网 / 澎湃新闻 / 红星新闻 / 界面新闻 报的国际新闻 —— 由
-        #      _split_cn_scope（国内要闻）与 _split_hot_by_scope（国内热榜）转过来，
+        #   ① CGTN（中国国际电视台）世界/商业/文化/体育/科技分区 —— 实测各 50 条、全部带图、当天更新；
+        #   ② 中新网·国际 / 国际在线·国际 / 人民网·国际 / 光明网·国际 —— 中文国际新闻，
+        #      除中新网外**列表页自带图**（2026-10-09 补源，见下面那一段注释）；
+        #   ③ 新华网·体育 —— 中文国际体育（用户 2026-10-09 要求国际板块保留体育栏目）；
+        #   ④ 凤凰网 / 澎湃新闻 / 红星新闻 / 界面新闻 报的国际新闻 —— 由
+        #      _split_cn_scope（国内头条）与 _split_hot_by_scope（国内热榜）转过来，
         #      channel 标为 cn-intl-news / cn-intl-hot，本来就是中文，不依赖翻译。
-        # 这样国际板块仍然「有要闻、有热榜、有娱乐/科技垂类」，只是**数据全部来自境内媒体**。
+        # 这样国际板块「要闻 / 科技 / 财经 / 娱乐 / 体育 / 热榜」六栏都有直供源，
+        # 不再只靠国内分流；数据全部来自境内媒体。
         {"id": "intl-cgtn",    "label": "CGTN",        "url": "https://www.cgtn.com/subscribe/rss/section/world.xml", "base": "https://www.cgtn.com",         "region": "intl", "cls": "要闻"},
         {"id": "intl-cnworld", "label": "中新网·国际", "url": "https://www.chinanews.com.cn/rss/world.xml",           "base": "https://www.chinanews.com.cn", "region": "intl", "cls": "要闻", "body_image": True},
+        # ============ 【2026-10-09 补源】用户：「国际栏目新闻太少！！给国际栏多接几个自带图的源」 ============
+        # 硬口径（本次逐家实测）：① 只用境内媒体；② **列表页/RSS 自己就带图**（不靠正文页补图）；
+        # ③ 当天/近日更新；④ 图片短边 ≥300（过得了后台低质图门槛）。四条全过的才写在这里，
+        # 逐条实测数据（HTTP/耗时/条数/带图数/最新时间/图片来源字段）与「试过没用上」清单见
+        # logs\国际栏增补带图源-20261009.md —— 没实测通过的一律不写。
+        #
+        # —— ① 要闻：三家中文国际频道，列表页自带图 ——
+        # 国际在线·国际（news.cri.cn/world，总台旗下）：实测 200 / 0.03s / 卡片 20 张 / 全部带图 /
+        #   当天分钟级更新（抽 8 张原图 1920x1080、5472x3079、1440x810…全部达标）。
+        #   ⚠ 卡片图是 256x144 缩略图（过不了 300 门槛），程序按站方 URL 规则改写成原图，见 _cri_image；
+        #   时间在列表页里就是精确到分的（2026年10月09日 14:39），不用猜。
+        {"id": "intl-cri-world", "label": "国际在线·国际", "url": "http://news.cri.cn/world/", "base": "http://news.cri.cn", "region": "intl", "cls": "要闻", "parser": "cri_world"},
+        # 人民网·国际（world.people.com.cn）：实测 200 / 0.09s / 带图卡 6 张 / 660x370~996x558 全部达标。
+        #   列表页只给到**日期**（URL 里的 /2026/1009/），所以发布时间按当天 00:00 记 ——
+        #   是站方 URL 上写死的日期，不是猜的时点；排序上会排在有具体时分的条目之后。
+        {"id": "intl-people-world", "label": "人民网·国际", "url": "http://world.people.com.cn/", "base": "http://world.people.com.cn/", "region": "intl", "cls": "要闻", "parser": "people_list"},
+        # 光明网·国际（world.gmw.cn，光明日报社）：实测 200 / 0.17s / 带图卡 4 张 / 图 580x320 达标；
+        #   同样只给到日期（URL 里的 2026-10/09/），按当天 00:00 记。
+        {"id": "intl-gmw-world", "label": "光明网·国际", "url": "https://world.gmw.cn/", "base": "https://world.gmw.cn/", "region": "intl", "cls": "要闻", "parser": "gmw_list"},
+        #
+        # —— ② 垂类四栏：国际板块按用户口径保留「要闻/科技/财经/娱乐/体育/热榜」——
+        # 这四栏原来只能等国内板块按关键词分流过来的条目（_split_cn_scope），冷启动时是空的；
+        # 现在给每一栏都接上**自带图**的直供源，栏目不再依赖分流是否命中。
+        # CGTN（中国国际电视台 / 总台）分区 RSS：实测每个分区 50 条、**50 条全部带 media:content 图**、
+        # 图片来源字段就是 media_content（不需要正文页），时间精确到分、都是当天/前一两天的稿子。
+        # 4 个分区实测（条目/带图/最新/24h 内/48h 内）：
+        #   world（原有）50/50/当天 10:42；business 50/50/10-08 21:25（6/7）；
+        #   culture 50/50/10-08 15:44（1/5）；sports 50/50/当天 14:30（3/3）；tech-sci 50/50/10-08 16:58（1/7）。
+        # CGTN 原文是英文，与原有 intl-cgtn 一样交给后台翻译线程（translated=False）。
+        {"id": "intl-cgtn-biz",     "label": "CGTN商业", "url": "https://www.cgtn.com/subscribe/rss/section/business.xml", "base": "https://www.cgtn.com", "region": "intl", "cls": "财经"},
+        {"id": "intl-cgtn-culture", "label": "CGTN文化", "url": "https://www.cgtn.com/subscribe/rss/section/culture.xml",  "base": "https://www.cgtn.com", "region": "intl", "cls": "娱乐"},
+        {"id": "intl-cgtn-sport",   "label": "CGTN体育", "url": "https://www.cgtn.com/subscribe/rss/section/sports.xml",   "base": "https://www.cgtn.com", "region": "intl", "cls": "体育"},
+        {"id": "intl-cgtn-tech",    "label": "CGTN科技", "url": "https://www.cgtn.com/subscribe/rss/section/tech-sci.xml", "base": "https://www.cgtn.com", "region": "intl", "cls": "科技"},
+        # 新华网·体育（www.news.cn/sports，新华社）：用户 2026-10-09 明确「国际板块留体育」，
+        # 这是实测里唯一「中文 + 列表页自带图 + 自带精确时间 + 当天更新」的国际体育源：
+        #   实测 200 / 0.06~0.1s / coxe 卡 21 张 / 24h 内 7 条、48h 内 20 条 / 图 981x552~1010x568 达标 /
+        #   时间形如 2026-10-09 09:46:58（列表页里直接给到秒）。
+        #   内容以国际赛事为主（奥运申办、中网、世界羽联…），与用户「国内体育不值得看」的口径一致。
+        {"id": "intl-xinhua-sport", "label": "新华网·体育", "url": "http://www.news.cn/sports/", "base": "http://www.news.cn/sports/", "region": "intl", "cls": "体育", "parser": "xinhua_coxe"},
     ],
     # 实时热点（今日头条热榜）走独立 _parse_hot，不走 RSS，这里仅占位以通过 region 校验
     "hot": [],
@@ -1055,11 +1126,22 @@ def _parse_one(src):
     现在这里兜一层：**某个源坏了只丢它自己**，日志写清是哪个源、什么异常。
     """
     try:
-        return _parse_one_raw(src)
+        _items = _parse_one_raw(src)
     except Exception as ex:
         print(f"[warn] 源解析异常，已跳过该源: {src.get('id') or src.get('url')} - "
               f"{type(ex).__name__}: {ex}")
         return []
+    # 【2026-10-09 用户要求「国际，娱乐栏目还是有国内新闻，你怎么不归纳到国内版里」】
+    # 国际频道的娱乐/文化条目里，凡属**国内题材**（上海时装周、毛泽东故居、中国国庆…）
+    # 一律不进国际栏 —— 挂在这里是因为它是**所有源的必经包装**，一处生效、不会漏出口。
+    # 注意：CGTN 文化是**英文源**，判据必须中英文都有（只写中文会一条都拦不住）。
+    if (src.get("region") or "") == "intl":
+        _keep = [x for x in _items if not _drop_domestic_ent(x)]
+        if len(_keep) != len(_items):
+            print("[ok] %s: 国际栏剔除国内题材的娱乐/文化 %d 条"
+                  % (src.get("id") or "?", len(_items) - len(_keep)))
+        _items = _keep
+    return _items
 
 
 def _parse_one_raw(src):
@@ -1076,6 +1158,16 @@ def _parse_one_raw(src):
     # 【2026-10-09 换源】国际在线娱乐：列表页 SSR 卡片（标题+原图+时间都在 HTML 里）
     if src.get("parser") == "cri_ent":
         return _parse_cri_ent(src)
+    # 【2026-10-09 补源·国际栏】下面四个都是「列表页自带图」的站点专用解析
+    # （共同的取舍：宁可少抓几条，也不去正文页补图 —— 用户要的就是自带图的源）
+    if src.get("parser") == "cri_world":      # 国际在线·国际（news.cri.cn/world）
+        return _parse_cri_world(src)
+    if src.get("parser") == "xinhua_coxe":    # 新华网·体育（国际频道，www.news.cn/sports）
+        return _parse_xinhua_coxe(src)
+    if src.get("parser") == "people_list":    # 人民网·国际 / 娱乐（列表页 <li> 图卡）
+        return _parse_people_list(src)
+    if src.get("parser") == "gmw_list":       # 光明网·国际（world.gmw.cn 图卡）
+        return _parse_gmw_list(src)
     # 【2026-10-09 修 低-6 删除死代码】这里原来还有一个 `parser == "github_readme"` 分支
     # （抓 GitHub 上 awesome 列表仓库的 README 做成软件卡片）。SOURCES 里没有任何源用它
     # —— 用户 2026-10-07 已明确要求「删除不易读的英文 GitHub 仓库，改用国内源」，
@@ -1212,7 +1304,7 @@ def _hot_cn_intl():
     return out
 
 
-# 澎湃 rightSidebar 的共享缓存（被 cn 要闻和热榜两个入口共用，见 _thepaper_data）
+# 澎湃 rightSidebar 的共享缓存（被 cn 头条和热榜两个入口共用，见 _thepaper_data）
 _THEPAPER_CACHE = {"ts": 0.0, "data": None}
 _THEPAPER_LOCK = threading.Lock()
 
@@ -1268,14 +1360,19 @@ def _parse_hot_intl():
         for i, it in enumerate(group, 1):
             it["score"] = (n - i + 1) / n
     parts.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    # 【2026-10-09 用户要求「热榜必须有来源出处」】与 _parse_hot 同一套：这里也要补，
+    # 因为**中新社·国际**那一路是直接进来的，没经过 _parse_hot 的统一出口。
+    for it in parts:
+        if not it.get("source"):
+            it["source"] = _hot_source_of(it.get("label"))
     print(f"[ok] hot-intl: 多平台聚合共 {len(parts)} 条（百分位混排）")
     return parts
 
 
 def _thepaper_data(ttl=120):
-    """澎湃首页侧栏 JSON（要闻 / 财经投資 / 编辑精选 / hotNews 全在这一个响应里）。
+    """澎湃首页侧栏 JSON（头条 / 财经投資 / 编辑精选 / hotNews 全在这一个响应里）。
 
-    做成缓存是因为它**同时被两个入口消费**：国内栏目的 cn-thepaper（要闻）和热榜的
+    做成缓存是因为它**同时被两个入口消费**：国内栏目的 cn-thepaper（头条）和热榜的
     hot-thepaper。两者由 ThreadPoolExecutor 并发抓取，若各自发一次请求，实测第二发会被
     站方限速到 12s+（连着请求两次必有一发慢到超时边缘），整个 cn 刷新会被拖住。
     故这里用锁 + 短 TTL 保证「一次刷新只抓一次」，两个入口共享同一份数据。"""
@@ -1464,7 +1561,7 @@ def _hot_cdsb():
 
 
 def _hot_ifeng():
-    """凤凰资讯：官网首页要闻流 newsstream[]（约 28 条，含 url / title / newsTime / 题图）。
+    """凤凰资讯：官网首页头条流 newsstream[]（约 28 条，含 url / title / newsTime / 题图）。
 
     凤凰的 RSS 全线 404（news.ifeng.com/rss/*.xml 都指向同一个 404 页），但首页是
     SSR 内联 JSON，条目写作 {"id":..,"title":..,"url":..,"commentUrl":..,"skey":..,
@@ -1513,6 +1610,23 @@ def _hot_ifeng():
     return out
 
 
+def _hot_source_of(label):
+    """热榜条目的「来源出处」文案（2026-10-09 用户点名：「热榜必须有来源出处」）。
+
+    用户要求的可读形式是「来源：凤凰网热榜 · 第4名」，所以字段值取「平台名 + 热榜」：
+      凤凰网 → 凤凰网热榜 / 红星新闻 → 红星新闻热榜 / 澎湃新闻 → 澎湃新闻热榜 /
+      中新社·国际 → 中新社·国际热榜。
+    为什么单独加一个 `source` 字段而不是让前端拼 label+rank：
+      接口里 label 原本只表示"哪家平台"，语义上跟"来源出处"不完全等价（红星/凤凰的
+      热榜条目其实是本站首页推荐流，不是一张正式榜单），前端各自拼字符串迟早会不一致；
+      统一在后端给一个明确字段，界面、气泡、自检三处用的是同一个值。
+    """
+    lb = (label or "").strip()
+    if not lb:
+        return ""
+    return lb if lb.endswith("热榜") else lb + "热榜"
+
+
 def _parse_hot():
     """实时热榜：聚合 {澎湃新闻, 红星新闻, 凤凰网} 三家（用户指定）。
     每条带平台标签（label），按「平台内归一化热度」跨平台混合排序。任一平台失败不影响其它。"""
@@ -1549,6 +1663,11 @@ def _parse_hot():
         for i, it in enumerate(group, 1):
             it["score"] = (n - i + 1) / n
     parts.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    # 【2026-10-09 用户要求「热榜必须有来源出处」】在**唯一的出口**统一补 source 字段，
+    # 国内热榜 / 国际热榜（国际热榜里来自国内综合源的那批也走这里）一次覆盖。
+    for it in parts:
+        if not it.get("source"):
+            it["source"] = _hot_source_of(it.get("label"))
     return parts
 def _parse_mefcl(src):
     """mefcl.com（用户投稿站点）：站方用 ge_js_validator 的 JS cookie 校验来访者身份。
@@ -1718,7 +1837,7 @@ def _parse_thepaper(src):
             out.append({
                 "id": hashlib.md5(("thepaper-" + str(cid)).encode("utf-8")).hexdigest()[:12],
                 "region": "cn", "channel": "cn-thepaper", "label": "澎湃新闻",
-                "cls": "要闻", "title": title, "desc": _clean(it.get("subTitle") or "")[:200],
+                "cls": "头条", "title": title, "desc": _clean(it.get("subTitle") or "")[:200],
                 "link": f"https://www.thepaper.cn/newsDetail_forward_{cid}",
                 "image": pic, "published": ts, "heat": heat, "translated": False,
             })
@@ -1811,7 +1930,7 @@ def _drop_shared_images(items):
 # 用户要求两条新规矩：
 #   1) 所有板块必须是「当天的」
 #   2) 每条新闻必须有高清大图，没图的就不要上
-# 这两条和「红星/凤凰必须进要闻」是冲突的——热榜那三家本身一条图都没有。
+# 这两条和「红星/凤凰必须进头条」是冲突的——热榜那三家本身一条图都没有。
 # 解决办法就是下面的 _fill_missing_images：去文章页把图补回来，补不到的才丢。
 
 # 列表页只给缩略图、必须去正文页取大图的源（mefcl 的列表图固定 220x150，必糊）
@@ -1823,7 +1942,7 @@ MIN_IMG_EXEMPT_CHANNELS = {"cn-mefcl"}
 # 需要去文章页「取发布时间」的源（它们的图已经有了，只是为了时间才抓一次）
 # 只为「取发布时间」才抓文章页的源。目前**为空** ——
 # 曾经放过网易娱乐，但它的首页是网易号泛频道推荐流（每次请求内容都不同，
-# 混着汽车/养生/育儿/社会），加娱乐关键词过滤后 40 条只剩 3 条、还有 2 条不是娱乐，
+# 混着汽车/养生/育儿等泛频道内容），加娱乐关键词过滤后 40 条只剩 3 条、还有 2 条不是娱乐，
 # 得不偿失，用户 2026-10-07 决定移除。机制保留，以后有需要再往里加。
 TIME_FIX_CHANNELS = set()
 
@@ -1838,7 +1957,7 @@ def _select_fresh(items, region):
     """按栏目收口时效，**一律按时间倒序**（最新鲜的永远在最上面）。
 
     用户的几条要求互相冲突，这是权衡后的方案（每条都在代码里标了出处）：
-      · 「常看常新、绝不看旧新闻」→ **新闻类（要闻/热榜）严格当天**；
+      · 「常看常新、绝不看旧新闻」→ **新闻类（头条/热榜）严格当天**；
         热榜给 24 小时（否则澎湃这类更新慢的榜单会整个消失）
       · 「每个栏目必须有三个以上的网站，要不然太单一」+「软件栏目去哪里了」
         → **垂类（科技/软件/娱乐）按 CLS_MAX_AGE_HOURS 放几天**。
@@ -1875,6 +1994,136 @@ def _select_fresh(items, region):
     _txt = " ".join(f"{c}{n}条/{len(s)}家" for c, (n, s) in sorted(_stat.items()))
     print(f"[ok] {region}: 时效收口 {len(kept)} 条（丢掉 {dropped} 条）| {_txt}")
     return kept
+
+
+# ============ 【2026-10-09 用户点名的「财经不能错栏」】 ============
+# 用户原话：「财经类新闻一定要区别化类，不能错放栏目」，并逐条点名了必须落「财经」的词：
+#   股市 / 基金 / ETF / 央行 / 汇率 / 利率 / 楼市 / 财报 / IPO / 关税 / 贸易 / 大宗商品 / 黄金 / 油价。
+#
+# 改前实测（2026-10-09 15:4x，logs\气泡与栏目定稿-20261009.md 有完整清单）：
+#   国内栏 4 条**该进财经却被判成「头条」**——界面 2 条（标题带 ETF 代码）、
+#   澎湃 2 条（标题带 A股/沪指）。根因是「来源自带 cls」这一处说了算：
+#   界面 / 澎湃 这两家是「头条」栏目源，它们的财经稿自然全落到头条，
+#   而**站方栏目映射（articleSection）只用于国内/国际分流、压根不参与栏目命名**，
+#   「时效规则」（CLS_MAX_AGE_HOURS）只管存留时长 —— 三处各管一段、谁也不管"内容该属于哪一栏"，
+#   这就是错栏的真正来源。
+#
+# 现在的修法（只加一条"内容兜底"，不动另外两处）：
+#   · 来源自带 cls 仍然是**第一权威**，不被本函数改动（华尔街见闻/中新网·财经/CGTN商业的条目原样保留）；
+#   · 只有落在**话题栏目**里、而标题明确是财经的条目才改判成「财经」；
+#   · 「热榜」**不改**：它是"平台榜单"这一维度，不是话题栏目，改了反而破坏榜单完整性，
+#     而且热榜条目在气泡/界面上都带平台出处（source），不会被误读成财经栏目；
+#   · 反向保护：只有命中**强财经特征词**才改判，避免把泛新闻硬塞进财经
+#     （用户明确要求"不能反向把泛新闻塞进财经"）。实测改判后财经条目标题 100% 命中财经词。
+#   · 时效一致性：财经在 CLS_MAX_AGE_HOURS 里**没有条目**（跟头条一样按"当天/24h"收口），
+#     所以本函数放在 _select_fresh **之前**调用 —— 科技(96h)条目若因改判变成财经，
+#     会按财经的"当天"窗口重新收口，不会出现"前天的股市稿按科技窗口混进来"。
+FINANCE_TITLE_KEYWORDS = (
+    # —— 用户逐条点名的 ——
+    "股市", "股票", "基金", "ETF", "央行", "汇率", "利率", "房贷利率", "降息", "加息", "降准",
+    "楼市", "房价", "房地产", "财报", "IPO", "关税", "贸易", "大宗商品", "金价", "黄金价格",
+    "油价", "原油",
+    # —— 同类强特征（用户口径的等价扩展，都是"只可能出现在财经稿里"的词）——
+    "A股", "港股", "美股", "沪指", "深证成指", "创业板指", "科创50", "北证50", "涨停", "跌停",
+    "券商", "债券", "国债", "美债", "收益率", "期货", "期货市场", "证监会", "交易所", "上市公司",
+    "市值", "股价", "回购", "增持", "减持", "北向资金", "市盈率", "美联储", "彭博", "债券市场",
+    "收涨", "收跌", "涨超", "跌超", "高开", "低开", "收盘", "开盘", "盘中",
+)
+# 命中上面这些词、但明显不是财经的用法（防止"黄金周""新机上市"这类误判）。
+FINANCE_TITLE_SKIP = (
+    "黄金周", "黄金档", "黄金时段", "黄金比例", "黄金分割", "黄金联赛", "黄金周假期",
+    "新车上市", "上市新车", "手机上市", "游戏上市", "影片上映", "新机上市",
+)
+_FINANCE_RX = re.compile("|".join(re.escape(k) for k in FINANCE_TITLE_KEYWORDS))
+# 允许被改判的栏目：话题栏目。热榜（榜单维度）与体育（国际）不在内，财经本身也不用改。
+FINANCE_FIXABLE_CLS = {"头条", "科技", "软件", "娱乐", "体育"}   # 「体育」只在国际频道存在
+
+
+def _finance_title_hit(title):
+    """标题是不是"强财经"：命中强特征词，且不属于已知的非财经用法。"""
+    t = title or ""
+    if not t or not _FINANCE_RX.search(t):
+        return ""
+    for bad in FINANCE_TITLE_SKIP:
+        if bad in t:
+            return ""
+    return _FINANCE_RX.search(t).group(0)
+
+
+# ============ 【2026-10-09 用户要求】国际·体育只留"国际赛事" ============
+# 用户原话：「国际，体育栏目里混着国内体育新闻」（说的是国际频道，不是国内频道）。
+# 根因：国际频道用的 `新华网·体育`（news.cn/sports）本身是**国内站**，源里中超/CBA/全运会/人物稿与
+# 国际赛事混着；CGTN 体育是国际台（中国国际电视台），不做过滤。
+# 判据（两道）：
+#   ① 标题命中"纯国内赛事"词 → 直接剔除（中超/中甲/CBA/全运会/全国锦标赛/乒超…）；
+#   ② 标题**看不出任何国际信号**（奥运/世锦赛/世界杯/公开赛/世界/国际/NBA/ATP/国家名…）
+#      → 也剔除（人物稿/专栏这类"非国际赛事"的内容多落在这里）。
+# 宁可少几条，也不让非国际赛事混进国际栏（用户明确说"国内的体育不值得看"）。
+_INTL_SPORT_DOM_RX = re.compile(
+    r"中超|中甲|中乙|中冠|足协杯|CBA|WCBA|全运会|全国锦标赛|全国冠军赛|全国联赛|"
+    r"乒超|排超|羽超|象甲|省运会|市运会|青训|中职篮|国内联赛|中国足球协会超级")
+_INTL_SPORT_INT_RX = re.compile(
+    r"奥运|冬奥|残奥|世锦赛|世界杯|亚洲杯|亚运会|欧洲杯|欧冠|欧联|亚冠|世预赛|"
+    r"大满贯|公开赛|大奖赛|巡回赛|中网|WTT|大冬会|世界|国际|全球|"
+    r"NBA|WNBA|ATP|WTA|F1|UFC|MLB|NHL|英超|西甲|意甲|德甲|法甲|"
+    r"英格兰|苏格兰|捷克|西班牙|德国|法国|意大利|巴西|阿根廷|葡萄牙|荷兰|比利时|"
+    r"美国|日本|韩国|俄罗斯|澳大利亚|匈牙利|塞尔维亚|波兰|瑞士|瑞典|挪威|丹麦|"
+    r"焦科维奇|莫雷加德|凯恩|队史")
+
+
+# 【2026-10-09】国际频道的娱乐/文化只留国际题材：标题是国内地标/国产/卫视这类，
+# 又没有国际信号（奥斯卡/戛纳/海外/全球…）的，不进国际栏（用户：国际娱乐里还有国内新闻）。
+# 中英文双语：CGTN 这类**英文源**的标题是英文（翻译在后面才做），只写中文词会漏判。
+_INTL_ENT_DOM_RX = re.compile(
+    r"上海|北京|广州|深圳|成都|杭州|南京|武汉|西安|重庆|天津|瑞金|延安|井冈山|"
+    r"毛泽东|习近平|故宫|长城|央视|卫视|国产|华语|内地|中国|国庆|春节|中秋|"
+    r"\bChina\b|\bChinese\b|Shanghai|Beijing|Ruijin|\bMao\b|Hainan|Guangzhou|Shenzhen|"
+    r"Chengdu|Hangzhou|Nanjing|Xi'?an|Chongqing|Tianjin|National Day|domestic|\bCPC\b",
+    re.I)
+_INTL_ENT_INT_RX = re.compile(
+    r"奥斯卡|戛纳|柏林|威尼斯|好莱坞|海外|全球|世界|国际|欧洲|美洲|非洲|亚洲|"
+    r"希腊|法国|英国|美国|日本|韩国|意大利|西班牙|德国|俄罗斯|米兰|巴黎|纽约|伦敦|东京|"
+    r"时装周|巡演|首映|票房|"
+    r"Oscar|Cannes|Berlin|Venice|Hollywood|overseas|global|world|Europe|Asia|Africa|"
+    r"America|Paris|Milan|New York|London|Tokyo|Greece|France|Italy|Spain|Germany|Russia",
+    re.I)
+_INTL_ENT_CLS = ("娱乐", "文化")
+
+
+def _drop_domestic_ent(it):
+    """国际栏里这条娱乐/文化是不是"国内题材"？是就丢掉（返回 True）。"""
+    if (it.get("cls") or "") not in _INTL_ENT_CLS:
+        return False
+    ti = it.get("title") or ""
+    return bool(_INTL_ENT_DOM_RX.search(ti)) and not _INTL_ENT_INT_RX.search(ti)
+
+
+def _fix_finance_cls(items, region=""):
+    """把"内容明显是财经、栏目却挂在头条/科技/娱乐…"的条目改判到「财经」。
+
+    就地修改 items（dict 是共享引用，PRELOAD / PRELOAD_ALL 会同时看到修正后的结果），
+    返回改判条数；日志里逐条打印「原栏目 → 财经 + 标题」，方便发版前自检核对。
+    """
+    fixed = []
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        cls = (it.get("cls") or "").strip()
+        if cls not in FINANCE_FIXABLE_CLS:
+            continue
+        hit = _finance_title_hit(it.get("title"))
+        if not hit:
+            continue
+        it["cls"] = "财经"
+        it["cls_fixed_from"] = cls          # 留痕：前端/自检都能看出这条被改判过
+        fixed.append((cls, hit, it.get("title") or ""))
+    if fixed:
+        print("[ok] %s: 财经错栏纠正 %d 条（%s）"
+              % (region or "-", len(fixed),
+                 "、".join("%s→财经(%s)" % (c, h) for c, h, _ in fixed[:6])))
+        for c, h, t in fixed:
+            print("     · [%s→财经]（命中「%s」）%s" % (c, h, t[:56]))
+    return len(fixed)
 
 
 _OG_RE = re.compile(
@@ -2066,7 +2315,7 @@ def _article_meta(url, timeout=8):
                 img = u
     ts = _parse_article_time(txt)
     # 【2026-10-07】再顺手读**站方自己的栏目分类**：凤凰文章页 JSON-LD 里有
-    # "articleSection":"国际" / "社会" / "军事"…，用来判定国内/国际比关键词黑名单可靠得多
+    # "articleSection":"国际" / "军事" / "台湾"…，用来判定国内/国际比关键词黑名单可靠得多
     #（黑名单必漏：实测「乌征兵人员将1岁幼儿父亲沿地拖行」标题里没有"乌克兰"三个字）。
     sec = ""
     _sm = re.search(r'"articleSection"\s*:\s*"([^"]{1,12})"', txt)
@@ -2112,7 +2361,7 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14, force_all=Fals
 
     def needs(it):
         # force_all：热榜必须**每条都抓一次文章页** —— 不是为图，是为了读站方
-        # JSON-LD 里的 articleSection（"国际"/"社会"/"军事"…），用来判定国内/国际。
+        # JSON-LD 里的 articleSection（"国际"/"军事"/"台湾"…），用来判定国内/国际。
         # 凤凰热榜自带缩略图，不强制抓的话这些条目永远不会被访问到，也就拿不到
         # 栏目分类（实测 section 全空 → 只能退回关键词黑名单 → 必漏，比如
         # 「乌征兵人员将1岁幼儿父亲沿地拖行」标题里没有"乌克兰"三个字）。
@@ -2228,7 +2477,7 @@ def _collect(region):
         items.append(it)
     items = _drop_shared_images(items)
     if region != "cn":
-        # 【2026-10-07】接收国内板块剔出来的国际新闻（国内「要闻」里的国际内容）。
+        # 【2026-10-07】接收国内板块剔出来的国际新闻（国内「头条」里的国际内容）。
         # 国内先抓（见 _warmup 顺序调整），所以这里能拿到；拿不到就下一轮补。
         _spill = _spill_from_cn()
         if _spill:
@@ -2255,7 +2504,7 @@ def _collect(region):
                      or it.get("channel") in BIG_IMAGE_CHANNELS
                      or (it.get("channel") in TIME_FIX_CHANNELS and not it.get("published"))]
         if _needmeta:
-            # 【2026-10-09 换源】名额 80 → 96：新增的中新网·财经/体育/社会三个源
+            # 【2026-10-09 换源】名额 80 → 96：新增的中新网·财经这类不带图的源
             # 每源最多 24 条且都不带图，加上界面/华尔街见闻/少数派/开源中国原有的缺图条目，
             # 80 个名额会被占满。名额内部按来源轮流分配（_round_robin_by_channel），
             # 所以这个数字只是上限，不会让某一家独占。
@@ -2279,15 +2528,15 @@ def _collect(region):
             hot = [h for h in hot if h["title"] not in seen_t]
             if hot:
                 print(f"[ok] {region}: 合并实时热点 {len(hot)} 条")
-            # 去「割裂」：把 红星/凤凰 的实时热点也并入「要闻」栏目（与热榜共享同一批内容），
-            # 否则要闻只有界面+澎湃两家，红星/凤凰被锁死在热榜、永不进要闻。
-            # 各取前 10 条（按热榜百分位排名），避免淹没要闻里界面/澎湃的常驻源。
+            # 去「割裂」：把 红星/凤凰 的实时热点也并入「头条」栏目（与热榜共享同一批内容），
+            # 否则「头条」只有界面+澎湃两家，红星/凤凰被锁死在热榜、永不进头条。
+            # 各取前 10 条（按热榜百分位排名），避免淹没头条里界面/澎湃的常驻源。
             for lbl in ("红星新闻", "凤凰网"):
                 cnt = 0
                 for h in hot:
                     if h.get("label") == lbl:
                         d = dict(h)
-                        d["cls"] = "要闻"
+                        d["cls"] = "头条"
                         cn_only.append(d)
                         cnt += 1
                         if cnt >= 10:
@@ -2299,11 +2548,15 @@ def _collect(region):
         # 直接沿用它的顺序即可（rank 是平台内名次，跨平台无可比性）。
         cn_only.sort(key=lambda x: x["published"], reverse=True)
         _merged_all = list(hot) + cn_only
+        # 【2026-10-09 用户点名「财经类新闻一定要区别化类，不能错放栏目」】
+        # **放在 PRELOAD_ALL 之前**：搜索池与列表用同一份已纠正的分类，不会出现
+        # 「列表里是财经、搜出来变头条」这种自相矛盾。见 _fix_finance_cls 的三处一致性说明。
+        _fix_finance_cls(_merged_all, region)
         PRELOAD_ALL[region] = _merged_all
-        # 用户要求：国内「要闻」里的国际新闻全部移到国际板块
+        # 用户要求：国内「头条」里的国际新闻全部移到国际板块
         _dom, _intl = _split_cn_scope(_merged_all)
         if _intl:
-            print(f"[ok] {region}: 要闻里剔出 {len(_intl)} 条国际新闻 → 转给国际板块")
+            print(f"[ok] {region}: 头条里剔出 {len(_intl)} 条国际新闻 → 转给国际板块")
         return _select_fresh(_dom, region)
     items.sort(key=lambda x: x["published"], reverse=True)
 
@@ -2337,6 +2590,7 @@ def _collect(region):
         items = [it for it in items if it.get("image")]
         print(f"[ok] {region}: 补图后剔除无图 {before - len(items)} 条，剩 {len(items)} 条"
               f"（低质图后台异步剔除）")
+    _fix_finance_cls(hot + items, region)
     PRELOAD_ALL[region] = hot + items
     _note_item_hosts(hot + items)  # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
     return _select_fresh(hot + items, region)
@@ -2728,10 +2982,20 @@ TRAY = _Tray()
 #   所以这里自绘一个置顶小窗：不经过通知中心，关掉通知也一定看得见。
 #   点击气泡 → 打开应用；9 秒后自动消失；多条通知排队依次显示。
 BALLOON_W, BALLOON_H = 400, 118
-# 【2026-10-07 用户要求「三行不过瘾，显示六行，间隔延长两秒」】
-# 停留 5200 → 7200 毫秒；一组 3 条 → 6 条。
-BALLOON_PER_ITEM_MS = 7200   # 每条新闻停留多久（毫秒）
-BALLOON_PLAY_COUNT = 6       # 一条气泡里滚动播放几条
+# 【2026-10-07 用户要求「三行不过瘾，显示六行，间隔延长两秒」】停留 5200 → 7200 毫秒。
+# 【2026-10-09 用户要求「气泡推送新闻还是太少，增加 10 组新闻」】一组 3 条 → 6 条 → **10 条**。
+#   停留时间重新定档 7200 → 5600 毫秒，依据：
+#     · 用户此前明确偏好「更长」，原话「间隔延长两秒」，所以**不取 3 秒那种**；
+#     · 10 条 × 7.2 秒 = 72 秒一组，实测（真机 125% 缩放、400x118 卡片）太长：
+#       用户多半在播到第 4~5 条时就点开别的窗口了，后面的栏目等于没播；
+#     · 需求书给的建议区间就是 5200~6000 毫秒（一组 52~60 秒）；
+#     · 气泡正文最多两行、一行约 22 个汉字，实测读完一条（含抬头栏目行）需要 4.5~5.5 秒，
+#       5600 毫秒正好卡在「读得完」与「不拖沓」之间，一组 56 秒，比原来的 6 条 ×7.2=43 秒
+#       只长 13 秒，却多播 4 条、多覆盖 3 个栏目。
+BALLOON_PER_ITEM_MS = 5600   # 每条新闻停留多久（毫秒）；一组 10 条 ≈ 56 秒
+BALLOON_PLAY_COUNT = 10      # 一条气泡里滚动播放几条（用户要求「增加 10 组新闻」）
+# 气泡里「头条」那一行的前缀：自绘气泡会据此把它画成红字加粗 + 红色强调条（见 _wndproc 的 WM_PAINT）。
+BALLOON_HEADLINE_TAG = "【头条】"
 
 
 class _Balloon:
@@ -2898,12 +3162,25 @@ class _Balloon:
                 u.GetClientRect(hwnd, ctypes.byref(rc))
                 title, text, warn = self.cur[0], self.cur[1], self.cur[2]
                 s = self.scale
+                # 【2026-10-09 用户要求「头条要有醒目标识，一眼看出是头条」】
+                # 自绘气泡是自己画的，所以头条那一屏整体换一套配色：
+                #   浅红底 + 红色强调条 + 更大的红字标题（其余条目保持白底/灰字）。
+                # 判据是标题前缀（BALLOON_HEADLINE_TAG，由 _balloon_head 生成），
+                # 不依赖元组长度变化，_show_toast_list 的 3/4 元组兼容性不受影响。
+                _head = (title or "").startswith(BALLOON_HEADLINE_TAG)
                 # 卡片底色：明快浅色（跟程序网页风格一致，不用黑底）。
-                # 大事样式用暖白底 + 橙条区分，一眼能看出"这条不一样"。
-                u.FillRect(hdc, ctypes.byref(rc), self.br_bg_warn if warn else self.br_bg)
+                # 大事样式用暖白底 + 橙条区分，一眼能看出"这条不一样"；头条另一套（浅红）。
+                if _head:
+                    u.FillRect(hdc, ctypes.byref(rc), self.br_bg_head)
+                else:
+                    u.FillRect(hdc, ctypes.byref(rc), self.br_bg_warn if warn else self.br_bg)
                 # 左侧彩色强调条
-                bar = self.RECT(0, 0, int(5 * s), rc.bottom)
-                u.FillRect(hdc, ctypes.byref(bar), self.br_warn if warn else self.br_info)
+                _barw = int(7 * s) if _head else int(5 * s)
+                bar = self.RECT(0, 0, _barw, rc.bottom)
+                if _head:
+                    u.FillRect(hdc, ctypes.byref(bar), self.br_head)
+                else:
+                    u.FillRect(hdc, ctypes.byref(bar), self.br_warn if warn else self.br_info)
                 # 1px 浅灰圆角描边，让卡片在浅色桌面上有边界感
                 op = g.SelectObject(hdc, self.pen_border)
                 ob = g.SelectObject(hdc, self.null_brush)
@@ -2918,12 +3195,16 @@ class _Balloon:
                     u.DrawIconEx(hdc, int(19 * s), int(17 * s), self.hicon16, _ic, _ic, 0, None, 3)
                     x0 = int(46 * s)
                 right = rc.right - int(16 * s)
-                # 标题（深色、加粗）
-                g.SelectObject(hdc, self.font_title)
-                g.SetTextColor(hdc, 0x2C201A)      # #1A202C
+                # 标题（深色、加粗；头条用红色 + 更大的字号，并且下方补一条红色下划线）
+                g.SelectObject(hdc, self.font_head if _head else self.font_title)
+                g.SetTextColor(hdc, 0x1E1EC8 if _head else 0x2C201A)   # 头条 #C81E1E / 常规 #1A202C
                 t = self.RECT(x0, int(13 * s), right, int(41 * s))
                 u.DrawTextW(hdc, title, -1, ctypes.byref(t),
                             0x20 | 0x4 | 0x8000 | 0x800)     # SINGLELINE|VCENTER|ELLIPSIS|NOPREFIX
+                if _head:
+                    # 标题行下面画一条 2px 红线：远看也能一眼认出「这条是头条」
+                    u.FillRect(hdc, ctypes.byref(self.RECT(x0, int(41 * s), right, int(43 * s))),
+                               self.br_head)
                 # 正文（中灰、加粗）
                 g.SelectObject(hdc, self.font_msg)
                 g.SetTextColor(hdc, 0x68554A)      # #4A5568
@@ -3142,6 +3423,9 @@ class _Balloon:
             self.br_bg_warn = g.CreateSolidBrush(0xF1F8FF)   # 暖白      #FFF8F1
             self.br_info = g.CreateSolidBrush(0xB06C2B)      # 蓝        #2B6CB0
             self.br_warn = g.CreateSolidBrush(0x206BDD)      # 橙        #DD6B20
+            # 【2026-10-09 头条醒目样式】浅红底 #FFF1F0 + 正红强调条 #E53E3E
+            self.br_bg_head = g.CreateSolidBrush(0xF0F1FF)   # 浅红      #FFF1F0
+            self.br_head = g.CreateSolidBrush(0x3E3EE5)      # 正红      #E53E3E
             # 【2026-10-07 用户要求「鼠标指向显示打开/退出」】两个胶囊按钮的底色
             self.br_btn_open = g.CreateSolidBrush(0xB06C2B)   # 蓝 #2B6CB0
             self.br_btn_close = g.CreateSolidBrush(0xF0E8E2)  # 浅灰 #E2E8F0
@@ -3152,6 +3436,9 @@ class _Balloon:
             # 原来的 iQuality=0(DEFAULT) 在缩放屏上会出现锯齿/毛刺。
             self.font_title = g.CreateFontW(-int(19 * s), 0, 0, 0, 700, 0, 0, 0,
                                             134, 5, 0, 5, 0, "Microsoft YaHei UI")
+            # 【2026-10-09】头条专用：再大一号（21 vs 19），配合红色字与红色强调条
+            self.font_head = g.CreateFontW(-int(21 * s), 0, 0, 0, 700, 0, 0, 0,
+                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
             self.font_btn = g.CreateFontW(-int(14 * s), 0, 0, 0, 700, 0, 0, 0,
                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
             self.font_msg = g.CreateFontW(-int(16 * s), 0, 0, 0, 700, 0, 0, 0,
@@ -3189,10 +3476,11 @@ BALLOON = _Balloon()
 
 
 def _show_toast_list(entries):
-    """一条气泡里滚动播放多条：entries = [(title, msg, warn), ...]。
+    """一条气泡里滚动播放多条：entries = [(title, msg, warn[, link]), ...]。
 
-    用户要求「滚动播放气泡新闻」：一组最多 BALLOON_PLAY_COUNT 条（现为 6 条），
-    每条停留 BALLOON_PER_ITEM_MS，标题尾部带 (1/3) 这样的进度。
+    用户要求「滚动播放气泡新闻」：一组最多 BALLOON_PLAY_COUNT 条（2026-10-09 起为 10 条），
+    每条停留 BALLOON_PER_ITEM_MS（5600 毫秒），标题尾部带 (3/10) 这样的进度。
+    第一行 = 这条自己的栏目（见 _balloon_head），不再有与栏目无关的固定抬头。
     """
     # 统一成 4 元组 (title, msg, warn, link)；调用方可能只给 3 个元素
     norm = []
@@ -3250,6 +3538,153 @@ def _has_cjk(s):
             return True
     return False
 
+
+# ============ 【2026-10-09 用户逐条定稿】气泡的「按栏目配额」挑选 ============
+# 用户原话：「热点新闻的气泡推送新闻还是太少！！增加 10 组新闻，涉及头条（要有醒目标识），
+#           科技，财经，娱乐等。财经类新闻一定要区别化类，不能错放栏目」
+# 以及追加要求：「气泡：不要那句固定字样，哪个栏目就是哪个栏目」。
+#
+# 规则（与需求书《气泡规格-20261009.md》第 2 条逐字对应）：
+#   · 一组 BALLOON_PLAY_COUNT=10 条；
+#   · 配额：头条 1~2、科技 ≥2、财经 ≥2、娱乐 ≥2；
+#   · 余下的名额按 软件 → 热榜 → 国际 → 其余栏目 的顺序补足；
+#   · 任何一栏当期没有条目，就用别的栏目补满 10 条（**绝不空着**）；
+#   · 同一来源默认只取一条（沿用 2026-10-07「快科技不停推送」的修复），
+#     实在凑不满才允许同源重复。
+BALLOON_CLS_QUOTA = (("头条", 2), ("科技", 2), ("财经", 2), ("娱乐", 2))
+BALLOON_FILL_ORDER = ("软件", "热榜")
+# 日志与统计时的栏目固定顺序（头条在前，其余按配额与补位顺序，最后是国际/其他兜底）
+BALLOON_CLS_ORDER = ("头条", "科技", "财经", "娱乐", "软件", "热榜", "国际", "其他")
+
+
+def _balloon_cls_key(it):
+    """气泡统计/日志用的栏目名：国际条目统一算「国际」（它们自己的栏目名另算）。"""
+    cls = (it.get("cls") or "").strip()
+    if cls:
+        return cls
+    return "国际" if it.get("region") == "intl" else "其他"
+
+
+def _is_intl_item(it):
+    return (it.get("region") or "") == "intl"
+
+
+def _balloon_head(it):
+    """气泡第一行 = **这条自己的栏目**（2026-10-09 用户要求，取代原先那句与栏目无关的固定抬头）。
+
+    三条细则：
+      · 头条 → `【头条】`（自绘气泡还会把它画成红字加粗 + 红色强调条，见 _wndproc）；
+      · 热榜 → `【热榜】<平台>热榜 第N`（用户点名「气泡里的热榜条目必须带出处」，
+        例如 `【热榜】凤凰网热榜 第4`）；
+      · 国际条目 → `国际·<栏目>`，与国内同栏目区分开（栏目名本身仍是该条的栏目）。
+    其余情况就是栏目名本身：科技 / 财经 / 娱乐 / 软件 / 要闻（仅国际）/ 体育（仅国际）。
+    """
+    cls = (it.get("cls") or "").strip()
+    # 2026-10-09 追加（用户：「气泡要显示新闻的出处」）：**每条**都要带来源站名。
+    # 取值优先 source（热榜聚合出口补的那个字段），退回 label（各源自己的站名/标签）。
+    src = (it.get("source") or "").strip() or (it.get("label") or "").strip()
+    if cls == "热榜":
+        try:
+            rk = int(it.get("rank") or 0)
+        except Exception:
+            rk = 0
+        if src and rk:
+            return f"【热榜】{src} 第{rk}"
+        if src:
+            return f"【热榜】{src}"
+        return "【热榜】"
+    if not cls:
+        cls = "要闻" if _is_intl_item(it) else "热点"
+    if cls == "头条":
+        base = BALLOON_HEADLINE_TAG
+    else:
+        base = f"国际·{cls}" if _is_intl_item(it) else cls
+    return (base + " · " + src) if src else base
+
+
+def _balloon_entry(it):
+    """把一条新闻转成气泡条目 (第一行, 正文, warn, 链接)。"""
+    # 国际条目优先用译文（_translate_items 是就地写回 title 的，英文留在 title_en）
+    title = it.get("title") or ""
+    if _is_intl_item(it) and not it.get("translated") and it.get("title_en"):
+        title = it.get("title_en") or title
+    return (_balloon_head(it), title[:72], False, it.get("link") or "")
+
+
+def _balloon_cls_tally(picked):
+    """按栏目报数，形如 `头条2/科技2/财经2/娱乐2/软件1/热榜1`（用户要求把日志改成按栏目报数）。"""
+    cnt = {}
+    for it in picked:
+        k = _balloon_cls_key(it)
+        cnt[k] = cnt.get(k, 0) + 1
+    order = [c for c in BALLOON_CLS_ORDER if cnt.get(c)]
+    order += [c for c in cnt if c not in BALLOON_CLS_ORDER]
+    return "/".join(f"{c}{cnt[c]}" for c in order)
+
+
+def _pick_balloon_items(fresh):
+    """按栏目配额挑一组气泡条目（纯函数：只读 fresh，不改任何外部状态，便于单测）。
+
+    这是本次「气泡扩容 + 栏目覆盖」的核心：原来只按 国际/国内/热榜 三个板块平分，
+    10 个席位里 科技/财经/娱乐 常常一条都轮不到（用户反馈「财经、娱乐看不到」）。
+    """
+    picked, used, labels = [], set(), []
+
+    def take(cands, maxn=1, no_repeat_src=True):
+        for it in cands:
+            if len(picked) >= BALLOON_PLAY_COUNT or maxn <= 0:
+                return
+            if id(it) in used:
+                continue
+            _lb = it.get("label") or ""
+            if no_repeat_src and _lb and _lb in labels:
+                continue
+            used.add(id(it))
+            if _lb:
+                labels.append(_lb)
+            picked.append(it)
+            maxn -= 1
+
+    def by_cls(name):
+        return [x for x in fresh if (x.get("cls") or "") == name]
+
+    def sort_key(x):
+        return x.get("published", 0)
+
+    # ① 按配额先占位：头条 / 科技 / 财经 / 娱乐
+    for _cls, _n in BALLOON_CLS_QUOTA:
+        if len(picked) >= BALLOON_PLAY_COUNT:
+            break
+        take(sorted(by_cls(_cls), key=sort_key, reverse=True), _n)
+    # ② 补位第一轮：软件 → 热榜 → 国际，**每个候选栏目最多 1 条**。
+    #    为什么限制 1 条：这样「所有栏目都有货」时日志正好是用户给的那一行
+    #      滚动播放 10 条（头条2/科技2/财经2/娱乐2/软件1/热榜1）
+    #    （配额 8 条 + 软件 1 + 热榜 1 = 10）；哪一栏当期没货，名额就顺着往下走。
+    for _cls in BALLOON_FILL_ORDER:
+        if len(picked) >= BALLOON_PLAY_COUNT:
+            break
+        take(sorted(by_cls(_cls), key=sort_key, reverse=True), 1)
+    if len(picked) < BALLOON_PLAY_COUNT:
+        take(sorted([x for x in fresh if _is_intl_item(x)], key=sort_key, reverse=True), 1)
+    # ③ 还差就接着补：软件 / 热榜不限 1 条 → 全部条目按时间 → 最后放开"同来源只取一条"凑满
+    for _cls in BALLOON_FILL_ORDER:
+        if len(picked) >= BALLOON_PLAY_COUNT:
+            break
+        take(sorted(by_cls(_cls), key=sort_key, reverse=True),
+             BALLOON_PLAY_COUNT - len(picked))
+    if len(picked) < BALLOON_PLAY_COUNT:
+        take(sorted([x for x in fresh if _is_intl_item(x)], key=sort_key, reverse=True),
+             BALLOON_PLAY_COUNT - len(picked))
+    if len(picked) < BALLOON_PLAY_COUNT:
+        take(sorted(fresh, key=sort_key, reverse=True),
+             BALLOON_PLAY_COUNT - len(picked))
+    # ④ 某栏目当期没货 / 同源被去重挡住 → 放开"同来源只取一条"再补满 10 条
+    if len(picked) < BALLOON_PLAY_COUNT:
+        take(sorted(fresh, key=sort_key, reverse=True),
+             BALLOON_PLAY_COUNT - len(picked), no_repeat_src=False)
+    return picked
+
+
 def _notify_news(items):
     """刷新后调用：对比基线找出新增条目，若有则弹一条「新增 N 条」右下角通知。
     首次调用只建立基线不弹；节流窗口内不重复弹。"""
@@ -3294,72 +3729,14 @@ def _notify_news(items):
         pass
     if not fresh:
         return
-    # 【2026-10-07 用户要求：气泡提醒还要包含国际版块】
-    # 不能简单「按时间取最新 3 条」—— 国内更新密集，会把 3 个位置全占掉，国际永远轮不到。
-    # 改成按版块分配名额：国际先占 1 席、国内占 1 席、热榜占 1 席，
-    # 还有空位才按时间补。这样一轮气泡里必定能看见国际。
-    picked, used = [], set()
-
-    _labels = []          # 已经选中的来源，用来避免"同一家刷屏"
-
-    def take(cands, maxn=1, no_repeat_src=True):
-        """从 cands 里取最多 maxn 条。
-
-        【2026-10-07 用户反馈「快科技不停推送」】默认**同一来源只取一条**：
-        快科技这类更新极勤的站点原来会把 6 个位置全占掉，别的源永远轮不到。
-        实在没有别的来源可选时才允许重复（第二遍 no_repeat_src=False）。
-        """
-        for it in cands:
-            if len(picked) >= BALLOON_PLAY_COUNT or maxn <= 0:
-                return
-            if id(it) in used:
-                continue
-            _lb = it.get("label") or ""
-            if no_repeat_src and _lb and _lb in _labels:
-                continue
-            used.add(id(it))
-            if _lb:
-                _labels.append(_lb)
-            picked.append(it)
-            maxn -= 1
-
-    sort_key = lambda x: x.get("published", 0)          # noqa: E731
-    # 【2026-10-07 用户反馈「气泡轮播国际新闻都是英文的，我怎么看得懂」】
-    # 国际板块里混着两类：①国内媒体报的国际新闻（澎湃/凤凰/红星，**中文**）；
-    # ②CGTN 这类对外报道（英文，翻译额度用完时就是英文原文）。
-    # 【2026-10-09 换源】境外源已全部删除，②只剩 CGTN 一家，英文条目大幅减少。
-    # 气泡优先推第①类 —— 既是国际大事，又是中文，用户能直接看懂。
-    _intl_all = sorted([it for it in fresh if it.get("region") == "intl"],
-                       key=sort_key, reverse=True)
-    _is_cn_src = lambda x: str(x.get("channel") or "").startswith("cn-intl") or bool(x.get("translated"))  # noqa: E731
-    intl = [x for x in _intl_all if _is_cn_src(x)] + [x for x in _intl_all if not _is_cn_src(x)]
-    cn = sorted([it for it in fresh if it.get("region") == "cn"
-                 and it.get("cls") != "热榜"], key=sort_key, reverse=True)
-    hot = sorted([it for it in fresh if it.get("cls") == "热榜"], key=sort_key, reverse=True)
-    # 【2026-10-07 用户要求「气泡也要有国际板块的新闻播报」+「快科技不停推送」】
-    # 原来国际只保证 1 席、剩下 5 席按时间补 —— 结果被更新最勤的国内源刷屏。
-    # 现在**按板块平分**（6 席 → 国际 2 / 国内 2 / 热榜 2），并且同来源只取一条。
-    _quota = max(1, BALLOON_PLAY_COUNT // 3)
-    take(intl, _quota)     # 国际 2 席
-    take(cn, _quota)       # 国内 2 席
-    take(hot, _quota)      # 热榜 2 席
-    # 还有空位：先补没露过面的板块/来源，最后才允许同来源重复
-    if len(picked) < BALLOON_PLAY_COUNT:
-        take(sorted(fresh, key=sort_key, reverse=True),
-             BALLOON_PLAY_COUNT - len(picked), no_repeat_src=True)
-    if len(picked) < BALLOON_PLAY_COUNT:
-        take(sorted(fresh, key=sort_key, reverse=True),
-             BALLOON_PLAY_COUNT - len(picked), no_repeat_src=False)
-    # 用户要求「滚动播放气泡新闻，三条左右」：一条气泡里依次滚这几条
-    entries = []
-    for it in picked[:BALLOON_PLAY_COUNT]:
-        tag = "国际" if it.get("region") == "intl" else "国内"
-        label = it.get("label") or it.get("cls") or "热点"
-        # 国际条目优先用译文（_translate_items 是就地写回 title 的，英文留在 title_en）
-        title = it.get("title") or ""
-        if it.get("region") == "intl" and not it.get("translated") and it.get("title_en"):
-            title = it.get("title_en") or title
-        entries.append((f"热点新闻更新 · {tag} · {label}", title[:72], False, it.get("link") or ""))
+    # 【2026-10-09 用户要求「增加 10 组新闻」「哪个栏目就是哪个栏目」】
+    # 挑选逻辑整段换成 _pick_balloon_items（按栏目配额：头条/科技/财经/娱乐 + 软件/热榜/国际补足），
+    # 第一行改成这条自己的栏目名（_balloon_head），热榜那条还带平台出处。
+    # 旧逻辑（国际/国内/热榜 三个板块平分 6 席）已删除：那样 10 席里科技/财经/娱乐 常常一条都轮不到。
+    picked = _pick_balloon_items(fresh)
+    if not picked:
+        return
+    entries = [_balloon_entry(it) for it in picked[:BALLOON_PLAY_COUNT]]
     if len(added) > len(entries):
         _e = entries[-1]
         entries[-1] = (_e[0], _e[1] + f"　（本次共新增 {len(added)} 条）") + tuple(_e[2:])
@@ -3371,11 +3748,10 @@ def _notify_news(items):
             _BALLOON_SHOWN.clear()
     except Exception:
         pass
-    print("[ok] 更新提醒：滚动播放 %d 条（国际 %d / 国内 %d / 热榜 %d）"
-          % (len(entries),
-             sum(1 for x in picked if x.get("region") == "intl"),
-             sum(1 for x in picked if x.get("region") == "cn" and x.get("cls") != "热榜"),
-             sum(1 for x in picked if x.get("cls") == "热榜")))
+    # 【2026-10-09 用户要求】日志口径改成**按栏目报数**，形如
+    #   [ok] 更新提醒：滚动播放 10 条（头条2/科技2/财经2/娱乐2/软件1/热榜1）
+    print("[ok] 更新提醒：滚动播放 %d 条（%s）"
+          % (len(entries), _balloon_cls_tally(picked)))
     _show_toast_list(entries)
 
 
@@ -3483,7 +3859,7 @@ def _tech_scope(title):
 # 【2026-10-07】国际大奖 / 国际赛事类关键词 —— 这类**优先判国际**，
 # 即使标题里同时出现「中国科学家」「中国影片」也不改判。
 # 起因：把「中国」加进国内特征词后，「诺贝尔物理学奖将揭晓，中国科学家薛其坤受关注」
-# 被锁在国内要闻/热榜里，用户反馈"国内还是有国际新闻"。
+# 被锁在国内头条/热榜里，用户反馈"国内还是有国际新闻"。
 STRONG_INTL_MARKERS = _kw("strong_intl")
 
 
@@ -3636,9 +4012,276 @@ def _parse_cri_ent(src):
     return out
 
 
+# ============ 【2026-10-09 补源·国际栏】四个「列表页自带图」的站点解析 ============
+# 用户原话：「国际、娱乐栏目新闻太少！！给国际栏多接几个自带图的源」。
+# 共同口径：**图片与时间都必须在列表页里拿到**，绝不走「正文页补图」那条路
+# （实测综合源补图命中率只有 5/24，那是本次「新闻太少」的根因）。
+# 逐条实测数据（HTTP / 耗时 / 条数 / 带图数 / 最新时间 / 图片来源字段）与
+# 「试过没用上」的清单都在 logs\国际栏增补带图源-20261009.md。
+
+# 国际在线·国际（news.cri.cn/world）的列表卡片：
+#   <div class="list-li"><div class="list-pic…"><a href="/20261009/<uuid>.html" class="aImg"><img src="…">
+#   <div class="list-title"><a href="…">标题</a></div> … <div class="list-time">2026年10月09日 14:39</div>
+# 与娱乐频道（ent.cri.cn，见 _CRI_CARD_RE）是**两套模板**：这里的时间是中文年月日+时分、
+# 卡片 class 也不同，所以单独一个正则，不混用（混用会让两个源互相解析失败）。
+_CRI_LIST_CARD_RE = re.compile(
+    r'<a[^>]+href="(/20\d{6}/[0-9a-f\-]{20,}\.html)"[^>]*class="aImg">\s*<img src="([^"]+)"'
+    r'.*?<div class="list-title">\s*<a[^>]+href="[^"]*"[^>]*>([^<]+)</a>\s*</div>'
+    r'.*?<div class="list-time">([\d年月日: ]{10,22})</div>', re.S)
+# 列表页时间格式：2026年10月09日 14:39（站方已给到分，不需要去文章页取时间）
+_CRI_LIST_TIME_FMT = "%Y年%m月%d日 %H:%M"
+
+
+def _parse_cri_world(src):
+    """国际在线·国际（news.cri.cn/world）：列表页 20 张卡片，标题 / 原图 / 精确时间一次拿全。
+
+    实测（2026-10-09）：HTTP 200 / 0.03s / 卡片 20 张 / 全部带图 / 当天分钟级更新；
+    首图抽 8 张全部达标（1920x1080、5472x3079、1440x810、1024x576…）。
+    ⚠ 卡片给的是 **256x144 缩略图**（短边 144，直接下发会被低质图门槛整条剔除），
+      按站方 URL 规则改写成原图（见 _cri_image / _CRI_THUMB_RE）。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 国际在线·国际抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)
+    max_age = (src.get("max_age_hours")
+               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
+               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    out, seen, dropped = [], set(), 0
+    for m in _CRI_LIST_CARD_RE.finditer(page):
+        path, thumb, title, ttxt = m.group(1), m.group(2), _clean(m.group(3)), m.group(4)
+        link = _norm_url(path, src["base"])
+        if not title or len(title) < 4 or not link or link in seen:
+            continue
+        try:
+            ts = int(datetime.strptime(ttxt.strip(), _CRI_LIST_TIME_FMT)
+                     .replace(tzinfo=CST).timestamp())
+        except Exception:
+            ts = 0          # 时间解析不出来就交给时效收口处理（published=0 会被丢掉，不伪造时间）
+        if ts and ts < cutoff:
+            dropped += 1
+            continue
+        img = ""
+        u = _norm_url(thumb, src["base"])
+        if u and not any(x in u.lower() for x in _IMG_JUNK):
+            img = _cri_image(u)          # 256x144 缩略图 → 原图
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": img, "published": ts, "translated": False,
+        })
+        if len(out) >= 24:
+            break
+    print(f"[ok] {src['id']}: 国际在线国际解析 {len(out)} 条"
+          f"（带图 {sum(1 for x in out if x['image'])} 条，滤除过期 {dropped} 条）")
+    return out
+
+
+# 新华网（news.cn）「推荐位」卡片模板（国际频道的体育频道在用）：
+#   <div class="column-center-item item-style1 …"><li><a href="/sports/20261009/<hash>/c.html">
+#     <div class="coxe"><div class="tpwz"><img src="20261009/<hash>/<file>.jpg" class="img_fd"></div>
+#     <div class="tpwm"><span>标题</span><p>2026-10-09 09:46:58</p></div></div></a></li></div>
+# 列表页直接给到**秒**，图片也是原图（实测 981x552 ~ 1010x568，达标）。
+# ⚠ 新华网其它频道（ent / tech / world）不是这套模板：它们的 img 只有 184~225 短边、
+#   过不了 300 的门槛（实测后**没有**接入，见日志里「试过没用上」清单），别拿这个正则去套。
+_XH_COXE_CARD_RE = re.compile(
+    r'<li><a href="(/[a-z]+/20\d{6}/[0-9a-f]+/c\.html)"[^>]*>.*?'
+    r'<div class="tpwz">\s*<img src="([^"]+)"[^>]*class="img_fd">.*?'
+    r'<div class="tpwm">\s*<span>([^<]{4,140})</span>\s*<p>([\d\-: ]{10,25})</p>', re.S)
+
+
+def _parse_xinhua_coxe(src):
+    """新华网·体育（国际频道，www.news.cn/sports）：列表页 21 张图卡，标题/原图/秒级时间齐全。
+
+    实测（2026-10-09）：HTTP 200 / 0.06~0.1s / 卡 21 张 / 全部带图 /
+    24 小时内 7 条、48 小时内 20 条 / 图 981x552~1010x568 达标。
+    内容以国际赛事为主（奥运申办、中网、世界羽联…），正对「国际板块留体育」的口径。
+    """
+    raw = _fetch(src["url"], timeout=12)
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 新华网·体育（国际频道）抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)
+    max_age = (src.get("max_age_hours")
+               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
+               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    out, seen, dropped, natl = [], set(), 0, 0
+    for m in _XH_COXE_CARD_RE.finditer(page):
+        path, imgsrc, title, ttxt = m.group(1), m.group(2), _clean(m.group(3)), m.group(4)
+        link = _norm_url(path, src["base"])
+        if not title or len(title) < 4 or not link or link in seen:
+            continue
+        try:
+            ts = int(datetime.strptime(ttxt.strip(), "%Y-%m-%d %H:%M:%S")
+                     .replace(tzinfo=CST).timestamp())
+        except Exception:
+            ts = 0
+        if ts and ts < cutoff:
+            dropped += 1
+            continue
+        # 【2026-10-09 用户要求「国际，体育栏目里混着国内体育新闻」】国际频道的体育只留国际赛事：
+        # 标题命中纯国内赛事词、或看不出任何国际信号的，**在这里就丢掉**
+        #（用户原话：国内的体育不值得看）。放在源头过滤，比在国际频道各出口补漏可靠。
+        if _INTL_SPORT_DOM_RX.search(title) or not _INTL_SPORT_INT_RX.search(title):
+            natl += 1
+            continue
+        img = _norm_url(imgsrc, src["base"]) or ""
+        if img and any(x in img.lower() for x in _IMG_JUNK):
+            img = ""
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": img, "published": ts, "translated": False,
+        })
+        if len(out) >= 24:
+            break
+    print(f"[ok] {src['id']}: 新华网·体育（国际频道）解析 {len(out)} 条"
+          f"（带图 {sum(1 for x in out if x['image'])} 条，滤除过期 {dropped} 条，滤除非国际赛事 {natl} 条）")
+    return out
+
+
+# 人民网（people.com.cn）「焦点图」卡片：<li><a href="…/n1/2026/1009/c1002-40811303.html">
+#   <img src="/NMediaFile/2026/1009/MAIN….jpg" width="660" height="370" alt="标题"></a>…
+# 图片短边实测 370~558（达标），标题直接写在 img 的 alt 里（站方两处都写了标题，alt 更短更干净）。
+_PEOPLE_CARD_RE = re.compile(
+    r'<li><a href="([^"]+?/n1/(20\d\d)/(\d{2})(\d{2})/c\d+-\d+\.html)"[^>]*>\s*'
+    r'<img src="([^"]+)"[^>]*alt="([^"]*)"', re.S)
+
+
+def _parse_people_list(src):
+    """人民网频道列表页的「焦点图」卡片（world.people.com.cn / ent.people.com.cn 同一套模板）。
+
+    ⚠ 这个列表页**只给到日期**（写在文章 URL 的 /2026/1009/ 里，没有时分），
+      所以发布时间按「该日期 00:00（东八区）」记 —— 是站方 URL 上写死的日期，不是猜的时点；
+      副作用是这些条目在「最新优先」排序里会排在有具体时分的条目之后（已写进日志备查）。
+      没有去抓正文页取时间：本次的要求是「自带图」，多抓一页就多一份失败风险，
+      而且 6 条里但凡有一条抓不到时间，那条就会被时效收口整条丢掉。
+    实测（2026-10-09）：world 200 / 0.09s / 6 张卡 / 图 660x370~996x558 全部达标；
+                        ent   200 / 0.08s / 3 张卡（其中 2 张图不达标，会被后台低质图剔除）。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 人民网列表抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)
+    max_age = (src.get("max_age_hours")
+               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
+               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    out, seen, dropped = [], set(), 0
+    for m in _PEOPLE_CARD_RE.finditer(page):
+        link, y, mo, d, imgsrc, title = (m.group(1), m.group(2), m.group(3),
+                                         m.group(4), m.group(5), _clean(m.group(6)))
+        if not link or link in seen:
+            continue
+        if not title or len(title) < 4:
+            # 少数卡片的 alt 是空的 → 退回卡片后面的标题链接（站方在同一块里又写了一遍）
+            mt = re.search(r'href="' + re.escape(link) + r'"[^>]*>([^<]{4,120})</a>', page)
+            title = _clean(mt.group(1)) if mt else ""
+            if not title:
+                continue
+        try:
+            ts = int(datetime(int(y), int(mo), int(d), tzinfo=CST).timestamp())
+        except Exception:
+            ts = 0
+        if ts and ts < cutoff:
+            dropped += 1
+            continue
+        img = _norm_url(imgsrc, src["base"]) or ""
+        if img and any(x in img.lower() for x in _IMG_JUNK):
+            img = ""
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": img, "published": ts, "translated": False,
+        })
+        if len(out) >= 24:
+            break
+    print(f"[ok] {src['id']}: 人民网列表解析 {len(out)} 条"
+          f"（带图 {sum(1 for x in out if x['image'])} 条，滤除过期 {dropped} 条）")
+    return out
+
+
+# 光明网（gmw.cn）图卡：<li><a href="2026-10/09/content_39036240.htm"><img src="https://imgworld.gmw.cn/…png"></a>
+#                         <p class="pic_title"><a href="…">标题</a></p></li>
+# 图片实测 580x320（短边 320，刚好过 300 门槛）；日期写在 href 的 2026-10/09/ 里，同样只有日。
+_GMW_CARD_RE = re.compile(
+    r'<li>\s*<a href="([^"]*?content_\d+\.htm)"[^>]*>\s*<img src="([^"]+)"[^>]*>\s*</a>\s*'
+    r'<p class="pic_title">\s*<a[^>]*>([^<]{4,120})</a>', re.S)
+
+
+def _parse_gmw_list(src):
+    """光明网·国际（world.gmw.cn）：`pic_title` 图卡，标题 + 原图在列表页里，日期看 href。
+
+    ⚠ 与人民网同样只给到日期（2026-10/09/），按当天 00:00（东八区）记，理由同上。
+    实测（2026-10-09）：200 / 0.17s / 严格图卡 4 张（10-09、10-08、09-30、09-29）/
+    图 580x320 达标 / 最新一条当天更新。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 光明网国际抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)
+    max_age = (src.get("max_age_hours")
+               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
+               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    out, seen, dropped = [], set(), 0
+    for m in _GMW_CARD_RE.finditer(page):
+        path, imgsrc, title = m.group(1), m.group(2), _clean(m.group(3))
+        link = _norm_url(path, src["base"])
+        if not title or len(title) < 4 or not link or link in seen:
+            continue
+        ts = 0
+        md = re.search(r"(20\d\d)-(\d{1,2})/(\d{1,2})/content_\d+\.htm", path)
+        if md:
+            try:
+                ts = int(datetime(int(md.group(1)), int(md.group(2)), int(md.group(3)),
+                                  tzinfo=CST).timestamp())
+            except Exception:
+                ts = 0
+        if ts and ts < cutoff:
+            dropped += 1
+            continue
+        img = _norm_url(imgsrc, src["base"]) or ""
+        if img and any(x in img.lower() for x in _IMG_JUNK):
+            img = ""
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": img, "published": ts, "translated": False,
+        })
+        if len(out) >= 24:
+            break
+    print(f"[ok] {src['id']}: 光明网国际解析 {len(out)} 条"
+          f"（带图 {sum(1 for x in out if x['image'])} 条，滤除过期 {dropped} 条）")
+    return out
+
+
 # 国内板块里要做「国内 / 国际」内容分流的栏目（用户 2026-10-07 要求）：
 #   · 热榜：原来就分流了
-#   · 要闻：「国内板块里的要闻充次着国际新闻，全部移到国际板块」
+#   · 头条（2026-10-09 按用户口径定名；定名前叫另一个名字，改名记录见 README 与
+#     logs\气泡与栏目定稿-20261009.md）：
+#     「国内板块的头条里充次着国际新闻，全部移到国际板块」
 # 科技 / 软件 / 娱乐**不做分流** —— 这两栏里的国际内容（AMD、马斯克、欧美乐坛…）
 # 本来就属于该栏目本身，分流会把它们搬空。
 # 【2026-10-07 用户再次强调】「区分国内和国际，娱乐栏目也不例外」→ 娱乐也纳入分流。
@@ -3648,7 +4291,13 @@ def _parse_cri_ent(src):
 # 「谷歌/OpenAI/马斯克/韩国散户」这些国际科技新闻全留在国内科技里。
 # 加进来之后：国际科技条目会带着 cls="科技" 转到国际板块，
 # **国际板块自动多出一个"科技"栏目**（栏目是跟着数据走的，不用另外写死）。
-CN_SPLIT_CLS = {"要闻", "热榜", "娱乐", "科技"}
+# 【2026-10-09 定稿】国内栏目 = 头条 / 科技 / 财经 / 娱乐 / 软件 / 热榜（外加国际频道的
+# 要闻 / 科技 / 财经 / 娱乐 / 体育 / 热榜 —— 上面这两项只在国际频道存在）。
+# 民生类那一栏已整栏下线，不在任何分流集合里。
+# 注意 财经 **故意不在这里**：它是本轮新补的国内栏目（华尔街见闻 / 中新网·财经），
+# 加进来会让「美股/A股」这类稿子被分流到国际频道、把国内财经栏搬空；
+# 国内财经栏要稳定供应（气泡配额要求财经 ≥2 条），所以财经条目一律留在国内。
+CN_SPLIT_CLS = {"头条", "热榜", "娱乐", "科技"}
 
 # 国内热榜里被判为国际的那批（由 _collect("hot") 填），供国际热榜并入
 _HOT_INTL_SPILL = []
@@ -3706,6 +4355,18 @@ def _split_cn_scope(items):
             d["region"] = "intl"
             d["channel"] = "cn-intl-news"     # 标明「国内媒体报的国际新闻」
             d["translated"] = True            # 国内媒体发的，本来就是中文
+            # 【2026-10-09 栏目定稿】国内「头条」转过去要落**国际频道的「要闻」**
+            # （两栏是各自频道的"综合新闻"位；不改名的话国际频道会凭空多出一栏「头条」，
+            #  而国际频道定稿只有 要闻/科技/财经/娱乐/体育/热榜 六栏）。
+            # 科技 / 娱乐 / 热榜两边的栏目名相同，原样带过去即可。
+            if d.get("cls") == "头条":
+                d["cls"] = "要闻"      # 落到国际频道的「要闻」栏（国内那一栏定稿叫「头条」）
+        # 【2026-10-09 用户要求「国际，娱乐栏目还是有国内新闻，你怎么不归纳到国内版里」】
+        # 娱乐条目**一律留在国内版**：国际在线娱乐/凤凰娱乐/新浪娱乐本来就都是国内站，
+        # 只有 CGTN 文化这类国际台的文化内容才配进国际栏。
+        if (it.get("cls") or "") == "娱乐":
+            dom.append(it)
+            continue
             intl.append(d)
         else:
             dom.append(it)
@@ -3733,7 +4394,7 @@ def _split_hot_by_scope(items):
     返回 (国内条目, 国际条目)；国际条目的 region 改成 intl。
     """
     # 【2026-10-07】优先用**站方自己的栏目分类**（凤凰文章页 JSON-LD 的 articleSection，
-    # 实测取到 "国际"/"社会"/"军事"/"台湾"…）；只有拿不到分类时才退回关键词黑名单。
+    # 实测取到 "国际"/"军事"/"台湾"…）；只有拿不到分类时才退回关键词黑名单。
     # 黑名单必漏：实测「乌征兵人员将1岁幼儿父亲沿地拖行」是国际新闻，标题里却没有
     # "乌克兰"三个字 —— 用户反馈的「国内热榜第二条还是国际新闻」就是它。
     # 只有**已登记的栏目名**才当分类用；认不出来就退回关键词判定 ——
@@ -3916,8 +4577,14 @@ def _notify_major(items):
     sample = fresh[:BALLOON_PLAY_COUNT]
     entries = []
     for it in sample:
-        label = it.get("label") or it.get("cls") or "要闻"
-        entries.append((f"⚠ 新闻大事 · {label}", (it.get("title") or "")[:72], True, it.get("link") or ""))
+        # 【2026-10-09】「⚠ 新闻大事」是**大事提醒**这一类通知的固定抬头（需求书里明确不属
+        # 「更新提醒」那一类，不必改），这里只把后半段由「来源站名」改成**该条自己的栏目名**，
+        # 与更新提醒气泡的第一行口径保持一致。
+        _cls = (it.get("cls") or "").strip() or ("要闻" if _is_intl_item(it) else "头条")
+        _bsrc = (it.get("source") or "").strip() or (it.get("label") or "").strip()
+        entries.append(((f"⚠ 新闻大事 · {_cls}" + ((" · " + _bsrc) if _bsrc else "")),
+                        (it.get("title") or "")[:72], True,
+                        it.get("link") or ""))
     if len(fresh) > len(entries):
         _e = entries[-1]
         entries[-1] = (_e[0], _e[1] + f"　（另有 {len(fresh) - len(entries)} 条同类）") + tuple(_e[2:])
@@ -4019,7 +4686,7 @@ def _warmup():
                 print(f"[warn] 快速就绪 {_rg} 失败: {type(_ex).__name__}")
 
         # 阶段二：完整抓取（含热榜合并、逐个文章页补图补时间），做完覆盖发布。
-        # 顺序上国内先做，这样「国内要闻剔出的国际新闻」能顺手并进国际板块。
+        # 顺序上国内先做，这样「国内头条剔出的国际新闻」能顺手并进国际板块。
         def do_intl():
             try:
                 # 【2026-10-09 修 中-7】与 refresh_loop / 页面按需抓取共用单飞闸：
@@ -4100,17 +4767,19 @@ def _warmup():
                                         if not (str(x.get("channel") or "").startswith("cn-intl")
                                                 or x.get("translated"))])
                             _cn = [x for x in _all if x.get("region") == "cn" and x.get("cls") != "热榜"]
-                            _pick = (_hot[:2] + _intl[:2] + _cn[:2])[:BALLOON_PLAY_COUNT]
+                            # 【2026-10-09】启动播报与「更新提醒」用**同一套配额挑选**：
+                            # 原来这里写死「热榜2+国际2+国内2」，10 个席位里科技/财经/娱乐
+                            # 一条都轮不到，跟用户「涉及头条/科技/财经/娱乐」的要求不符。
+                            # 配额顺序仍是国际媒体优先（用户看得懂中文），再交给统一的挑选器。
+                            _ordered = (_intl + _hot + _cn)
+                            _pick = _pick_balloon_items(_ordered)[:BALLOON_PLAY_COUNT]
                             if not _pick:
                                 print("[warn] 启动气泡：没有可用条目，跳过")
                                 return
-                            _ents = []
-                            for x in _pick:
-                                _tag = "国际 · " if x.get("region") == "intl" else "国内 · "
-                                _ents.append(("今日热点 · " + _tag + (x.get("label") or ""),
-                                              (x.get("title") or "")[:72], False, x.get("link") or ""))
+                            _ents = [_balloon_entry(x) for x in _pick]
                             _n_intl = sum(1 for x in _pick if x.get("region") == "intl")
-                            print(f"[ok] 启动气泡：播报 {len(_ents)} 条（含国际 {_n_intl} 条）")
+                            print("[ok] 启动气泡：播报 %d 条（%s；含国际 %d 条）"
+                                  % (len(_ents), _balloon_cls_tally(_pick), _n_intl))
                             _show_toast_list(_ents)
                         except Exception as _ex:
                             print(f"[warn] 启动气泡失败: {type(_ex).__name__}")
@@ -4120,7 +4789,7 @@ def _warmup():
                 import traceback as _tb
                 print(_tb.format_exc())
 
-        # 国内抓完再抓国际 —— 这样「国内要闻里剔出的国际新闻」已经就绪，
+        # 国内抓完再抓国际 —— 这样「国内头条里剔出的国际新闻」已经就绪，
         # 能顺手并进国际板块（见 _spill_from_cn）。
         do_intl()
 
@@ -4318,10 +4987,24 @@ def _guard_mutating(request):
     return None
 
 
+# 【2026-10-09】列表接口一次最多回多少条。前端两处（index.html / intl.html）都请求 limit=200，
+# 所以上限就定 200；超出按 200 截断（不再因为 FastAPI 的 le 校验回 422 —— 见 api_news 的说明）。
+NEWS_LIMIT_MAX = 200
+
+
 @app.get("/api/news")
-def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Query(""), limit: int = Query(48, ge=1, le=200)):
+def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Query(""), limit: int = Query(48, ge=1)):
+    """条目接口。`limit` **超上限按上限截断并正常返回**（不再 422 / 不再空数组）。
+
+    【2026-10-09 用户实测报的 bug】`GET /api/news?limit=300` 返回空数组，`limit=50/100` 正常。
+    根因：这里原来声明 `Query(48, ge=1, le=200)`，FastAPI 对越界的 `le` 会直接回 422，
+    前端 `js.items || []` 拿到的是错误响应体 → 渲染成"什么都没有"。用户看到的就是"空数组"。
+    修法（用户口径：「超上限就按上限截断并正常返回」）：去掉 `le`，在函数里夹取，
+    并在响应里带上实际生效的 `limit`，调用方一眼能看出被截断过。
+    """
     if region not in SOURCES:
         return JSONResponse({"error": "unknown region"}, status_code=400)
+    limit = max(1, min(int(limit or NEWS_LIMIT_MAX), NEWS_LIMIT_MAX))
     # 【搜索走更宽的池子】用户原则：主列表常看常新、绝不看旧新闻；
     # 但程序叫「热点新闻检索」，搜索时必须能搜到更早的新闻。
     # 所以带关键词时改搜 PRELOAD_ALL（当天过滤之前的完整池子，含最近几天）。
@@ -4359,8 +5042,12 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
         items = [i for i in items if kw in i["title"].lower() or kw in i["desc"].lower()]
     # 【修 高-1】把这一批图里出现过的域名登记进 /img 的来源白名单
     _note_item_hosts(items)
-    # 显式声明 charset=utf-8，避免个别客户端把 JSON 误判为 GBK 导致乱码
-    return JSONResponse({"version": VERSION, "count": len(items), "items": items[:limit]},
+    # 显式声明 charset=utf-8，避免个别客户端把 JSON 误判为 GBK 导致乱码。
+    # 【2026-10-09 修 limit 越界】`limit` 已经在函数开头夹到 ≤ NEWS_LIMIT_MAX，
+    # 响应里回带实际生效值，调用方能分辨"只有这么多条"和"被上限截断了"。
+    return JSONResponse({"version": VERSION, "count": len(items[:limit]),
+                         "limit": limit, "limit_max": NEWS_LIMIT_MAX,
+                         "items": items[:limit]},
                         media_type="application/json; charset=utf-8")
 
 
