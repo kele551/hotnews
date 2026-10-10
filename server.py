@@ -3622,12 +3622,136 @@ def _balloon_cls_tally(picked):
     return "/".join(f"{c}{cnt[c]}" for c in order)
 
 
+# ============ 跨来源「同一件事」去重（2026-10-10 用户反馈）============
+# 用户原话：「气泡显示的新闻好多是重复的，比如说，凤凰发的，其他网站也发，这种情况要杜绝」。
+#
+# 原来的去重只认**标题一字不差**（见 /api/news 里那句 `if it["title"] in seen`），
+# 而同一件事被不同媒体转发时，标题几乎必然不同（改几个字、换个语序、加个前缀/来源），
+# 所以那种重复**一条都挡不住**：382 条真实数据里就有 4 对，952 条里有 6 对。
+#
+# 判据用**真实抓取数据实测标定**（样本 952 条 / 628 条唯一标题，明细见
+# logs\同一件事去重-20261010.md）：
+#   ① Jaccard(2-gram) >= 0.50                       → 判为同一件事
+#   ② Jaccard >= 0.36 且 共有 2-gram >= 10           → 判为同一件事（抓"长标题改写"）
+#
+# 为什么必须有 ②：广汽本田刹车踏板、一加16电池、缅北电诈那几对**真重复**的分数只有
+# 0.385~0.413，光靠 ① 会全漏掉；而唯一一对**误杀**样本（郑钦文 vs 米拉·安德列娃
+# 各自晋级中网八强 —— 是两位不同选手，属两条不同新闻）分数 0.438 却只有 7 个共有 gram。
+# 用「绝对共有量」正好把这两类分开：真重复的共有 gram 都在 10 个以上，误杀那对只有 7 个。
+_SIM_STOP = set("　 \t\r\n，。、；：？！“”‘’（）《》【】—…·,.!?;:\"'()[]<>-—_|/\\")
+
+
+def _title_norm(t):
+    """标题归一化：去掉标点与空白并转小写，只留汉字/字母/数字。"""
+    return "".join(ch for ch in (t or "").lower() if ch not in _SIM_STOP)
+
+
+def _title_grams(t, n=2):
+    """标题的 2-gram 集合（中文短标题用 2-gram 最稳）。"""
+    s = _title_norm(t)
+    if len(s) < n:
+        return {s} if s else set()
+    return {s[i:i + n] for i in range(len(s) - n + 1)}
+
+
+def _nums(t):
+    """标题里出现的数字（价格/数量/比分/百分比/排名…）。
+
+    **数字不同就一定不是同一件事** —— 这是纯相似度算法最容易踩的坑：
+      「一加16售价3999元」vs「一加16售价4299元」两条标题几乎一模一样，
+      相似度高达 0.9，但它们是两条不同的新闻；
+      「某公司第一季度净利增长15%」vs「…第二季度…」同理。
+    所以相似度之外单独设这道闸（2026-10-10 自测抓到的误杀，见测试用例第二节）。
+    """
+    out, cur = set(), ""
+    for ch in _title_norm(t):
+        if ch.isdigit() or (ch == "." and cur):
+            cur += ch
+        elif cur:
+            out.add(cur.strip("."))
+            cur = ""
+    if cur:
+        out.add(cur.strip("."))
+    return {x for x in out if x}
+
+
+def _dup_verdict(g1, g2):
+    """两串 2-gram 是不是同一件事 —— **阈值只在这里定义一次**。"""
+    if not g1 or not g2:
+        return False
+    inter = len(g1 & g2)
+    if not inter:
+        return False
+    jac = inter / len(g1 | g2)
+    return jac >= 0.50 or (jac >= 0.36 and inter >= 10)
+
+
+def _nums_conflict(n1, n2):
+    """两串数字是否**互相冲突**。
+
+    只有"各有对方没有的数字"才算冲突（→ 一定不是同一件事）。
+    一方是另一方的子集时**不算冲突** —— 那只是其中一条多写了信息：
+      ·「…获刑3年半」vs「…致多人送医」      → {20,3} 与 {20}，子集关系，是同一件事；
+      ·「2027长春大冬会火种…」vs「长春大冬会火种…」→ {2027} 与 {}，也是同一件事；
+      ·「售价3999元」vs「售价4299元」        → {3999} 与 {4299}，互相冲突，**不是**同一件事。
+    第一版写成"集合不相等就判冲突"，把上面那两条真重复也挡掉了（8 条降到 6 条，自测抓到）。
+    """
+    if not n1 or not n2:
+        return False
+    return not (n1 <= n2 or n2 <= n1)
+
+
+def _same_event(t1, t2):
+    """两条标题是不是「同一件事」（不同媒体转发）。纯函数，供单测直接用。"""
+    if _nums_conflict(_nums(t1), _nums(t2)):
+        return False
+    return _dup_verdict(_title_grams(t1), _title_grams(t2))
+
+
+def _dedup_same_event(items):
+    """跨来源去重：同一件事只留**最先出现的那一条**，保持原顺序。
+
+    只比较**不同 label**（同一家媒体自己发的多条不合并 —— 那是它自己的不同稿件）；
+    先比长度再算交集，长度差太大直接跳过，避免无谓开销。
+    """
+    kept, keys = [], []
+    for it in items:
+        lb = it.get("label") or ""
+        title = it.get("title") or ""
+        g = _title_grams(title)
+        nums = _nums(title)
+        dup = False
+        for klb, kg, knums in keys:
+            if klb and lb and klb == lb:
+                continue
+            if _nums_conflict(nums, knums):   # 数字互相冲突 → 一定不是同一件事
+                continue
+            if not kg:
+                continue
+            # 长度预筛：Jaccard 的上界就是 min/max，上界不到 0.36 的不用算
+            lo, hi = (len(g), len(kg)) if len(g) < len(kg) else (len(kg), len(g))
+            if not hi or lo / hi < 0.36:
+                continue
+            if _dup_verdict(g, kg):
+                dup = True
+                break
+        if dup:
+            continue
+        keys.append((lb, g, nums))
+        kept.append(it)
+    return kept
+
+
 def _pick_balloon_items(fresh):
     """按栏目配额挑一组气泡条目（纯函数：只读 fresh，不改任何外部状态，便于单测）。
 
     这是本次「气泡扩容 + 栏目覆盖」的核心：原来只按 国际/国内/热榜 三个板块平分，
     10 个席位里 科技/财经/娱乐 常常一条都轮不到（用户反馈「财经、娱乐看不到」）。
+
+    2026-10-10 追加：进门前先合并「同一件事」—— 气泡只有 10 个席位，
+    同一件事占掉两个座位时用户一眼就看出重复（这是用户报的原话场景）。
     """
+    fresh = _dedup_same_event(list(fresh))
     picked, used, labels = [], set(), []
 
     def take(cands, maxn=1, no_repeat_src=True):
@@ -5027,6 +5151,13 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
             continue
         seen.add(it["title"])
         items.append(it)
+    # 【2026-10-10 用户反馈「气泡里好多重复：凤凰发的，其他网站也发」】
+    # 标题一字不差只是第一层；同一件事被别家转发时标题几乎必然不同，所以再合并一层
+    # 「同一件事」（判据与标定见 _dedup_same_event 上面的注释）。
+    # 搜索时**不做这层**：用户明确在找某条新闻，宁可多给几条，
+    # 不能因为"别家也发过"就让某条搜不到。
+    if not (q or "").strip():
+        items = _dedup_same_event(items)
     # 缺图的补一个占位，保证网格整齐
     for it in items:
         if not it["image"]:
