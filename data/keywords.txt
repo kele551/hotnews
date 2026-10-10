@@ -434,6 +434,47 @@ F1
 韩剧
 欧美
 宝莱坞
+# 【2026-10-10 用户实测「国际娱乐混进国内消息」】补：外国大制片厂 / 流媒体 / 奖项。
+# 起因：直连源 CGTN 文化里的真国际娱乐稿「关于派拉蒙-华纳兄弟合并的须知事项」
+# （英文原题 What to know about the Paramount-Warner Brothers merger）在本表里
+# 一个词都不命中，被"必须有外国具体对象"的口径一起丢掉了 —— 堵国内不该把国际也砍掉。
+#
+# ⚠ 中英文**都要登记**：过滤跑在 _collect 出口，那时 CGTN 这类英文源的标题还是英文原题
+#   （译文由后台翻译线程稍后才写回）。实测：只写中文词时，真机上的
+#   "What to know about the Paramount-Warner Brothers merger" 照样被判"没有外国对象"。
+# 只登记**含义唯一**的全名，不用「环球 / 华纳」这类短名（会撞上环球时报 / 环球网）。
+# 同一份词条在 server.py 的 `_ENT_FOREIGN_EXTRA` 里也有一份（数据文件丢失时的兜底），
+# 两处必须保持一致。
+派拉蒙
+华纳兄弟
+环球影业
+索尼影业
+20世纪影业
+梦工厂
+皮克斯
+HBO
+BBC
+NHK
+宝冢
+Paramount
+Warner
+Universal Pictures
+Sony Pictures
+Columbia Pictures
+20th Century
+DreamWorks
+Pixar
+Hollywood
+Netflix
+Disney
+Marvel
+Bollywood
+Emmy
+Grammy
+Oscar
+Cannes
+Venice
+Berlin
 
 [cn_tech]
 # 科技栏目的中国品牌归属判定（先看是不是中国品牌）。
