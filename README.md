@@ -369,10 +369,42 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 3. 替换脚本 `hotnews_update.vbs` 必须写成 **UTF-16**。
    写成 `utf-8-sig`（带 BOM）会让 Windows Script Host 报
    「无效字符 (1,1) 800A0408」，脚本不执行、还弹错误框，**在线升级会整个失效**。
-4. ⚠ **往 Gitee 推代码会覆盖远端 `version.json`** —— 本地那份必须是精简版
-   （只写 `version`），推上去就把远端的完整版（带 `launcher`）冲掉了，
-   **在线升级会因此失效**。所以：**每次 `git push gitee` 之后，必须再跑一次
-   `tools/publish.py <版本号>` 把完整版写回远端。**
+4. ⚠ **往 Gitee 推代码之前，必须先合并远端的 `gitee/master`** —— 本地 `main` 与远端
+   `master` 是**故意分叉**的：远端比本地多两个提交（`vX.Y.Z version.json 写完整版（带 launcher）`
+   与 `vX.Y.Z version.json 的 Ed25519 签名`），那是**在线升级要读的数据**；
+   本地那份必须保持精简版（只写 `version`），否则打包会掉进
+   「改 `version.json` → exe 变 → sha256 变 → 又要改 `version.json`」的自引用死循环。
+
+   所以**直接 `git push gitee main:master` 会被拒**（报 `non-fast-forward`）。
+   **千万不要用 `-f` 强推**：一强推就把上面那两个提交冲掉，
+   **所有已装用户的「检查更新」当场失效**。
+
+   **做法一（本仓库历史上一直这么走）**：先把远端并进来，让 push 能快进；
+   合并后本地 `version.json` 会变成完整版，要再提交一次把它改回精简版：
+
+   ```
+   git fetch gitee
+   git merge gitee/master           # 并进远端那两个提交，push 才能快进
+   # 此时本地 version.json 成了完整版 —— 提交一次「本地 version.json 精简」改回：
+   #   {"version": "X.Y.Z"}        （只留 version 一个字段）
+   git push gitee main:master
+   python tools/publish.py <版本号>  # 推完必须立刻把完整版写回远端，否则在线升级失效
+   ```
+
+   **做法二（2026-10-10 实测，更省事也更稳 —— 推荐）**：以远端为基础开一个临时分支，
+   只把要推的改动重放上去，**全程不碰 `version.json`**，也就不需要事后回写：
+
+   ```
+   git fetch gitee
+   git checkout -b tmp gitee/master
+   git cherry-pick <要推的提交>       # 或者 git checkout main -- <改动的文件> 再提交
+   git push gitee tmp:master         # 快进推送，version.json 不会被碰
+   git checkout main ; git branch -D tmp
+   ```
+
+   **两种做法推完都要回读一次确认没坏**：`git show gitee/master:version.json`
+   应当仍能看到 `launcher` 段（`url` / `sha256` / `size`）与 `notes`。
+
    （GitHub 同理：要让 GitHub 兜底可用，push 之后也要把完整版同步过去。）
 5. 升级包必须**原子下载**：先下到 `.part`、校验 sha256、再改名；
    替换前再校验一次尺寸与 sha。曾经因为重复「检查更新」用 `"wb"` 截断了已下好的包，
