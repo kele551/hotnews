@@ -5,7 +5,7 @@
 
 <img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
 <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square">
-<img alt="Version" src="https://img.shields.io/badge/version-v1.5.2-blue?style=flat-square">
+<img alt="Version" src="https://img.shields.io/badge/version-v1.5.3-blue?style=flat-square">
 <img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=downloads&color=green">
 
 <p>📰 <b>网页形式的国内 / 国际热点新闻图库</b>　——　单文件 exe，双击即用，无安装、无控制台窗口，每 10 分钟自动刷新</p>
@@ -39,7 +39,7 @@
 
 ## 使用
 
-下载 [最新 Release](https://gitee.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.2.exe`，双击运行，自动打开浏览器。
+下载 [最新 Release](https://gitee.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.3.exe`，双击运行，自动打开浏览器。
 
 - 自动选端口（8000 起，被占则顺延）
 - 启动时自动检查更新（可关闭，见 `config.json`）
@@ -50,10 +50,10 @@
 
 ---
 
-## 数据源（v1.5.2）
+## 数据源（v1.5.3）
 
 <details>
-<summary><b>数据源（v1.5.2）</b>（点击展开）</summary>
+<summary><b>数据源（v1.5.3）</b>（点击展开）</summary>
 
 
 每个源都是**实测连通 + 带图**之后才加入的；实测失败的（无法访问、无图、停更）一律没有采用。
