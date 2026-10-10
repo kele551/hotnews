@@ -361,16 +361,19 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
   下次启动时日志里会打印这份回执，失败还会弹一条气泡；
 - **全程没有交互式等待**：不使用 `input()` / `Read-Host` / `pause` 这类会卡住无人值守场景的写法。
 
-> ⚠️ **GitHub 那条兜底目前还没生效**：GitHub 仓库里的 `version.json` 现在是仓库内用的
-> **精简版**，签名对应的是 Gitee 上的完整版，验签必然不通过。
-> 要让兜底真正可用，必须把**完整版** `version.json`（带 `launcher` 的那份）**连同配套的
-> `version.json.sig` 一起**同步到 GitHub 的 `main` 分支。
+> ✅ **GitHub 那条兜底已生效**（2026-10-10 同步）：GitHub `main` 上的 `version.json` 已换成与 Gitee `master`
+> **逐字节一致**的**完整版**（852 B，带 `launcher.url/sha256/size` 与 `notes`），配套的 `version.json.sig`
+> 也一并同步；客户端用内置公钥对 GitHub 拉回来的原始字节**验签通过**，下面三条升级源地址现在都能用。
+>
+> ⚠️ **维护者注意**：仓库内那份 `version.json` 必须**继续是精简版（只有 `version`）**，
+> 而且**往 GitHub 推代码时不要把它一起推上去** —— 那会把 `main` 上的完整版覆盖回精简版，
+> GitHub 兜底会再次失效（推完请回读确认 `main` 上的 `version.json` 仍是 852 B 的完整版）。
 
 ### ⚠ 仓库里的 `version.json` 与 `version.json.sig` 不是一对（重要）
 
-- 仓库内 `version.json` 是**精简版（28 字节，只有 `version` 字段）**，是给源码运行读版本号用的；
+- 仓库内 `version.json` 是**精简版（25 字节，只有 `version` 字段）**，是给源码运行读版本号用的；
 - 仓库内 `version.json.sig` 签的是**远端发布用的完整版**（含 `launcher.url/sha256/size` 与 `notes`，
-  约 683 字节），也就是 Gitee `master` 上那一份；
+  852 字节），Gitee `master` 与 GitHub `main` 上放的都是这一份；
 - 所以**拿本地这两个文件做验签自检一定失败**，这不是 bug、也不用"修"。
 - **验签必须针对「远端完整版 version.json 的原始字节」**：
   先把远端 `version.json` 用 HTTP 取回（`r.content`，**不要**重新 `json.dumps` 再序列化），
