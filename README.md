@@ -1,12 +1,17 @@
-# hotnews · 热点新闻检索
+<div align="center">
+<img src="docs/icon.png" alt="hotnews" height="120" width="120">
 
-> 作者：**海风（kele551）** · 仓库：https://gitee.com/kele551/hotnews （GitHub 同名镜像）
+<h1>hotnews · 热点新闻检索</h1>
 
-![License](https://img.shields.io/badge/license-MIT-blue) ![Platform](https://img.shields.io/badge/platform-Windows-blue) ![Version](https://img.shields.io/badge/version-v1.5.2-blue) ![Downloads](https://img.shields.io/github/downloads/kele551/hotnews/total?label=downloads&color=green)
+<img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
+<img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square">
+<img alt="Version" src="https://img.shields.io/badge/version-v1.5.2-blue?style=flat-square">
+<img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=downloads&color=green">
 
-网页形式呈现的国内 / 国际热点新闻图库，支持搜索、分类、筛选，**每 10 分钟自动刷新**。
+<p>📰 <b>网页形式的国内 / 国际热点新闻图库</b>　——　单文件 exe，双击即用，无安装、无控制台窗口，每 10 分钟自动刷新</p>
 
-单文件 exe，双击即用，无安装、无控制台窗口。
+<p>作者 <b>海风（kele551）</b>　·　Gitee（主）<a href="https://gitee.com/kele551/hotnews">kele551/hotnews</a>　·　GitHub（镜像）<a href="https://github.com/kele551/hotnews">kele551/hotnews</a></p>
+</div>
 
 ![主界面](docs/screenshot-main.png)
 
@@ -46,6 +51,10 @@
 ---
 
 ## 数据源（v1.5.2）
+
+<details>
+<summary><b>数据源（v1.5.2）</b>（点击展开）</summary>
+
 
 每个源都是**实测连通 + 带图**之后才加入的；实测失败的（无法访问、无图、停更）一律没有采用。
 
@@ -128,9 +137,16 @@
 | 微博热搜 / 知乎热榜公开接口 | 直接 403 / 401，需要登录态 |
 | 网易娱乐（HTML） | 页面是**网易号泛频道推荐流**，每次请求内容都不同，混着汽车/养生/育儿，噪声大于收益 |
 
+</details>
+
+
 ---
 
 ## 国内 / 国际怎么分的
+
+<details>
+<summary><b>国内 / 国际怎么分的</b>（点击展开）</summary>
+
 
 **用站方自己的栏目分类**，不是靠猜关键词：
 
@@ -148,9 +164,16 @@
 
 热榜条目一律**按时间倒序**，最新鲜的永远在最上面。
 
+</details>
+
+
 ---
 
 ## 时效规则
+
+<details>
+<summary><b>时效规则</b>（点击展开）</summary>
+
 
 - **头条 / 热榜：严格当天**（热榜给 24 小时，否则更新慢的榜单会整个消失）
 - **垂类（科技 / 软件 / 娱乐）：按各自窗口放几天**
@@ -161,9 +184,16 @@
 - **绝不伪造时间**：某一版曾用「解析不出时间就当刚刚」，导致旧闻排到热榜第一条，
   已彻底删除。时间一律取自源站或文章页的真实发布时间
 
+</details>
+
+
 ---
 
 ## 图片规则
+
+<details>
+<summary><b>图片规则</b>（点击展开）</summary>
+
 
 - 每条新闻**必须有高清大图**，门槛是短边 300；无图一律不上
 - **RSS 本身不带图的源**自动去文章页取图：少数派 / 新浪娱乐取 `og:image`；
@@ -179,9 +209,16 @@
 - 补图名额（一轮 96 条）**按来源轮流分配**，避免条目多的源把名额占满、
   害得别的源整轮补不到图而在页面上消失
 
+</details>
+
+
 ---
 
 ## 右下角气泡提醒
+
+<details>
+<summary><b>右下角气泡提醒</b>（点击展开）</summary>
+
 
 自绘窗口，**不依赖系统通知**（Windows 11 且通知总开关关闭时，系统气泡会被静默丢弃）。
 
@@ -222,16 +259,30 @@
 
 后两类**不做时间节流**。
 
+</details>
+
+
 ---
 
 ## 本地开发
+
+<details>
+<summary><b>本地开发</b>（点击展开）</summary>
+
 
 ```bash
 pip install -r requirements.txt
 python app.py            # 或 python -m uvicorn server:app --port 8000
 ```
 
+</details>
+
+
 ## 打包
+
+<details>
+<summary><b>打包</b>（点击展开）</summary>
+
 
 ```bash
 pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
@@ -241,9 +292,16 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 > ⚠ `version.json` **不能带 BOM**（用 PowerShell 的 `Set-Content -Encoding UTF8` 写会带），
 > spec 里已改用 `utf-8-sig` 读取容忍；本地 `version.json` 必须保持精简（只写 `version`）。
 
+</details>
+
+
 ---
 
 ## 自动更新机制
+
+<details>
+<summary><b>自动更新机制</b>（点击展开）</summary>
+
 
 > **默认全自动、不弹确认框**：启动后静默检查 → 静默下载 → 验签 + 校验 sha256/尺寸 → 自动替换运行。
 > **只有出问题才提示一次**，并且始终保留旧版本可继续使用。详见下面「升级体验」一节。
@@ -327,9 +385,16 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 发布脚本：`tools/publish.py <版本号>`（同时发 Gitee 与 GitHub，替换附件、
 写远端完整版 `version.json`，并回下载核对 sha256）。
 
+</details>
+
+
 ---
 
 ## 仓库约定
+
+<details>
+<summary><b>仓库约定</b>（点击展开）</summary>
+
 
 ### 行尾（`core.autocrlf` 靠不住，所以写进仓库）
 
@@ -361,6 +426,9 @@ python build.py --list
 `_home*.html`、`_probe*.py`、`*.exe` 这类文件。
 注意 `runtime/` 下的 `python.exe` / `pythonw.exe` / `python313.zip` 是绿色包**必须带**的，
 所以排除规则里刻意没有一刀切写 `*.exe` / `*.zip`。
+
+</details>
+
 
 ---
 
@@ -425,3 +493,17 @@ python build.py --list
   签名私钥与发布凭据同样不进仓库。
 - **行尾与打包清单**：见上文「仓库约定」——`.gitattributes` 统一 LF（`说明.txt` 保持 CRLF）；
   `python build.py --list` 可以在真正打包前核对清单里没有本机调试产物。
+---
+
+## ♥️ 支持项目
+
+如果 **hotnews 热点新闻检索** 帮到了你，**给仓库点个 Star ⭐** 就是最好的支持 —— 它能让更多人看到这个项目。
+
+如果想再进一步，也可以请作者喝杯咖啡（**完全自愿，不影响任何功能**）：
+
+| 微信 | 支付宝 |
+|:---:|:---:|
+| ![微信收款码](docs/qr-wechat.png) | ![支付宝收款码](docs/qr-alipay.png) |
+
+> 本项目以 MIT 协议自由开源，**没有付费版、也没有付费功能**；捐赠纯属自愿，
+> 与功能开放、版本更新、Issue 响应**没有任何关系**。
