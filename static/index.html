@@ -508,7 +508,9 @@ document.getElementById("checkUpdate").onclick = async ()=>{
   const ctrl = new AbortController();
   const timer = setTimeout(()=>ctrl.abort(), 15000);  // 15 秒超时，避免卡死
   try{
-    const r = await fetch("/api/update/check", {signal: ctrl.signal});
+    // 2026-10-10: 这个接口在服务端补了本机令牌闸门（它会触发后台下载升级包，
+    // 属于有副作用的接口），这里同步带上令牌头，否则会拿到 403、界面显示"检查失败"。
+    const r = await fetch("/api/update/check", {signal: ctrl.signal, headers: POST_HEADERS});
     const js = await r.json();
     if(js.status === "update"){
       const notes = js.notes ? "　更新内容：" + String(js.notes).replace(/\s+/g," ").slice(0, 60) : "";
@@ -613,7 +615,9 @@ window.addEventListener("load", anchorToHotList);
 /* ================= 开机自启开关（用户要求"第一次使用时给个开关让用户选"） ================= */
 async function refreshAutoStart(){
   try{
-    const r = await fetch("/api/autostart");
+    // 2026-10-10: 服务端给这个 GET 也补了令牌闸门（与同路由的 POST 对齐），
+    // 这里同步带上令牌头，否则开关会一直回显成"关"。
+    const r = await fetch("/api/autostart", {headers: POST_HEADERS});
     const j = await r.json();
     const cb = document.getElementById("autostart");
     if(cb) cb.checked = !!j.enabled;

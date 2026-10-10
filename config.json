@@ -4,7 +4,7 @@
     "auto_update": true
   },
   "translate": {
-    "enabled": true,
+    "enabled": false,
     "backend": "mymemory",
     "contact": "",
     "baidu": { "appid": "", "secret": "" },
