@@ -160,8 +160,14 @@ FALLBACK_MIN = 8         # 当天条目少于这个数 → 放宽到最近 24 �
 CLS_MAX_AGE_HOURS = {
     "科技": 96,     # 4 天：IT之家/快科技日更，爱范儿/雷峰网 慢一些
     "软件": 120,    # 5 天：小众软件、开源中国、少数派这类本来就不是日更
-    "娱乐": 120,    # 5 天：新浪娱乐首页混着深度稿，窗口太窄会只剩一两条
-    "国际娱乐": 120,
+    # 【2026-10-11 六轮·用户「娱乐新闻少的可怜」】娱乐 120h → 168h（7 天）。
+    # 娱乐是所有栏目里**更新最慢**的：国际娱乐唯一的直供源 CGTN 文化平均三四天才换一批
+    # （实测 50 条 RSS 里只有 17 条落在 5 天内），5 天窗口直接把栏目饿到只剩 4 条。
+    # 娱乐不是快讯，用户对"三天前的电影节报道"没有违和感，放宽是安全的；
+    # 而"当天优先"的规则没动 —— 当天够 6 条/3 家时，旧条目根本不会补进来
+    # （见 FRESH_MIN_PER_CLS / _select_fresh）。
+    "娱乐": 168,    # 7 天
+    "国际娱乐": 168,
     "热榜": 24,     # 用户反馈「热榜上居然还有两天前的新闻」→ 热榜不再豁免，同样按当天
 }
 # 「当天优先」的两个下限：某栏目当天条目低于这个数、或少于这么多家网站，
@@ -332,6 +338,19 @@ SOURCES = {
         # CGTN 原文是英文，与原有 intl-cgtn 一样交给后台翻译线程（translated=False）。
         {"id": "intl-cgtn-biz",     "label": "CGTN商业", "url": "https://www.cgtn.com/subscribe/rss/section/business.xml", "base": "https://www.cgtn.com", "region": "intl", "cls": "财经"},
         {"id": "intl-cgtn-culture", "label": "CGTN文化", "url": "https://www.cgtn.com/subscribe/rss/section/culture.xml",  "base": "https://www.cgtn.com", "region": "intl", "cls": "娱乐"},
+        # —— 【2026-10-11 七轮·用户拍板】两家境外权威娱乐媒体（只补国际娱乐这一栏）——
+        # 为什么敢接、为什么只接这两家、怎么一键关掉，见 INTL_ENT_OVERSEAS 上面那段长注释。
+        # 逐家实测（2026-10-11）：
+        #   Variety（好莱坞产业权威，variety.com/feed/）：200 / 10 条 / **10 条全部带
+        #     media:content 图** / 当天 14:23~17:38 更新 / 图 1200x~（过 300 短边门槛）。
+        #   Consequence（独立音乐媒体，consequence.net/feed/）：200 / 15 条 / **15 条全部带图** /
+        #     当天 00:04~12:28 更新。
+        # 两家都是英文，走后台翻译线程（translated=False），与 CGTN 英文源同一条链路。
+        # ⚠ 这两家的条目在 `_is_domestic_for_intl` 里走**境外娱乐专用前置层**
+        #   （不做"证明自己是国际"那套判据 —— 那是给境内源防中国题材用的），
+        #   但仍过主权红线 `_INTL_ENT_BLOCK_RX`。
+        {"id": "intl-variety",     "label": "Variety",     "url": "https://variety.com/feed/",     "base": "https://variety.com",     "region": "intl", "cls": "娱乐"},
+        {"id": "intl-consequence", "label": "Consequence", "url": "https://consequence.net/feed/", "base": "https://consequence.net", "region": "intl", "cls": "娱乐"},
         {"id": "intl-cgtn-sport",   "label": "CGTN体育", "url": "https://www.cgtn.com/subscribe/rss/section/sports.xml",   "base": "https://www.cgtn.com", "region": "intl", "cls": "体育"},
         {"id": "intl-cgtn-tech",    "label": "CGTN科技", "url": "https://www.cgtn.com/subscribe/rss/section/tech-sci.xml", "base": "https://www.cgtn.com", "region": "intl", "cls": "科技"},
         # 新华网·体育（www.news.cn/sports，新华社）：用户 2026-10-09 明确「国际板块留体育」，
@@ -1171,6 +1190,9 @@ def _parse_one(src):
     return _items
 
 
+RSS_ENTRIES_CAP = 50      # 单个 RSS 最多解析多少条（见 _parse_one_raw 里的说明）
+
+
 def _parse_one_raw(src):
     # 凤凰娱乐：首页内联 JSON（newsstream），非 RSS，走专用解析
     if src.get("parser") == "ifeng":
@@ -1220,7 +1242,12 @@ def _parse_one_raw(src):
                or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     dropped = 0
-    for e in doc.entries[:24]:
+    # 【2026-10-11】原来写死只取前 24 条。RSS 是按时间倒序的，取 24 条对「一天几十条」
+    # 的通讯社源够用，但**更新慢的分区源**就被砍掉一半以上 —— 实测 CGTN 文化分区
+    # 一次给 50 条（全部带图），只取前 24 条时用户看到的是"国际娱乐只剩一两条"。
+    # 现在取满 RSS_ENTRIES_CAP 条，过期的一样被下面 `ts < cutoff` 滤掉，
+    # 不会因此多显示旧新闻，只是让慢更新源在时效窗口内的稿子一条都不漏。
+    for e in doc.entries[:RSS_ENTRIES_CAP]:
         title = _clean(e.get("title"))
         if not title:
             continue
@@ -2114,11 +2141,25 @@ _INTL_ENT_CLS = ("娱乐", "文化")
 
 
 def _drop_domestic_ent(it):
-    """国际栏里这条娱乐/文化是不是"国内题材"？是就丢掉（返回 True）。"""
+    """国际栏里这条娱乐/文化是不是"国内题材"？是就丢掉（返回 True）。
+
+    【2026-10-11 与出口统一口径】原来这里用的是 `_INTL_ENT_DOM_RX`/`_INTL_ENT_INT_RX`
+    这对正则，而下面 2026-10-10 那段注释自己就写明它的**方向不对**（白名单里的
+    「全球/世界/国际/亚洲」太泛、国内黑名单又是有限枚举，连「彭丽媛」「习近平」
+    都不在里面）—— 也就是说出口早已换成新判据，**源头却还挂着这套旧闸门**，
+    两处口径不一致，CGTN 文化的稿子被砍两遍（真机：8 条 → 源头砍 2 → 出口再砍）。
+
+    现在两处都用同一张表 `INTL_CHANNEL_LOCAL_ONLY`（纯国内地方事务），判据只有一处，
+    不会再出现"源头说国内、出口说国际"这种自相矛盾。
+
+    影响面：**只有 `intl-cgtn-culture` 这一个源**会走这里（SOURCES 里 region=intl
+    且 cls=娱乐 的就它一家；凤凰娱乐/新浪娱乐/国际在线娱乐都是 region=cn），
+    所以放开不会把国内明星八卦放进国际栏 —— CGTN 不发八卦。
+    """
     if (it.get("cls") or "") not in _INTL_ENT_CLS:
         return False
     ti = it.get("title") or ""
-    return bool(_INTL_ENT_DOM_RX.search(ti)) and not _INTL_ENT_INT_RX.search(ti)
+    return any(k in ti for k in INTL_CHANNEL_LOCAL_ONLY)
 
 
 # ============ 【2026-10-10 用户实测报障】直连国际源的"国内内容"漏筛 ============
@@ -2215,6 +2256,12 @@ _ENT_FOREIGN_EXTRA = frozenset({
     "Paramount", "Warner", "Universal Pictures", "Sony Pictures", "Columbia Pictures",
     "20th Century", "DreamWorks", "Pixar", "Hollywood", "Netflix", "Disney", "Marvel",
     "Bollywood", "Emmy", "Grammy", "Oscar", "Cannes", "Venice", "Berlin",
+    # 【2026-10-11 补】用户「国际娱乐太少」。这里只放**最常用、且不会撞中文用法**的一批，
+    # 完整词表仍在 data/keywords.txt 的 [ent_foreign]（那边丢了也不会一条都判不出）。
+    "奥斯卡", "好莱坞", "格莱美", "戛纳", "金球奖", "迪士尼", "漫威", "韩娱", "日娱",
+    "圣丹斯", "BAFTA", "安妮奖", "托尼奖", "宫崎骏", "吉卜力", "BTS", "BLACKPINK",
+    "Taylor Swift", "Beyonce", "Rihanna", "Adele", "Spider-Man", "Star Wars",
+    "Harry Potter", "Game of Thrones", "Squid Game", "Hulu", "Lionsgate", "MGM",
 })
 # 注意：与 `ENT_FOREIGN_MARKERS` 合并的那一步（`_ENT_FOREIGN_ALL`）**必须写在
 # `_load_keywords()` 之后**（见下面关键词表那段）—— 关键词表在本文件后半段才载入，
@@ -2515,6 +2562,12 @@ def _is_domestic_for_intl(it):
     """直连国际源的条目里，这条是不是"国内内容"（是就不进国际栏）。
 
     只用在国际栏（`region == "intl"`）；**国内板块（region == "cn"）一律不受影响**。
+
+    ⚠ 2026-10-11 四轮起：**直连国际频道（channel 以 `intl-` 开头）回到下面这些逐栏判据**。
+      原因：CGTN 是**中国的国际台**，科技/文化/商业分区大量报中国题材，一律放行就是
+      「国际栏鱼龙混杂」（用户 2026-10-11 截图）。只有 `cn-intl-news`（国内媒体转来的、
+      已在 `_split_cn_scope` 判过一遍的）免二次判定，避免两套分类器互相打架。
+
     五栏各有口径，热榜不动（它由 `_split_hot_by_scope` 在别处判）：
       · 娱乐：必须有外国具体对象（`ENT_FOREIGN_MARKERS` + `_ENT_FOREIGN_EXTRA`），
         且不得命中 `DOMESTIC_MARKERS` —— 与国内分流那条路同一方向；
@@ -2530,7 +2583,31 @@ def _is_domestic_for_intl(it):
     """
     cls = (it.get("cls") or "").strip()
     ti = it.get("title") or ""
+    # 【2026-10-11 四轮·用户反馈「国际栏还是鱼龙混杂」】这道闸原来把**所有**直连国际频道
+    # （channel 以 intl- 开头）整段放行，只挡一张 14 词小表（省委/市委/春晚/中超…）。
+    # 后果：CGTN 是**中国的国际台**，它的科技/文化/商业分区里大量中国题材稿
+    # （「中国的北极考察带回了气候模型的数据」「IAC 2026：中国航天公司的目标是扩大全球
+    #   市场份额」「彭丽媛敦促发展女性数字化教育」「中国 2026 年国庆假期票房突破11.6亿元」
+    #   「音乐、舞蹈和五颜六色的服装…」）全部留在国际栏 —— 就是用户看到的"鱼龙混杂"。
+    # 现在只对 `cn-intl-news`（国内媒体转来的国际新闻，**已经过 `_split_cn_scope` 判过一遍**）
+    # 免二次判定，避免两套分类器互相打架；直连 intl-* 源回到下面**逐栏判据**，由每个栏目
+    # 对应的主体判据把关（娱乐要求"有外国具体对象" / 科技看品牌归属 / 要闻看中国主体）。
+    _ch = (it.get("channel") or "").strip()
+    # 体育栏**不走**这道闸：它有自己那套「赛事/主体」专用判据（见下面 `_INTL_SPORT_*`），
+    # 是 2026-10-10 专门按「体育堵不住漏洞」修的，且源解析阶段已经先滤过一遍
+    # （真机日志里的"滤除非国际赛事"）。保持原判据，不动它。
+    if cls != "体育" and _ch == "cn-intl-news":
+        return any(k in ti for k in INTL_CHANNEL_LOCAL_ONLY)
     if cls == "娱乐":
+        # 【2026-10-11 七轮·境外娱乐前置层】Variety / Consequence 这两家是**境外娱乐媒体**，
+        # 内容 100% 是国际文娱，不该走下面那套「要正面证明自己是国际」的判据 ——
+        # 那套是给 CGTN 这种境内源防中国题材用的，套到境外源上会把
+        # 「Shane Gillis Drops F-Bomb on SNL」「Barry Manilow's Vegas Comeback」这类
+        # 纯欧美娱乐稿全判成国内（实测 10 条里误杀 6 条），等于接了白接。
+        # 所以这里只做两件事：① 主权红线（`_INTL_ENT_BLOCK_RX`）命中即拦；
+        # ② 其余一律放行。关掉总开关 INTL_ENT_OVERSEAS 后本层整体失效。
+        if INTL_ENT_OVERSEAS and (it.get("channel") or "") in INTL_ENT_OVERSEAS_CHANNELS:
+            return bool(_INTL_ENT_BLOCK_RX.search(ti))
         if not ti or _looks_domestic(ti):
             return True
         # 娱乐栏的语义是**必须有外国具体对象**，所以：
@@ -2544,9 +2621,48 @@ def _is_domestic_for_intl(it):
         #      拿来当"要不要拦"会让「音乐、舞蹈和五颜六色的服装…」这类没有外国对象的
         #      稿子全部漏进国际娱乐。这里必须是"没外国对象就拦"。
         _txt = ti + " " + " ".join(_item_texts(it)[1:])
+        _cn_abroad = False      # 「主体是中国、但事件发生在国外」
         if _news_subject_verdict(_txt) is True:
-            return True
-        return not any(k in _txt for k in _ENT_FOREIGN_ALL)
+            # 主体是中国 —— 但如果**标题里有明确的国外地点**，那事件发生在国外，
+            # 是国际文化交流（中国电影周在北马其顿 / 中国高定亮相巴黎时装周），放行。
+            # 开关见 INTL_ENT_CN_ABROAD_PASS：改 False 就回到"凡中国主体一律拦"。
+            if INTL_ENT_CN_ABROAD_PASS and _ENT_INTL_SIGNAL_RX.search(ti):
+                _cn_abroad = True
+            else:
+                return True
+        # 下面两张是中国题材黑名单；"中国主体 + 国外场域"这一路要**跳过**它们
+        #（否则 "Chinese couture makes its Paris Fashion Week debut" 会被
+        #  `_INTL_ENT_DOM_RX` 里的 "Chinese" 拦回去，等于开关白加）。
+        if not _cn_abroad:
+            if _ENT_CN_SUBJECT_RX.search(ti):
+                return True
+            # 【2026-10-11 六轮·补】中国地名/地标黑名单（中英文都认）。
+            # 只要上面的主体判据**判不出来**就会漏 —— 真机抓到：
+            #   「Spring/Summer 2027 Shanghai Fashion Week kicks off」（上海时装周）
+            #   「The Drum and Bell Towers and the rhythms of Old Beijing」（北京钟鼓楼）
+            # 这两条 `_news_subject_verdict` 都返回 None（判不出主体），只靠外国信号兜不住。
+            # 这张表是 2026-10-09 就写好的国内题材黑名单（`_INTL_ENT_DOM_RX`），
+            # 中英文地标/节日/朝代/机构都在里面，这里直接拿来当**拦截面**用。
+            if _INTL_ENT_DOM_RX.search(ti):
+                return True
+        # 【2026-10-11 六轮】最后一步从「必须有外国具体对象」改成「**没查出中国主体就放行**」。
+        # 为什么改：白名单法误杀太狠 —— 真机 CGTN 文化 17 条里被砍的
+        #   「Canadian Anne Carson wins 2026 Nobel Prize in Literature」（加拿大作家获诺贝尔
+        #   文学奖）、「Atlanta zoo to debut new pandas and habitat」（亚特兰大动物园迎新熊猫）
+        #   都是**实打实的国际文化新闻**，标题里却一个"外国文娱对象词"都没有。
+        #   拦国内靠的是**主体判据**（`_news_subject_verdict` 中英文都认），
+        #   白名单只是它判不出来时的补刀，不该反过来压过主体判据。
+        # 保险：如果标题是**中文**（说明是境内源转来的），仍要求有外国具体对象 ——
+        #   中文娱乐标题里一个外国对象都没有，基本就是国内明星八卦
+        #   （「闫妮自曝离婚后还去前夫家打掼蛋」这类绝不能进国际栏）。
+        if re.search(r"[\u4e00-\u9fa5]", ti):
+            # 中文稿：仍要求有外国文娱具体对象
+            return not any(k in ti for k in _ENT_FOREIGN_ALL)
+        # 英文稿：要正面证明自己是国际的（外国地名 / 国籍 / 国际奖项 / 文娱对象）。
+        # 一条都不占 → 拦（"数字智能让城市治理更聪明"这类无中国词的中国稿就是这么挡掉的）。
+        if any(k in ti for k in _ENT_FOREIGN_ALL):
+            return False
+        return not _ENT_INTL_SIGNAL_RX.search(ti)
     if cls == "体育":
         return not _looks_sport_foreign(ti)
     if cls == "要闻":
@@ -2951,7 +3067,30 @@ def _collect_fast(region):
     # 否则预热阶段先把国内娱乐/体育发到页面上，几十秒后完整 _collect 才抹掉，
     # 用户会看到"闪一下国内新闻又没了"。判据与完整版同一个函数。
     items, _ = _split_domestic_items(items, region)
-    _note_item_hosts(items)       # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
+    if region != "cn":
+        # 【2026-10-11 五轮】与完整版 `_collect` 对齐：首屏也要接收**国内板块转来的国际新闻**。
+        # 原来这里不并，启动后头几十秒国际栏是没有 cn-intl-news 的。
+        _spill = _spill_from_cn()
+        if _spill:
+            _seen_t = {it["title"] for it in items}
+            _add = [s for s in _spill if s["title"] not in _seen_t]
+            if _add:
+                items.extend(_add)
+                items = _drop_shared_images(items)
+    if region == "cn":
+        # 【2026-10-11 五轮 · 本轮主修】首屏（快速版）原来**不做「国内→国际」分流** ——
+        # `_split_cn_scope` 只写在完整 `_collect` 里。后果：**每次启动后头几十秒**，
+        # 国内栏会把国际新闻原样播出（用户截图里的「从选票到权力：德法意极右翼政党的
+        # 不同制度路径」「人物｜白宫新任发言人」「泽连斯基」「英国一男子闯入动物园虎区」
+        # 就是这一版，日志里的 `快速就绪 cn: 168 条 | 头条16条`），等完整 `_collect`
+        # 跑完（约 20~50 秒）才抹掉。用户重启后立刻打开页面，看到的就是它。
+        # 现在：先把**全量**登记进搜索池 / 国际栏转入池（与完整版一致），再按同一套
+        # 判据把国际新闻真移走 —— 首屏第一帧就是干净的国内稿。
+        PRELOAD_ALL["cn"] = list(items)
+        _note_item_hosts(items)   # 图片域名按全量登记（含即将转去国际的那批）
+        items, _ = _split_cn_scope(items)
+    else:
+        _note_item_hosts(items)   # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
     return _select_fresh(items, region)
 
 def _collect(region):
@@ -4225,6 +4364,95 @@ def _dup_verdict(g1, g2):
     return jac >= 0.50 or (jac >= 0.36 and inter >= 10)
 
 
+def _common_prefix_len(n1, n2):
+    """两条归一化标题的最长公共前缀长度（"国常会部署…"两条的前缀是"国常会部署"）。"""
+    k = 0
+    for a, b in zip(n1 or "", n2 or ""):
+        if a != b:
+            break
+        k += 1
+    return k
+
+
+def _dup_verdict_full(g1, g2, d1, d2, cjk_common=0, is_prefix=False):
+    """完整三档判重 —— **阈值只在这个函数和 `_dup_verdict` 里定义**。
+
+    ① `jac >= 0.50`：措辞接近的同一件事；
+    ② `jac >= 0.36 且 交集 >= 10`：长标题里大量 2-gram 重合；
+    ③ `jac >= 0.15 且 中文 3-gram 交集 >= 2 且 方向词不冲突`：同一件事被写成两句
+       完全不同的话（见 `_cjk_trigrams` 上面的注释），靠中文实词重合识别。
+    方向词冲突（上调 vs 下调）在三档都先看，方向相反的一律不折叠。
+
+    两道"前缀"闸（`is_prefix` = 一条归一化标题是另一条的前缀）：
+      · 前缀 **且长度差 > 4** → 一律不折叠。
+        「特斯拉宣布降价」vs「特斯拉宣布降价后车主维权」的 2-gram Jaccard 是 0.545，
+        光看第①档一定会折叠 —— 但后者是前者的**后续发展**（车主维权），是两条新闻。
+        注释里早就写着要用"长度差 ≤ 4"杜绝这类误杀，可那句话只写在第①档（确定性折叠）
+        里，第①档卡掉了、第②档又放进来，等于没挡。现在两道闸都看前缀。
+      · 第③档的中文 3-gram 交集 `cjk_common` **先扣掉共同前缀贡献的那部分**。
+        「国常会部署稳增长组合拳」vs「国常会部署房地产工作」的共同 3-gram
+        （国常会/常会部/会部署）**全部来自共同前缀"国常会部署"**，扣完只剩 0 →
+        不折叠（同一主体的两个不同议题，是两条新闻）。
+        真重复的共同实词是**散落在标题各处**的（特朗普/乌克兰/总统、英国/动物园/
+        老虎/男子），扣完仍然 ≥2 → 折叠。
+    """
+    if not g1 or not g2:
+        return False
+    inter = len(g1 & g2) if (g1 and g2) else 0
+    if not inter:
+        return False
+    if is_prefix and abs(len(g1) - len(g2)) > 4:
+        return False
+    jac = inter / len(g1 | g2)
+    if jac >= 0.50 or (jac >= 0.36 and inter >= 10):
+        return not _dir_conflict(d1, d2)
+    if jac >= 0.15 and cjk_common >= 2:
+        return not _dir_conflict(d1, d2)
+    return False
+
+
+# 【2026-10-11 六轮】第三档判据：**中文实词 3-gram 交集**。
+# 为什么需要：同一件事被两家媒体写成两句完全不同的话时，2-gram Jaccard 常常只有 0.19~0.31，
+#   够不到 0.50 那道闸 —— 真机池子（415 条）里抓到 4 对漏网的真重复：
+#     「英国一男子闯入动物园虎区…」vs「英国一野生动物园发生老虎袭人事件 一男子重伤」(0.194)
+#     「被拒绝6次之后，特朗普建议乌克兰更换总统…」vs「美乌吵起来了！泽连斯基怒斥…」(0.191)
+#     「电视剧《伟大的长征》央视一套开播」vs「仅一小时即拿下全网收视第一！《伟大的长征》开播」(0.185)
+#     「支付宝服务升级：失效银行卡可一键换绑或解绑…」vs「支付宝上的失效银行卡 终于可以一键…」(0.308)
+#   它们的共同点是"**中文实词**高度重合"（特朗普/乌克兰/总统、英国/动物园/老虎/男子…）。
+# 为什么**只取纯中文段**（不含数字/字母）：否则「小米17发布…」和「小米17评测…」会因为
+#   共同含「小米1 / 米17」被判成同一件事 —— 那两条是同一个产品的两条不同新闻。
+#   真重复的中文实词重合度远高于"同产品不同事件"，这条线正好把它们分开。
+_CJK_SEG_RX = re.compile(r"[\u4e00-\u9fa5]{3,}")
+
+
+def _cjk_trigrams(t):
+    """标题里**纯中文连续段**（≥3 字）的 3-gram 集合。"""
+    out = set()
+    for seg in _CJK_SEG_RX.findall(_title_norm(t or "")):
+        for i in range(len(seg) - 2):
+            out.add(seg[i:i + 3])
+    return out
+
+
+# 【2026-10-11 六轮】方向词（上调/下调、大涨/大跌…）—— 与数字、序数同一类"互斥信号"。
+# 为什么需要：第三档按中文实词重合判重，而「央行下调存款准备金率」与「央行上调存款
+#   准备金率」的实词几乎完全一样，只有"下调/上调"两个字不同 —— 不设闸就会把两条
+#   **方向相反**的新闻折叠成一条（这是最不能犯的错：用户看到的是"少了一条"）。
+_DIR_RX = re.compile(r"上调|下调|上涨|下跌|大涨|大跌|涨停|跌停|增长|下降|增加|减少|"
+                     r"提高|降低|加息|降息|升值|贬值|走高|走低|回落|反弹|涨|跌")
+
+
+def _dirs(t):
+    return {m.group(0) for m in _DIR_RX.finditer(_title_norm(t or ""))}
+
+
+def _dir_conflict(d1, d2):
+    """两条的方向词是否**互相冲突**（算法与 `_nums_conflict` 一致：子集关系不算冲突）。"""
+    if not d1 or not d2:
+        return False
+    return not (d1 <= d2 or d2 <= d1)
+
+
 def _nums_conflict(n1, n2):
     """两串数字是否**互相冲突**。
 
@@ -4240,43 +4468,129 @@ def _nums_conflict(n1, n2):
     return not (n1 <= n2 or n2 <= n1)
 
 
+# 【2026-10-11】序数（第一/第二/一季度/第3轮…）与 `_nums` 是同一类信号：
+# 「公司第一季度净利增长15%」vs「公司第二季度净利增长15%」的 2-gram 相似度高达 0.8，
+# 只有"第一/第二"这一个字不同 —— 光看相似度一定会被折叠成一条，但它们是两条新闻。
+# 所以把序数也做成一道"互相冲突就放行"的闸（自测抓到的误杀，见 verify 第四节）。
+_ORDINAL_RX = re.compile(r"第[0-9]+|第[一二三四五六七八九十]+"
+                         r"|[0-9]+季度|[一二三四五六七八九十]季度")
+
+
+def _ordinals(t):
+    """标题里出现的序数集合（第一 / 第2 / 一季度 / 第三轮…）。"""
+    return {m.group(0) for m in _ORDINAL_RX.finditer(_title_norm(t))}
+
+
+def _ordinals_conflict(o1, o2):
+    """两条标题的序数是否**互相冲突**（算法与 `_nums_conflict` 完全一致）。"""
+    if not o1 or not o2:
+        return False
+    return not (o1 <= o2 or o2 <= o1)
+
+
 def _same_event(t1, t2):
     """两条标题是不是「同一件事」（不同媒体转发）。纯函数，供单测直接用。"""
     if _nums_conflict(_nums(t1), _nums(t2)):
         return False
-    return _dup_verdict(_title_grams(t1), _title_grams(t2))
+    if _ordinals_conflict(_ordinals(t1), _ordinals(t2)):
+        return False
+    _n1, _n2 = _title_norm(t1), _title_norm(t2)
+    _lcp = _common_prefix_len(_n1, _n2)
+    _prefix = bool(_n1 and _n2 and (_n1.startswith(_n2) or _n2.startswith(_n1)))
+    # 共同中文 3-gram 扣掉"共同前缀"贡献的那部分（前缀长度 L 能贡献 L-2 个 3-gram）
+    _cjk_common = len(_cjk_trigrams(t1) & _cjk_trigrams(t2)) - max(0, _lcp - 2)
+    return _dup_verdict_full(_title_grams(t1), _title_grams(t2),
+                             _dirs(t1), _dirs(t2),
+                             cjk_common=_cjk_common, is_prefix=_prefix)
 
 
 def _dedup_same_event(items):
     """跨来源去重：同一件事只留**最先出现的那一条**，保持原顺序。
 
+    两道闸，先硬后软：
+
+    **① 确定性折叠**（2026-10-11 加）—— 同一条新闻的**副本**，判据只有四种，
+    全都是"是不是同一条"的事实判断，**不存在把两条不同新闻误判成一条**的可能：
+      · 同 `id`；
+      · 同 `link`；
+      · 归一化标题完全一样（只差标点/大小写/空格的那些，例如
+        「国常会：推出稳增长组合拳」与「国常会推出稳增长组合拳」）；
+      · 一方归一化标题是另一方的子串、且两者长度差 ≤ 4 个字、数字不冲突
+        （同一稿的两种长短写法）。长度差卡到 4 是为了杜绝
+        「特斯拉宣布降价」vs「特斯拉宣布降价后车主维权」这类误杀。
+
+    这一道**不看来源**（连同一家媒体自己发的副本也折叠）—— 因为 `_pick_balloon_items`
+    凑不满 10 条时会放开「同来源只取一条」（见那里 ④），那时副本就同时进气泡了，
+    这正是用户报的「头条和热榜经常重复」：热榜条目被复制进「头条」栏（见 `_collect`），
+    副本与原条同 id 同 title，平时靠"同来源只取一条"挡着，一进兜底就漏出来。
+
+    **② 同一事件不同措辞**（原有）—— Jaccard 相似度，阈值只定义在 `_dup_verdict`。
     只比较**不同 label**（同一家媒体自己发的多条不合并 —— 那是它自己的不同稿件）；
     先比长度再算交集，长度差太大直接跳过，避免无谓开销。
     """
     kept, keys = [], []
+    hard_ids, hard_links, hard_norm = set(), set(), {}
     for it in items:
         lb = it.get("label") or ""
         title = it.get("title") or ""
-        g = _title_grams(title)
         nums = _nums(title)
+        ords = _ordinals(title)
+        # ---- ① 确定性折叠 ----
+        _id = (it.get("id") or "").strip()
+        _lk = (it.get("link") or "").strip()
+        _nt = _title_norm(title)
+        if (_id and _id in hard_ids) or (_lk and _lk in hard_links) \
+                or (_nt and _nt in hard_norm):
+            continue
+        _dup_hard = False
+        if len(_nt) >= 6:
+            for _ot, (_onums, _oords) in hard_norm.items():
+                if len(_ot) < 6:
+                    continue
+                _lo, _hi = (_nt, _ot) if len(_nt) <= len(_ot) else (_ot, _nt)
+                if len(_hi) - len(_lo) > 4 or _lo not in _hi:
+                    continue
+                if not _nums_conflict(nums, _onums) and not _ordinals_conflict(ords, _oords):
+                    _dup_hard = True
+                    break
+        if _dup_hard:
+            continue
+        # ---- ② 同一事件不同措辞 ----
+        g = _title_grams(title)
+        cg = _cjk_trigrams(title)     # 第三档用：中文实词 3-gram
+        dr = _dirs(title)             # 方向词（上调/下调…）
         dup = False
-        for klb, kg, knums in keys:
+        for klb, kg, knums, kords, kcg, kdr, knt in keys:
             if klb and lb and klb == lb:
                 continue
+            _lcp = _common_prefix_len(_nt, knt)
+            _prefix = bool(_nt and knt and (_nt.startswith(knt) or knt.startswith(_nt)))
+            _cjk_common = len(cg & kcg) - max(0, _lcp - 2)
             if _nums_conflict(nums, knums):   # 数字互相冲突 → 一定不是同一件事
+                continue
+            if _ordinals_conflict(ords, kords):   # 序数互相冲突 → 同上
                 continue
             if not kg:
                 continue
-            # 长度预筛：Jaccard 的上界就是 min/max，上界不到 0.36 的不用算
+            # 长度预筛：Jaccard 的上界就是 min/max。
+            # 第三档的门槛是 0.15，所以上界不到 0.15 的不用算（原来卡的 0.36 会把
+            # 「英国一男子闯入虎区」vs「英国一野生动物园发生老虎袭人事件」筛掉）。
             lo, hi = (len(g), len(kg)) if len(g) < len(kg) else (len(kg), len(g))
-            if not hi or lo / hi < 0.36:
+            if not hi or lo / hi < 0.15:
                 continue
-            if _dup_verdict(g, kg):
+            if _dup_verdict_full(g, kg, dr, kdr,
+                                 cjk_common=_cjk_common, is_prefix=_prefix):
                 dup = True
                 break
         if dup:
             continue
-        keys.append((lb, g, nums))
+        keys.append((lb, g, nums, ords, cg, dr, _nt))
+        if _id:
+            hard_ids.add(_id)
+        if _lk:
+            hard_links.add(_lk)
+        if _nt:
+            hard_norm[_nt] = (nums, ords)
         kept.append(it)
     return kept
 
@@ -4497,11 +4811,235 @@ ENT_FOREIGN_MARKERS = _kw("ent_foreign")
 # 合并放在这里而不是那里，是因为关键词表在本行才载入（见上面的顺序说明）。
 _ENT_FOREIGN_ALL = frozenset(ENT_FOREIGN_MARKERS) | _ENT_FOREIGN_EXTRA
 
+# ============ 【2026-10-11 三轮】关键字计数判据 ============
+# 用户原话：「应该是关键字过滤，比如中文名字过滤，国外地名超过几个过滤」。
+# 三组表都在 data/keywords.txt：
+#   [foreign_places] 外国地名/机构（国家、城市、国际组织、外国政府机关、外国政要、外媒）
+#   [cn_subjects]    中国主体（中国机构、行政区划、军队、国内特有事物）
+#   [cn_surnames]    中国姓氏（「姓 + 1~2 个汉字」算一个中国信号：郑钦文/王娇萍/周先旺）
+#
+# ⚠ 品牌不进 [foreign_places]：苹果/特斯拉/英伟达是外国品牌不代表新闻发生在国外，
+#   「广汽埃安 N60 新增苹果 CarPlay」就是被它坑过的。
+FOREIGN_PLACES = _kw("foreign_places") | _kw("foreign_places_extra")
+CN_SUBJECTS = _kw("cn_subjects") | _kw("cn_subjects_extra")
+CN_SURNAMES = _kw("cn_surnames")
+# 中国科技品牌（[cn_tech]）：也是**中国主体**。「小鹏集团官宣将携物理 AI 全品类产品亮相
+# 巴黎车展」讲的是中国公司去欧洲，不能因为「巴黎」两个字就转去国际栏。
+# ⚠ 只取**品牌名**那部分：[cn_tech] 里还有「中国/我国/国产/国内/省长/四部门…」（已由
+#   [cn_subjects] 计过一次，重复计会把「白宫…曾在中国生活三年」这类真外国稿压回国内），
+#   以及「坦克/澎湃/理想/长安/中兴/大模型/亿元…」这类**通用词**（「一辆坦克」会被算成中国分）。
+_CN_BRAND_AMBIGUOUS = frozenset({
+    "大模型", "国产化", "自主品牌", "自主可控", "亿元", "万元",
+    "坦克", "澎湃", "理想", "长安", "中兴", "鸿蒙", "麒麟", "深蓝", "极狐", "哪吒",
+})
+CN_BRANDS_FOR_SCOPE = _kw("cn_tech") - _CN_BRAND_AMBIGUOUS - _kw("cn_subjects")
+# 判「国际」需要的最少「外国分」。
+# 【实测】阈值 = 2 时国内栏转国际 **0 条**（国内媒体报的国际新闻一条都进不了国际栏，
+# 等于关掉这个能力）；阈值 = 1 时 9 条且样本合理。故取 1。
+# 想更严格就改成 4（= 至少要有一个"政权中枢"级的外国信号）—— 但先看清上面这个数字。
+INTL_PLACE_MIN = 1
+
+# 【2026-10-11 四轮】加权：不再"每个词 1 分、打平就判国内"。
+# 起因（用户截图）：国内头条里还留着「从选票到权力：德法意极右翼政党的不同制度路径」
+# 「人物｜白宫新任发言人：曾在中国生活三年…」—— 后一条「白宫」与「中国」各 1 分打平，
+# 平局按国内处理，于是一条明显的美国新闻留在了国内头条。
+# 权重表：
+#   4 分 = 外国政权中枢/国际组织/外国政要（[foreign_power]，加价表）
+#         中国党政一把手/外事人名（[cn_leaders]）
+#   2 分 = 普通外国地名/机构（[foreign_places] + [foreign_places_extra]）
+#         中国机构/行政区划/国内特有事物（[cn_subjects]）
+#   1 分 = 中文人名（姓 + 1~2 字）
+FOREIGN_POWER = _kw("foreign_power")
+CN_LEADERS = _kw("cn_leaders")
+W_FOREIGN_PLACE = 2
+W_FOREIGN_BONUS = 2     # [foreign_power] 里的词再额外加这么多（它们同时在 [foreign_places] 里）
+W_CN_SUBJECT = 2
+W_CN_LEADER = 4
+W_CN_NAME = 1
+# `[cn_subjects]` 里这些是**通用名词**，外国稿里同样会出现（「泰国东北部社区」「非洲大陆」
+# 「日本本土」），当中国信号用会误伤 —— 真机标定样本：
+# 「走进泰国东北部社区 感受伊桑文化的古朴与活力」是国际在线的**境外见闻稿**，
+# 靠「东北」+「社区」凑出 2 分就被判回国内。计分时把它们排除。
+_CN_GENERIC = frozenset({
+    "社区", "村民", "村", "镇", "乡", "街道", "国内", "大陆", "本土",
+    "东北", "西部", "中部", "老区", "县域",
+})
+# 姓后面紧跟这些字，基本是虚词/动词短语而不是人名 ——「曾在中国生活三年」的「曾在」、
+# 「上周还不在候选名单上」的「周还」都曾被当成中文人名，白送一个中国分。
+_CN_NAME_STOP = frozenset(
+    "在于是的了和与为有这不我那大小中上下多少着过起来去出进开关把被让从向往到至"
+    "如若因但却则便即才又更最没无别要想会能可应该须得来对就同跟以由还也都选"
+)
+
+# 中国姓氏 + 1~2 个汉字 → 一个中国信号。长姓优先，避免「欧阳」被「欧」抢。
+_CN_NAME_RX = re.compile(
+    r"(?:%s)[\u4e00-\u9fa5]{1,2}" % "|".join(sorted(CN_SURNAMES, key=len, reverse=True))
+)
+
+# 标题**以单字国名简称开头**时的外国信号（「美大规模枪击案致9死」「法媒：…」「欧企…」）。
+# 中文新闻标题大量用这种缩写，而单字词不能整表收（「美食/美女/法官/亚军/加油」都会被误命中），
+# 所以只认**开头位置** + 一张"新闻名词"后视表。真机标定：国内热榜里留着的
+# 「美大规模枪击案致9死，8人为亲属…」就是靠这一条拦下的。
+_FOREIGN_ABBR_HEAD_RX = re.compile(
+    r"^(?:美|英|法|德|俄|日|韩|印|泰|越|菲|乌|以|伊|澳|加|欧)"
+    r"(?=校|军|企|股|债|媒|总|国|方|联|洲)"
+)
+
+
+def _scope_scores(title):
+    """给标题打「中国分」「外国分」（同一个词重复出现只算一次）。
+
+    返回 (中国得分, 外国得分)，权重见上面那一段。
+    """
+    t = title or ""
+    if not t:
+        return 0, 0
+    cn_n = W_CN_SUBJECT * len({w for w in CN_SUBJECTS if w in t and w not in _CN_GENERIC})
+    cn_n += W_CN_SUBJECT * len({w for w in CN_BRANDS_FOR_SCOPE if w in t})
+    cn_n += W_CN_LEADER * len({w for w in CN_LEADERS if w in t})
+    for m in _CN_NAME_RX.finditer(t):
+        if len(m.group(0)) > 1 and m.group(0)[1] not in _CN_NAME_STOP:
+            cn_n += W_CN_NAME
+            break
+    f_n = W_FOREIGN_PLACE * len({w for w in FOREIGN_PLACES if w in t})
+    f_n += W_FOREIGN_BONUS * len({w for w in FOREIGN_POWER if w in t})
+    if _FOREIGN_ABBR_HEAD_RX.search(t):
+        f_n += W_FOREIGN_PLACE
+    return cn_n, f_n
+
+# 【2026-10-11 用户反馈「所有栏目的新闻，都存在国内和国际的新闻不能正确识别」】
+# 根因：判定国别一直在**猜** —— `[domestic]` 词表里躺着「中国」两个字，于是
+# CGTN / 新华社国际 / 中新网国际 这些**国际频道**报道「中国参与国际事务」的稿子，
+# 只要标题出现「中国」就被判成国内、从国际栏剔掉。
+# 实测（134 条真实国际稿）：误杀 36 条；娱乐 13 条被砍到只剩 2 条。
+#   误杀样本：CGTN「China warns Philippines」、Meta 禁字节跳动、派拉蒙收购华纳、
+#             新华社国际体育的中网赛事。
+# 改法：**信源确定性** —— 国际频道（channel 以 intl- 开头）来的就是国际稿，
+# 这**是事实不是猜测**。只留一张极小的安全网 [intl_local_only]（村委会/春晚/中超…
+# 这类纯国内地方事务，国际频道不会发）。
+#
+# 同时给 `cn-intl-news`（国内媒体报的国际新闻）**免二次判定**：它已经过
+# `_split_cn_scope` 那道「像国际且不像国内」才转过来的，再叠加一层严格判定就是
+# 两套分类器互相打架 —— 实测把「Meta 禁字节跳动」「派拉蒙 1100 亿美元收购华纳」
+# 这类纯国际稿又判回国内砍掉。这也是「识别错」的直接来源之一。
+INTL_CHANNEL_LOCAL_ONLY = _kw("intl_local_only")
+
 
 def _looks_ent_foreign(title):
-    """娱乐栏目专用的「是不是国际」判定：必须有外国具体对象，光有外国地名不算。"""
+    """娱乐栏目专用的「是不是国际」判定：必须有外国具体对象，光有外国地名不算。
+
+    【2026-10-11 修口径不一致】原来这里只查 `ENT_FOREIGN_MARKERS`（纯 keywords.txt），
+    而出口那道 `_is_domestic_for_intl` 查的是 `_ENT_FOREIGN_ALL`（= 关键词表 ∪
+    `ENT_FOREIGN_MARKERS` 之外的代码兜底表 `_ENT_FOREIGN_EXTRA`）。同一条稿子
+    「分流时」和「出口时」用的不是同一张表 —— 这正是用户反复看到的
+    「两处判定互相打架」的其中一处。现在两处都查 `_ENT_FOREIGN_ALL`。
+    """
     t = title or ""
-    return any(k in t for k in ENT_FOREIGN_MARKERS)
+    return any(k in t for k in _ENT_FOREIGN_ALL)
+
+
+# 娱乐·**中国文娱主体**（命中即认定是国内娱乐，不转国际栏）。
+# 为什么要单独一张：光靠 `_looks_domestic` 里的通用国内词挡不住娱乐稿 ——
+# 实测国内娱乐 34 条里 `_looks_domestic` 只认出 2 条（"央视一套开播""梦圆中国电影"），
+# 「第35届飞天奖揭晓」「国庆档票房」「优酷制播」这类**明摆着的国内影视**它一个都不认。
+# 中国艺人名字是枚举不完的，所以这里**只登记"国内平台 / 国内奖项 / 国内档期 /
+# 国内影视公司"**这类**机构与事件名** —— 它们不会出现在真国际娱乐稿的标题里。
+_ENT_CN_SUBJECT_RX = re.compile(
+    r"国产|华语|内地|央视|卫视|春晚|金鸡|百花|华表|飞天奖|金鹰|白玉兰|"
+    r"国庆档|春节档|暑期档|贺岁档|豆瓣|猫眼|灯塔专业版|中影|华夏电影|"
+    r"万达影业|博纳|光线传媒|华谊|阿里影业|腾讯视频|爱奇艺|优酷|芒果TV|"
+    r"B站|bilibili|横店|北影节|上影节|中国电影|中国电视剧|中国影视")
+
+
+# 娱乐·**英文稿的国际信号**（外国地名 / 国籍 / 国际奖项 / 国际机构）。
+# 为什么需要：国际栏娱乐的直供源只有 CGTN 文化（英文），"拦国内"靠的是中国主体判据，
+#   但**判不出中国主体 ≠ 就是国际** —— 真机里
+#   「How digital intelligence makes urban governance smarter」（数字智能让城市治理更聪明）
+#   讲的是中国城市，标题上一个中国词都没有，光靠主体判据会漏进国际栏。
+# 所以英文稿还要**正面证明自己是国际的**：命中下面任一项（或 `_ENT_FOREIGN_ALL` 里的
+#   文娱对象）才算。中英文分开处理：中文稿（境内源转来的）仍只认文娱对象表。
+# ⚠ 刻意**不收** Chinese / China —— 那是"中国主体"，归 `_INTL_ENT_DOM_RX` 管。
+_ENT_INTL_SIGNAL_RX = re.compile(
+    r"\b(Nobel|Pulitzer|Booker|Academy Award|Emmy|Grammy|Golden Globe|BAFTA|"
+    r"Cannes|Venice|Berlinale|Sundance|Oscar|Tony|Annie Award)\b"
+    r"|\b(Canadian|American|British|French|German|Italian|Spanish|Portuguese|Dutch|"
+    r"Belgian|Swiss|Austrian|Swedish|Norwegian|Danish|Finnish|Irish|Scottish|Welsh|"
+    r"Polish|Czech|Hungarian|Greek|Turkish|Russian|Ukrainian|Japanese|Korean|Indian|"
+    r"Pakistani|Bangladeshi|Australian|Brazilian|Argentine|Chilean|Mexican|Colombian|"
+    r"Peruvian|Egyptian|Nigerian|Kenyan|South African|Moroccan|Israeli|Saudi|Emirati|"
+    r"Qatari|Thai|Vietnamese|Filipino|Indonesian|Malaysian|Singaporean)\b"
+    r"|\b(Atlanta|Boston|Chicago|Dallas|Denver|Detroit|Houston|Miami|"
+    r"New York|Los Angeles|Seattle|San Francisco|Washington|Toronto|Vancouver|Montreal|"
+    r"London|Paris|Berlin|Madrid|Barcelona|Rome|Milan|Naples|Amsterdam|Vienna|Zurich|"
+    r"Geneva|Brussels|Lisbon|Warsaw|Prague|Budapest|Athens|Stockholm|Oslo|Copenhagen|"
+    r"Helsinki|Dublin|Edinburgh|Moscow|Istanbul|Cairo|Nairobi|Lagos|Johannesburg|"
+    r"Sydney|Melbourne|Auckland|Tokyo|Osaka|Kyoto|Seoul|Bangkok|Singapore|Jakarta|"
+    r"Manila|Kuala Lumpur|Hanoi|Mumbai|Delhi|Karachi|Rio|Sao Paulo|Buenos Aires|"
+    r"Mexico City|Hollywood|Broadway|Silicon Valley|North Macedonia|"
+    # 【2026-10-11 六轮·补】国家名（用于判断"事件发生在国外"，见 INTL_ENT_CN_ABROAD_PASS）。
+    # 只收**具体国家/地区**，不收 Europe/Asia/Africa 这类泛词 —— 泛词会让
+    # 「中国文化在亚洲受欢迎」这种没有具体地点的稿子也被当成"发生在国外"。
+    r"Brazil|Argentine|Argentina|Chile|Peru|Colombia|Panama|Cuba|Mexico|Egypt|Kenya|"
+    r"Nigeria|Ethiopia|Tanzania|Morocco|Tunisia|Algeria|Ghana|Uganda|Zambia|Zimbabwe|"
+    r"Thailand|Vietnam|Cambodia|Laos|Myanmar|Nepal|Sri Lanka|Bangladesh|Pakistan|"
+    r"Afghanistan|Kazakhstan|Uzbekistan|Mongolia|Saudi Arabia|Emirates|Qatar|Kuwait|"
+    r"Iran|Iraq|Jordan|Lebanon|Syria|Middle East|Poland|Hungary|Romania|Bulgaria|"
+    r"Serbia|Croatia|Slovenia|Slovakia|Ukraine|Belarus|New Zealand|Iceland|"
+    r"Luxembourg|Estonia|Latvia|Lithuania|Malta|Cyprus)\b",
+    re.I)
+
+# 【2026-10-11 六轮·用户「娱乐新闻少的可怜」】
+# 国际娱乐在"只用境内权威媒体"这条硬约束下，供给量天生就小 —— 真机实测
+# CGTN 文化（唯一的国际娱乐直供源）17 条里有 13 条是中国题材，全拦掉就只剩 4 条。
+# 但那 13 条里有一类是**事件发生在国外**的（中国电影周在北马其顿、中国高定亮相巴黎
+# 时装周、中国影视展在巴西落幕）—— 它们的**主体是中国、场域在国外**，本质是国际文化
+# 交流，放在国际栏并不违和；真正该拦的是**场域也在国内**的（上海时装周、北京钟鼓楼、
+# 国庆档票房、井冈山故居）。
+# 所以这里加一道开关：主体是中国但**标题里有明确国外地点**的 → 放行（算国际文化交流）。
+# 想退回"凡是中国主体一律拦"的旧口径，把下面这个常量改成 False 即可（不用改判据）。
+INTL_ENT_CN_ABROAD_PASS = True
+
+# ============ 【2026-10-11 七轮·用户拍板】国际娱乐接入境外权威娱乐媒体 ============
+# 先把话说明白：这是**用户 2026-10-11 明确拍板**的例外，不是擅自破章程。
+# 背景（都是实测，不是估计）：
+#   · 章程 §9.1「默认只用境内权威媒体」下，国际娱乐的供给**物理上限就是 6~8 条** ——
+#     CGTN 英文 culture 50 条（跨度 12 天）里判得出国际的只有 6 条，放宽时效到 30 天
+#     也一条不增；CGTN 西/法/阿/俄四语种 culture 各 200 条，各只 2~3 条娱乐；
+#     CGTN travel/china/video 分区全是中国题材；中国日报/环球时报英文/新华英文/
+#     人民网英文/中新网英文/中国网 的娱乐 RSS 全部 404；国内三家娱乐源（凤凰/新浪/
+#     国际在线）33 条里**一条真国际稿都没有**。
+#   · 境外候选实测 20 家，能过「每条必须带高清大图」这一硬门槛（用户 2026-10-07 定的）
+#     的只有两家：Variety（10 条全带图）、Consequence（15 条全带图）。
+#     Billboard / THR / RollingStone / NME / IndieWire 有货但 **RSS 不带图**，上不了；
+#     其余 13 家 403/404/超时。
+# 所以这里只接这两家，并且：
+#   ① 只进**国际娱乐栏**，不动要闻/科技/财经/体育（境外时政一概不碰）；
+#   ② 加一道主权红线过滤（见 `_INTL_ENT_BLOCK_RX`）；
+#   ③ 留总开关 `INTL_ENT_OVERSEAS`：改 False 立刻回到纯境内口径，不用改判据。
+INTL_ENT_OVERSEAS = True
+INTL_ENT_OVERSEAS_CHANNELS = {"intl-variety", "intl-consequence"}
+
+# 境外娱乐源的主权红线：标题里出现这些词的一律剔除，不看语境。
+# 娱乐新闻本来极少提这些，实测 25 条里只命中 1 条（"Taiwan's Sole Busan
+# Competition Title"），剔掉不心疼，但能挡住境外媒体惯用的涉台/涉藏/涉疆表述口径。
+# 注意只针对**境外源**生效 —— 境内源有自己的表述规范，走原来的判据。
+_INTL_ENT_BLOCK_RX = re.compile(
+    r"\btaiwan|\btaipei|\btibet|\btibetan|\bxinjiang|\buighur|\buyghur|"
+    r"\bhong kong\b|\bmacau|\bmacao|\bdalai|\bfalun", re.I)
+
+
+def _looks_ent_intl(title):
+    """娱乐条目该不该进**国际**栏：有外国文娱具体对象，且完全看不出中国文娱主体。
+
+    用在 `_split_cn_scope`（国内娱乐 → 国际娱乐）这一路。
+    出口那道 `_is_domestic_for_intl` 用的是同一张 `_ENT_FOREIGN_ALL`，口径一致。
+    """
+    t = title or ""
+    if not _looks_ent_foreign(t):
+        return False
+    if _looks_domestic(t):
+        return False
+    return not _ENT_CN_SUBJECT_RX.search(t)
 
 
 # 【2026-10-07 用户反馈「气泡里快科技播的是国际新闻」】
@@ -4995,33 +5533,25 @@ def _split_cn_scope(items):
         # 于是「俄罗斯总统助理…将访华」这种标题被判成国内 —— 用户一眼就看出是国际。
         # 现在顺序是：站方说国际 → 国际；关键词明显是国际（且无强国内特征）→ 国际；
         # 站方说国内 → 国内；其余按关键词兜底。
-        if _sec in FOREIGN_SECTIONS:
+        # 【2026-10-11 三轮】用户定的规则：**关键字计数过滤**，不再"命中一个词就定生死"。
+        # 旧逻辑是「标题里有外国词就判国际」，词表稍缺就漏（康奈尔/白宫没进表就漏判），
+        # 而且「广汽埃安 N60 新增苹果 CarPlay」这种只提外国品牌的**国内稿**会被误判成国际。
+        # 新规则：标题里「外国地名/机构」和「中国主体」各自计数（同一词只算一次），
+        #         外国 >= 2 且 外国 > 中国 → 国际；否则国内。
+        if (it.get("cls") or "") == "娱乐":
+            # 【2026-10-11】娱乐栏专用判据：必须有**外国文娱具体对象**
+            # （好莱坞 / 奥斯卡 / 华纳兄弟 / Netflix …），且没有中国文娱主体。
+            # 不用通用的 `_scope_scores` 地名计数 —— 娱乐稿里外国地名太常见
+            # （"蔡少芬现身韩国""迪丽热巴亮相米兰"），按地名计数会把国内明星八卦判成国际。
+            _is_intl = _looks_ent_intl(_title)
+        elif _sec in FOREIGN_SECTIONS:
             _is_intl = True
         elif _strong_intl(_title):
-            # 国际大奖/赛事优先判国际（诺贝尔、奥斯卡、奥运会…），
-            # 哪怕标题里有「中国科学家」「中国影片」也不改判。
+            # 国际大奖/赛事优先判国际（诺贝尔、奥斯卡、奥运会…）。
             _is_intl = True
-        elif _looks_foreign(_title) and not _looks_domestic(_title):
-            _is_intl = True
-        elif _sec in DOMESTIC_SECTIONS:
-            _is_intl = False
-        elif it.get("cls") == "科技":
-            # 科技栏按品牌归属判（见 _tech_scope）：先看中国品牌，再看外国品牌，
-            # 都判不出来才退回通用关键词规则。
-            _ts = _tech_scope(_title)
-            if _ts == "cn":
-                _is_intl = False
-            elif _ts == "intl":
-                _is_intl = True
-            else:
-                _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
-        elif it.get("cls") == "娱乐":
-            # 娱乐栏目单独判定：中国明星出国不算国际（见 _looks_ent_foreign）
-            _is_intl = _looks_ent_foreign(_title) and not _looks_domestic(_title)
         else:
-            # 像国际 **且** 不像国内，才算国际 —— 只判前者会把
-            # 「外交部：美方应慎重处理台湾问题」这类中国官方表态误转过去。
-            _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
+            _cn_n, _f_n = _scope_scores(_title)
+            _is_intl = _f_n >= INTL_PLACE_MIN and _f_n > _cn_n
         d = None          # 只有"判定要转国际"时才会被赋值
         if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
@@ -5048,14 +5578,24 @@ def _split_cn_scope(items):
         # 「其余国际内容来自境内综合媒体报的国际新闻，由国内板块自动转入国际板块
         #   （channel 标为 cn-intl-news）」—— **这个能力实际根本不存在**，
         # 评委拿着声明核代码会直接看出来（`cn-intl-news` 一条都不会出现）。
-        # 现在：判定要转国际的条目**同时**留在国内（不丢弃，与 README「不丢弃」一致）
-        # 并给国际板块一份；娱乐照旧一律留国内、不转国际。
-        if (it.get("cls") or "") == "娱乐":
+        #
+        # 【2026-10-11 再改】娱乐的"一律留国内"取消，改成**真分流**：
+        # 用户 2026-10-11 的原话是「所有栏目的新闻，都存在国内和国际不能正确识别」
+        # 加上「国际板块的娱乐新闻太少」—— 两条合起来就是：娱乐也要认国别。
+        # 现在娱乐按 `_looks_ent_intl`（有外国文娱具体对象 + 无中国文娱主体）判定：
+        #   判国际 → **真移走**（与头条/热榜/科技一致，国内栏不再显示）；
+        #   判国内 → 留在国内栏（国内明星八卦不会跑进国际栏）。
+        # 国际栏那边的娱乐判据用的是同一张 `_ENT_FOREIGN_ALL`，两边不会打架。
+        if (it.get("cls") or "") == "娱乐" and d is None:
             dom.append(it)
             continue
-        dom.append(it)
         if d is not None:
+            # 【2026-10-11 三轮】用户拍板：**真移走**，不再「国内留一份、国际给一份」。
+            # 原先两边都显示，用户看到的就是「头条里混进国际新闻」。
+            # 注意 PRELOAD_ALL[region]（搜索池）仍是全量，只是列表不再显示。
             intl.append(d)
+            continue
+        dom.append(it)
     return dom, intl
 
 
@@ -5099,33 +5639,19 @@ def _split_hot_by_scope(items):
         # 于是「俄罗斯总统助理…将访华」这种标题被判成国内 —— 用户一眼就看出是国际。
         # 现在顺序是：站方说国际 → 国际；关键词明显是国际（且无强国内特征）→ 国际；
         # 站方说国内 → 国内；其余按关键词兜底。
+        # 【2026-10-11 三轮】用户定的规则：**关键字计数过滤**，不再"命中一个词就定生死"。
+        # 旧逻辑是「标题里有外国词就判国际」，词表稍缺就漏（康奈尔/白宫没进表就漏判），
+        # 而且「广汽埃安 N60 新增苹果 CarPlay」这种只提外国品牌的**国内稿**会被误判成国际。
+        # 新规则：标题里「外国地名/机构」和「中国主体」各自计数（同一词只算一次），
+        #         外国 >= 2 且 外国 > 中国 → 国际；否则国内。
         if _sec in FOREIGN_SECTIONS:
             _is_intl = True
         elif _strong_intl(_title):
-            # 国际大奖/赛事优先判国际（诺贝尔、奥斯卡、奥运会…），
-            # 哪怕标题里有「中国科学家」「中国影片」也不改判。
+            # 国际大奖/赛事优先判国际（诺贝尔、奥斯卡、奥运会…）。
             _is_intl = True
-        elif _looks_foreign(_title) and not _looks_domestic(_title):
-            _is_intl = True
-        elif _sec in DOMESTIC_SECTIONS:
-            _is_intl = False
-        elif it.get("cls") == "科技":
-            # 科技栏按品牌归属判（见 _tech_scope）：先看中国品牌，再看外国品牌，
-            # 都判不出来才退回通用关键词规则。
-            _ts = _tech_scope(_title)
-            if _ts == "cn":
-                _is_intl = False
-            elif _ts == "intl":
-                _is_intl = True
-            else:
-                _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
-        elif it.get("cls") == "娱乐":
-            # 娱乐栏目单独判定：中国明星出国不算国际（见 _looks_ent_foreign）
-            _is_intl = _looks_ent_foreign(_title) and not _looks_domestic(_title)
         else:
-            # 像国际 **且** 不像国内，才算国际 —— 只判前者会把
-            # 「外交部：美方应慎重处理台湾问题」这类中国官方表态误转过去。
-            _is_intl = _looks_foreign(_title) and not _looks_domestic(_title)
+            _cn_n, _f_n = _scope_scores(_title)
+            _is_intl = _f_n >= INTL_PLACE_MIN and _f_n > _cn_n
         if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
             d["region"] = "intl"
@@ -5478,6 +6004,25 @@ def _warmup():
         # 国内抓完再抓国际 —— 这样「国内头条里剔出的国际新闻」已经就绪，
         # 能顺手并进国际板块（见 _spill_from_cn）。
         do_intl()
+
+        # 【2026-10-11 五轮】兜底：启动时「国际」可能**抢在「国内」前面**抓完。
+        # 真机日志里就是这顺序：`cn: 已有一轮抓取在进行，本轮跳过（单飞）` →
+        # 紧接着 intl 收口 → 最后 cn 才收口。此时 `_spill_from_cn()` 读的
+        # PRELOAD_ALL["cn"] 还没就绪（为空）→ 国内转来的国际新闻（cn-intl-news，
+        # 例如「从选票到权力：德法意极右翼政党的不同制度路径」）在国际栏缺席，
+        # 要等下一次 10 分钟刷新才出现。这里在两边都就绪后补一次，**只增不减**。
+        try:
+            _sp = _spill_from_cn()
+            _cur = PRELOAD.get("intl") or []
+            if _sp and _cur:
+                _have = {(x.get("title") or "") for x in _cur}
+                _add = [s for s in _sp if (s.get("title") or "") not in _have]
+                if _add:
+                    PRELOAD["intl"] = _select_fresh(_add + _cur, "intl")
+                    _note_item_hosts(_add)
+                    print(f"[ok] intl: 补入国内转来的国际新闻 {len(_add)} 条")
+        except Exception as _ex:
+            print(f"[warn] intl 补入转入条目失败: {type(_ex).__name__}")
 
     def refresh_loop():
         # 用户要求：所有栏目统一每 10 分钟自动刷新（不分国内/国际），无需手动。
