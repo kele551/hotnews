@@ -3,7 +3,7 @@
 
 <h1>hotnews · 热点新闻检索</h1>
 
-<a href="https://github.com/kele551/hotnews/releases" title="点击去下载"><img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=%E7%B4%AF%E8%AE%A1%E4%B8%8B%E8%BD%BD&color=brightgreen" height="30"></a>
+<a href="https://github.com/kele551/hotnews/releases" title="点击去下载"><img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=GitHub%E4%B8%8B%E8%BD%BD&color=brightgreen" height="30"></a>
 
 <a href="https://github.com/kele551/hotnews/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
 <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square">
@@ -54,25 +54,6 @@
 
 ---
 
-## 免责声明
-
-> 完整合规声明见 **[COMPLIANCE.md](COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
-> 知识产权 / 尚未闭环的合规事项）。
-
-- 本工具是**个人学习用的新闻聚合器**，只聚合各新闻网站**公开的标题、摘要与链接**，
-  **不存储、不修改、不转载原文内容**。
-- 所有新闻内容的**版权归原网站所有**；每条新闻都保留并显示**原文链接**，点击即跳转到来源网站。
-- 图片通过链接直接引用源站（**直链引用**，不复制、不转存到本工具的分发渠道或服务器）。
-- 本工具**不用于任何商业用途**，不含广告、不收费。
-- **不采集、不上传任何用户数据**；唯一会把"内容"发往第三方的路径是**可选的机器翻译，默认关闭**
-  （打开后国际栏的英文标题/摘要会经第三方翻译服务转中文，详见 [COMPLIANCE.md](COMPLIANCE.md) 第 3 节）。
-- 抓取范围仅限各站**公开的 RSS / JSON 接口与首页**（不使用任何登录态、不读取付费内容），
-  每个源每轮刷新最多请求 1 次（默认 10 分钟一轮），不并发压站；站点若通过 robots.txt
-  或接口说明表达不希望被访问，会按要求移除对应来源。
-- 权利人如认为本工具聚合了不应聚合的内容，**请提 Issue 说明**，核实后会立即移除对应来源。
-
----
-
 ## 使用
 
 下载 [最新 Release](https://gitee.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.4.exe`，双击运行，自动打开浏览器。
@@ -84,6 +65,9 @@
 
 > 国内用户请从 Gitee 下载（速度快）。GitHub 仓库为镜像。
 
+<details>
+<summary>📦 <b>关于本次安装包的小公告</b>（点开看）</summary>
+
 > **本次更新了安装包，但版本号没有变。**
 > 升级检查是拿「线上版本号」和「你本地的版本号」比的 —— 版本号没变，
 > **已经装着同一个版本号的朋友不会收到升级提示**；比线上旧的版本仍会正常自动升级。
@@ -93,6 +77,8 @@
 > 最新安装包里，**国际板块的国别判定按「先看是不是国内主体，再看有没有具体的国际信号」重做**，
 > 娱乐 / 体育 / 财经 / 科技 / 要闻 / 热榜各栏都覆盖，不再靠「全球 / 世界 / 国际」这类泛词判定；
 > 仓库源码的同步会随后统一提交。
+
+</details>
 
 ---
 
@@ -341,6 +327,7 @@ python app.py            # 或 python -m uvicorn server:app --port 8000
 
 </details>
 
+---
 
 ## 打包
 
@@ -592,6 +579,26 @@ python build.py --list
   签名私钥与发布凭据同样不进仓库。
 - **行尾与打包清单**：见上文「仓库约定」——`.gitattributes` 统一 LF（`说明.txt` 保持 CRLF）；
   `python build.py --list` 可以在真正打包前核对清单里没有本机调试产物。
+
+---
+
+## 免责声明
+
+> 完整合规声明见 **[COMPLIANCE.md](COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
+> 知识产权 / 尚未闭环的合规事项）。
+
+- 本工具是**个人学习用的新闻聚合器**，只聚合各新闻网站**公开的标题、摘要与链接**，
+  **不存储、不修改、不转载原文内容**。
+- 所有新闻内容的**版权归原网站所有**；每条新闻都保留并显示**原文链接**，点击即跳转到来源网站。
+- 图片通过链接直接引用源站（**直链引用**，不复制、不转存到本工具的分发渠道或服务器）。
+- 本工具**不用于任何商业用途**，不含广告、不收费。
+- **不采集、不上传任何用户数据**；唯一会把"内容"发往第三方的路径是**可选的机器翻译，默认关闭**
+  （打开后国际栏的英文标题/摘要会经第三方翻译服务转中文，详见 [COMPLIANCE.md](COMPLIANCE.md) 第 3 节）。
+- 抓取范围仅限各站**公开的 RSS / JSON 接口与首页**（不使用任何登录态、不读取付费内容），
+  每个源每轮刷新最多请求 1 次（默认 10 分钟一轮），不并发压站；站点若通过 robots.txt
+  或接口说明表达不希望被访问，会按要求移除对应来源。
+- 权利人如认为本工具聚合了不应聚合的内容，**请提 Issue 说明**，核实后会立即移除对应来源。
+
 ---
 
 ## ♥️ 支持项目
@@ -606,3 +613,7 @@ python build.py --list
 
 > 本项目以 MIT 协议自由开源，**没有付费版、也没有付费功能**；捐赠纯属自愿，
 > 与功能开放、版本更新、Issue 响应**没有任何关系**。
+
+---
+
+<p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://gitee.com/kele551/hotnews">Gitee 主仓库</a> · <a href="https://github.com/kele551/hotnews">GitHub 镜像</a></sub></p>
