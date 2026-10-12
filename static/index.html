@@ -76,16 +76,29 @@
     background:var(--card);border:1px solid var(--line);border-radius:14px;
     overflow:hidden;display:flex;flex-direction:column;
     transition:transform .16s ease, box-shadow .16s ease;
+    animation:cardin .32s ease both;
   }
-  .card:hover{transform:translateY(-3px);box-shadow:0 8px 22px rgba(26,77,143,.12)}
+  .card:hover{transform:translateY(-3px);box-shadow:0 10px 26px rgba(26,77,143,.16)}
+  @keyframes cardin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
   .thumb{display:block;height:190px;background:#eceff4;position:relative;overflow:hidden;text-decoration:none}
-  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s ease}
+  .card:hover .thumb img{transform:scale(1.045)}
+  /* 【2026-10-12 美化】图片经 /img 代理加载失败（断链/防盗链/线路抖动）时不留白块：
+     onerror 里把图撤掉、给外层 .thumb 补上品牌渐变色块与站名缩写（见 imgFail）。 */
+  .thumb img{animation:imgfade .35s ease both}
+  @keyframes imgfade{from{opacity:0}to{opacity:1}}
   /* 无题图的条目：不摆「缺失」占位，改用品牌色块 + 分类字，视觉上仍是完整卡片 */
   .thumb.ph{
     height:104px;background:linear-gradient(118deg,#16406f 0%,#2b6bb0 58%,#3f83c9 100%);
     display:flex;align-items:center;justify-content:center;
   }
-  .thumb.ph i{
+  /* 【2026-10-12 美化】图片加载失败的兜底：同款渐变但**保持 190px 高度**，
+     不让单张坏图把整行卡片拉矮（.ph 是给「本来就无图」的紧凑块用的）。 */
+  .thumb.broken{
+    background:linear-gradient(118deg,#16406f 0%,#2b6bb0 58%,#3f83c9 100%);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .thumb.ph i,.thumb.broken i{
     font-style:normal;font-size:25px;font-weight:800;color:rgba(255,255,255,.94);
     letter-spacing:9px;text-indent:9px;white-space:nowrap;
   }
@@ -97,10 +110,14 @@
   .tags{display:flex;gap:8px;align-items:center;font-size:14px}
   .tag{background:#eef1f6;color:var(--muted);border-radius:5px;padding:2px 9px}
   .tag.cls{background:#fdeee5;color:var(--accent);font-weight:600}
-  .card h2{font-size:20px;font-weight:700;line-height:1.5}
+  /* 【2026-10-12 美化】标题最多 3 行、摘要最多 2 行，超出省略 —— 超长标题不再
+     把同一行卡片撑出参差高度，整屏网格对得齐，扫读节奏更稳。 */
+  .card h2{font-size:20px;font-weight:700;line-height:1.5;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .card h2 a{color:inherit;text-decoration:none}
   .card h2 a:hover{color:var(--primary)}
-  .desc{font-size:16px;color:var(--muted);line-height:1.6;flex:1}
+  .desc{font-size:16px;color:var(--muted);line-height:1.6;flex:1;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .time{font-size:14px;color:#9aa4b2}
   .empty{padding:90px 0;text-align:center;color:var(--muted);font-size:19px}
   /* 国际板块译文补齐进度提示：说明「为什么还有英文」并给出一键解决办法 */
@@ -139,7 +156,7 @@
   /* 多平台热榜：按平台分组 + 平台标 */
   .plat{margin-bottom:8px}
   .sub{font-size:16px;font-weight:700;color:var(--text);margin:18px 0 12px;
-    display:flex;align-items:center;gap:8px}
+    display:flex;align-items:center;gap:8px;scroll-margin-top:150px}
   .sub .cnt{font-size:13px;font-weight:600;color:var(--muted);background:var(--line);
     border-radius:10px;padding:1px 9px}
   .src{font-size:12px;font-weight:700;padding:1px 9px;border-radius:10px;color:#fff;white-space:nowrap}
@@ -149,6 +166,23 @@
   .src-中新社·国际{background:#2b6cb0}
   /* 【2026-10-09】热榜出处行：「来源：凤凰网热榜 · 第4名」 */
   .srcline{font-size:14px;color:var(--muted);display:inline-flex;align-items:center;gap:2px}
+  /* 【2026-10-12 美化】栏目速航 chips：全部分类视图顶部一条，点击平滑滚到对应区块 */
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
+  .chip{
+    font-size:14px;font-weight:600;color:var(--muted);cursor:pointer;
+    background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 15px;
+    transition:.15s;font-family:inherit;
+  }
+  .chip:hover{color:var(--primary);border-color:var(--primary);transform:translateY(-1px)}
+  /* 【2026-10-12 美化】回顶部悬浮按钮：长列表滚下去后一键回来（滚动超过 600px 才浮现） */
+  #toTop{
+    position:fixed;right:26px;bottom:34px;z-index:60;width:44px;height:44px;border-radius:50%;
+    border:1px solid var(--line);background:var(--card);color:var(--primary);cursor:pointer;
+    font-size:20px;line-height:1;box-shadow:0 6px 18px rgba(26,77,143,.18);
+    opacity:0;pointer-events:none;transform:translateY(8px);transition:.22s;
+  }
+  #toTop.show{opacity:1;pointer-events:auto;transform:none}
+  #toTop:hover{background:var(--primary);color:#fff}
   @media (max-width:640px){
     header{padding:16px 18px}
     h1{font-size:24px}
@@ -200,6 +234,7 @@
 <main><div id="grid"></div></main>
 <footer class="ft">热点新闻检索 · v<span id="ftVer">-</span> · 作者 海风（kele551） · <a href="https://gitee.com/kele551/hotnews" target="_blank" rel="noopener">gitee.com/kele551/hotnews</a></footer>
 <div id="toast"></div>
+<button id="toTop" title="回到顶部">↑</button>
 
 <script>
 const SSR = __SSR_DATA__;
@@ -273,6 +308,15 @@ function shortLabel(s){
   }
   return s.slice(0,3);
 }
+// 【2026-10-12 美化】缩略图经 /img 代理加载失败时的兜底：撤掉坏图，外层换成
+// 品牌渐变色块 + 站名缩写（.thumb.broken，与「本来无图」同款观感、保持 190px 高度）。
+function imgFail(im){
+  const th = im && im.closest ? im.closest(".thumb") : null;
+  if(!th) return;
+  im.remove();
+  th.classList.remove("ph"); th.classList.add("broken");
+  if(!th.querySelector("i")) th.insertAdjacentHTML("afterbegin", `<i>${esc(im.dataset.l||"·")}</i>`);
+}
 // 热度文案：不同平台的口径不一样，显示时要说清是什么数字，别含糊地丢一个整数给用户。
 //   澎湃新闻 → 站方页面上的真实互动数（能在原文页核对）
 //   红星新闻 / 凤凰网 / 中新社·国际 → 只给名次不给热度值，后端置 0，这里不显示
@@ -309,8 +353,10 @@ function hotlistHTML(rows){
 function cardHTML(it, showCls){
   // 缩略图也做成可点：新闻图库的自然预期是「点哪儿都能进原文」，
   // 原来只有标题是链接，点图片没反应（2026-10-07 按用户反馈改）。
+  // 【2026-10-12 美化】经 /img 代理加载失败时（断链/防盗链/线路抖动）不再留白：
+  // onerror 撤掉图片、把外层换成品牌渐变色块 + 站名缩写，与「无题图」卡片同款观感。
   const inner = it.image
-    ? `<img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt="">`
+    ? `<img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt="" data-l="${esc(shortLabel(it.label||it.channel))}" onerror="imgFail(this)">`
     : `<i>${esc(shortLabel(it.label||it.channel))}</i>`;
   const cls = `thumb${it.image ? "" : " ph"}`;
   const link = safeLink(it.link);   // 【修 低-1】非 http/https 一律当"没有链接"
@@ -384,8 +430,12 @@ function render(){
           const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
           return (ia<0?99:ia) - (ib<0?99:ib);
         });
+        // 【2026-10-12 美化】顶部门栏 chips：一键平滑滚到对应区块（区块标题带锚点 id）
+        html += `<div class="chips">` + keys.map(k=>
+          `<button class="chip" data-jump="${esc(k)}">${esc(k)} · ${byCls[k].length}</button>`
+        ).join("") + `</div>`;
         html += keys.map(k=>
-          `<h3 class="sub">${esc(k)} <span class="cnt">${byCls[k].length}</span></h3>` +
+          `<h3 class="sub" id="sec-${esc(k)}">${esc(k)} <span class="cnt">${byCls[k].length}</span></h3>` +
           `<div class="grid">` + byCls[k].map(it=>cardHTML(it,false)).join("") + `</div>`
         ).join("");
       }
@@ -564,6 +614,20 @@ document.getElementById("q").addEventListener("input", ()=>{
 });
 document.getElementById("cls").onchange = render;
 document.getElementById("sort").onchange = render;
+// 【2026-10-12 美化】① 栏目 chips 点击 → 平滑滚到对应区块（区块标题 id=sec-<栏目名>）；
+// ② 回顶部按钮：滚动超过 600px 才浮现，点击回顶部。两者都挂在 document 级，
+// 不依赖 render() 重绘时机（静默刷新会重写 grid.innerHTML，委托才不会失效）。
+document.addEventListener("click", e=>{
+  const c = e.target.closest ? e.target.closest(".chip") : null;
+  if(!c) return;
+  const el = document.getElementById("sec-" + c.dataset.jump);
+  if(el) el.scrollIntoView({behavior:"smooth", block:"start"});
+});
+const _topBtn = document.getElementById("toTop");
+window.addEventListener("scroll", ()=>{
+  _topBtn.classList.toggle("show", window.scrollY > 600);
+}, {passive:true});
+_topBtn.onclick = ()=>window.scrollTo({top:0, behavior:"smooth"});
 document.getElementById("regionSeg").addEventListener("click", e=>{
   const b = e.target.closest("button"); if(!b) return;
   if(b.dataset.r === state.region) return;          // 点的是当前分区，不用重来

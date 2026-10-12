@@ -3808,6 +3808,23 @@ class _Balloon:
             # 注意：GetStockObject 属于 gdi32（不是 user32），写错会 AttributeError
             g.GetStockObject.argtypes = [ctypes.c_int]
             g.GetStockObject.restype = wintypes.HANDLE
+            # 【2026-10-12 用户反馈「打开/退出按钮毛刺感太强」】GDI RoundRect 没有
+            # 抗锯齿，小胶囊在缩放屏上边缘全是台阶。改「4 倍离屏绘制 + HALFTONE 缩回」，
+            # 需要的函数原型在这里补齐（StretchBlt/HALFTONE 走 gdi32）。
+            g.CreateCompatibleDC.argtypes = [wintypes.HDC]
+            g.CreateCompatibleDC.restype = wintypes.HDC
+            g.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+            g.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+            g.DeleteDC.argtypes = [wintypes.HDC]
+            g.StretchBlt.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                                     ctypes.c_int, ctypes.c_int, wintypes.HDC,
+                                     ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                     ctypes.c_int, wintypes.DWORD]
+            g.StretchBlt.restype = wintypes.BOOL
+            g.SetStretchBltMode.argtypes = [wintypes.HDC, ctypes.c_int]
+            g.SetStretchBltMode.restype = ctypes.c_int
+            g.SetBrushOrgEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                                        wintypes.LPVOID]
             self.ok = True
         except Exception as ex:
             import traceback
@@ -3828,6 +3845,56 @@ class _Balloon:
             return u.LoadIconW(self.k.GetModuleHandleW(None), 1)
         except Exception:
             return None
+
+    def _draw_capsule(self, hdc, rect, bg_color, fill_color, pen_color,
+                      text, fg_color, font_big):
+        """4 倍离屏画「底色+胶囊+描边+文字」，再用 HALFTONE 缩回 1/4 贴到卡片上。
+
+        为什么要绕这一圈：GDI 的 RoundRect 没有抗锯齿，小尺寸胶囊的圆弧边
+        在 125%/150% 缩放屏上全是台阶毛刺（2026-10-12 用户反馈）。先放大画、
+        再高质量缩小，边缘像素被平均化 —— 不引第三方库的土办法抗锯齿。
+        内存位图没有 alpha 通道，所以离屏上先铺**和卡片底色相同的背景**，
+        贴回去才不会在按钮四角露出色差。
+        """
+        u, g = self.u, self.g
+        ctypes = self.ctypes
+        x1, y1, x2, y2 = rect
+        w, h = x2 - x1, y2 - y1
+        if w <= 0 or h <= 0:
+            return
+        K = 4                                      # 离屏放大倍数
+        mem = g.CreateCompatibleDC(hdc)
+        bmp = g.CreateCompatibleBitmap(hdc, w * K, h * K)
+        old = g.SelectObject(mem, bmp)
+        br = pn = bg = None
+        try:
+            bg = g.CreateSolidBrush(bg_color)
+            u.FillRect(mem, ctypes.byref(self.RECT(0, 0, w * K, h * K)), bg)
+            br = g.CreateSolidBrush(fill_color)
+            pn = g.CreatePen(0, max(1, int(self.scale)) * K, pen_color)
+            ob = g.SelectObject(mem, br)
+            op = g.SelectObject(mem, pn)
+            g.RoundRect(mem, 0, 0, w * K, h * K, h * K, h * K)   # 胶囊=圆角拉满
+            g.SelectObject(mem, ob)
+            g.SelectObject(mem, op)
+            g.SelectObject(mem, font_big)
+            g.SetTextColor(mem, fg_color)
+            g.SetBkMode(mem, 1)                                 # TRANSPARENT
+            r = self.RECT(0, 0, w * K, h * K)
+            u.DrawTextW(mem, text, -1, ctypes.byref(r), 0x1 | 0x4 | 0x800)
+            g.SetStretchBltMode(hdc, 4)                         # HALFTONE
+            g.SetBrushOrgEx(hdc, 0, 0, None)
+            g.StretchBlt(hdc, x1, y1, w, h, mem, 0, 0, w * K, h * K, 0x00CC0020)
+        finally:
+            g.SelectObject(mem, old)
+            if br:
+                g.DeleteObject(br)
+            if pn:
+                g.DeleteObject(pn)
+            if bg:
+                g.DeleteObject(bg)
+            g.DeleteObject(bmp)
+            g.DeleteDC(mem)
 
     def _wndproc(self, hwnd, msg, wp, lp):
         ctypes, wintypes = self.ctypes, self.wintypes
@@ -3899,19 +3966,17 @@ class _Balloon:
                     ex = rc.right - int(14 * s)
                     self._btn_close = (ex - bw, by, ex, by + bh)
                     self._btn_open = (ex - bw - gap - bw, by, ex - bw - gap, by + bh)
-                    for _r, _fill, _txt, _fg in (
-                            (self._btn_open, self.br_btn_open, "打开", 0xFFFFFF),
-                            (self._btn_close, self.br_btn_close, "退出", 0x2C201A)):
-                        _br = g.SelectObject(hdc, _fill)
-                        _pn = g.SelectObject(hdc, self.pen_border)
-                        g.RoundRect(hdc, _r[0], _r[1], _r[2], _r[3], bh, bh)
-                        g.SelectObject(hdc, _br)
-                        g.SelectObject(hdc, _pn)
-                        g.SelectObject(hdc, self.font_btn)
-                        g.SetTextColor(hdc, _fg)
-                        _tr = self.RECT(_r[0], _r[1], _r[2], _r[3])
-                        u.DrawTextW(hdc, _txt, -1, ctypes.byref(_tr),
-                                    0x1 | 0x4 | 0x800)       # CENTER|VCENTER|NOPREFIX
+                    # 【2026-10-12 用户反馈「毛刺感太强」】原来直接 GDI RoundRect，
+                    # 圆弧无抗锯齿。改走 _draw_capsule（4 倍离屏 + HALFTONE 缩回）。
+                    # 颜色与原画刷保持一致：打开 #2B6CB0 白字，退出 #E2E8F0 深字，
+                    # 描边沿用 pen_border 的 #E2E8F0；底色跟着卡片三套配色取。
+                    _bg = 0xF0F1FF if _head else (0xF1F8FF if warn else 0xFFFFFF)
+                    self._draw_capsule(hdc, self._btn_open, _bg,
+                                       0xB06C2B, 0xF0E8E2, "打开", 0xFFFFFF,
+                                       self.font_btn4)
+                    self._draw_capsule(hdc, self._btn_close, _bg,
+                                       0xF0E8E2, 0xF0E8E2, "退出", 0x2C201A,
+                                       self.font_btn4)
                 u.EndPaint(hwnd, ctypes.byref(ps))
                 return 0
             if msg == 0x0113:                      # WM_TIMER
@@ -4119,6 +4184,9 @@ class _Balloon:
                                            134, 5, 0, 5, 0, "Microsoft YaHei UI")
             self.font_btn = g.CreateFontW(-int(14 * s), 0, 0, 0, 700, 0, 0, 0,
                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
+            # 4 倍字号：_draw_capsule 离屏绘制专用（缩回 1/4 后字边缘同样被抹平）
+            self.font_btn4 = g.CreateFontW(-int(14 * s) * 4, 0, 0, 0, 700, 0, 0, 0,
+                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
             self.font_msg = g.CreateFontW(-int(16 * s), 0, 0, 0, 700, 0, 0, 0,
                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
             # 小图标（取不到就算了，标题会自动左移）
@@ -4872,10 +4940,24 @@ _CN_NAME_STOP = frozenset(
 )
 
 # 中国姓氏 + 1~2 个汉字 → 一个中国信号。长姓优先，避免「欧阳」被「欧」抢。
+# 【2026-10-12 回归断言修正】拆成「多字姓 / 单字姓」两组，单字姓加否定后顾：
+# 单字姓前面出现「将/处/对/关/由/等/高/低/至/在/位/易/用/诸」这类字，几乎必然是
+# 介词或动词用法（「将于」「对于」「处于」「高于」「位于」「易于」），不是人名。
+# 起因：「俄罗斯总统助理将于近期访华」的「将于」被当成姓「于」，白送 1 分中国，
+# 用户 2026-10-07 点名过的外交新闻又被平局规则打回国内（回归，被断言抓住）。
+_CN_SURN_N = "|".join(sorted({s for s in CN_SURNAMES if len(s) > 1}, key=len, reverse=True))
+_CN_SURN_1 = "|".join(sorted({s for s in CN_SURNAMES if len(s) == 1}))
 _CN_NAME_RX = re.compile(
-    r"(?:%s)[\u4e00-\u9fa5]{1,2}" % "|".join(sorted(CN_SURNAMES, key=len, reverse=True))
+    r"(?:%s)[\u4e00-\u9fa5]{1,2}|(?<![将处于对关由等高低至在位易用诸隶适])"
+    r"(?:%s)[\u4e00-\u9fa5]{1,2}" % (_CN_SURN_N, _CN_SURN_1)
 )
 
+# 【2026-10-12 用户口径】外交新闻 = 国际新闻：外国政要「访华」，主体在外国、中国在
+# 客体位 —— 计分表里「俄罗斯(2)」对「中国(2)」打平就被平局规则留在国内（回归案例：
+# 「俄罗斯总统助理将于近期访华」）。国际栏出口 _NEWS_CN_OBJECT_RX 早已按「客体式豁免」
+# 把这类稿子留在国际；分流侧必须同等认，否则两套口径打架（用户被这类打架咬过两次）。
+# 规则：命中访华句式 **且** 外国分里至少有一个正经外国主体（≥一档地名分）→ 判国际。
+_DIPLO_VISIT_CN_RX = re.compile(r"访华|访京|到访中国|访问中国|对华国事访问")
 # 标题**以单字国名简称开头**时的外国信号（「美大规模枪击案致9死」「法媒：…」「欧企…」）。
 # 中文新闻标题大量用这种缩写，而单字词不能整表收（「美食/美女/法官/亚军/加油」都会被误命中），
 # 所以只认**开头位置** + 一张"新闻名词"后视表。真机标定：国内热榜里留着的
@@ -5508,6 +5590,15 @@ def _parse_gmw_list(src):
 # 加进来会让「美股/A股」这类稿子被分流到国际频道、把国内财经栏搬空；
 # 国内财经栏要稳定供应（气泡配额要求财经 ≥2 条），所以财经条目一律留在国内。
 CN_SPLIT_CLS = {"头条", "热榜", "娱乐", "科技"}
+# 【2026-10-12 用户截图】「北约防空网几分钟内崩溃！挪威模拟：28架苏-57+…」挂在
+# 「娱乐·凤凰网」——娱乐源的视频区混发军事新闻，栏目跟着源走就错位（用户口径：
+# 「财经类新闻一定要区别化，不能错放栏目」是同一件事）。标题命中**窄军事词表**时，
+# 先把栏目改成「头条」再走常规判定：留国内就显示在头条，转国际按既有「头条→要闻」
+# 规则落到要闻。窄表不含「坦克」（坦克300/坦克世界不是军事）与字母数字机型（不稳）。
+_MIL_RX = re.compile(
+    r"防空|导弹|无人机|战斗机|轰炸机|军舰|航母|雷达|演习|击落|火炮|弹药|核弹|核武|"
+    r"驻军|部队|战机|预警机|反导|北约|苏-\d|苏\d+|米-\d|歼-?\d|轰-\d"
+)
 
 # 国内热榜里被判为国际的那批（由 _collect("hot") 填），供国际热榜并入
 _HOT_INTL_SPILL = []
@@ -5527,6 +5618,11 @@ def _split_cn_scope(items):
     for it in items:
         _sec = (it.get("section") or "").strip()
         _title = it.get("title") or ""
+        # 【2026-10-12】娱乐栏里的军事新闻先把栏目改成「头条」（见 _MIL_RX 注释）。
+        # 改完自然跳过下面的娱乐专用判据，走通用分流；转国际时按「头条→要闻」落栏。
+        # 幂等：第二次进本函数时 cls 已是「头条」，不会再改。
+        if (it.get("cls") or "") == "娱乐" and _MIL_RX.search(_title):
+            it["cls"] = "头条"
         # 【2026-10-07 用户反馈「国内热榜还是混进国际新闻」】关键改动：
         # **关键词很明确时以关键词为准，不再被站方栏目压住**。
         # 原因是凤凰把外交新闻归在「大陆」栏目里，而「大陆」在我的国内白名单中，
@@ -5551,7 +5647,9 @@ def _split_cn_scope(items):
             _is_intl = True
         else:
             _cn_n, _f_n = _scope_scores(_title)
-            _is_intl = _f_n >= INTL_PLACE_MIN and _f_n > _cn_n
+            _is_intl = _f_n >= INTL_PLACE_MIN and (
+                _f_n > _cn_n
+                or (_f_n >= W_FOREIGN_PLACE and _DIPLO_VISIT_CN_RX.search(_title)))
         d = None          # 只有"判定要转国际"时才会被赋值
         if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
@@ -5651,7 +5749,9 @@ def _split_hot_by_scope(items):
             _is_intl = True
         else:
             _cn_n, _f_n = _scope_scores(_title)
-            _is_intl = _f_n >= INTL_PLACE_MIN and _f_n > _cn_n
+            _is_intl = _f_n >= INTL_PLACE_MIN and (
+                _f_n > _cn_n
+                or (_f_n >= W_FOREIGN_PLACE and _DIPLO_VISIT_CN_RX.search(_title)))
         if it.get("cls") in CN_SPLIT_CLS and _is_intl:
             d = dict(it)
             d["region"] = "intl"
