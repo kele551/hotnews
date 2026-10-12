@@ -3,10 +3,33 @@
 
 <h1>hotnews · 热点新闻检索</h1>
 
-<img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
+<a href="https://github.com/kele551/hotnews/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
 <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square">
-<img alt="Version" src="https://img.shields.io/badge/version-v1.5.4-blue?style=flat-square">
-<img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=downloads&color=green">
+<a href="https://github.com/kele551/hotnews/releases"><img alt="Release" src="https://img.shields.io/github/v/release/kele551/hotnews?style=flat-square&label=release&color=blue"></a>
+<img alt="Release Date" src="https://img.shields.io/github/release-date/kele551/hotnews?style=flat-square&label=release%20date&color=blueviolet">
+<a href="https://github.com/kele551/hotnews/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=downloads&color=green"></a>
+
+<a href="https://github.com/kele551/hotnews/stargazers"><img alt="GitHub Star" src="https://img.shields.io/github/stars/kele551/hotnews?style=flat-square&logo=github&label=GitHub%20Star&color=gold"></a>
+<a href="https://gitee.com/kele551/hotnews"><img alt="Gitee Star" src="https://gitee.com/kele551/hotnews/badge/star.svg"></a>
+<a href="https://github.com/kele551/hotnews/network/members"><img alt="GitHub Fork" src="https://img.shields.io/github/forks/kele551/hotnews?style=flat-square&label=GitHub%20Fork&color=blue"></a>
+<a href="https://gitee.com/kele551/hotnews"><img alt="Gitee Fork" src="https://gitee.com/kele551/hotnews/badge/fork.svg"></a>
+<a href="https://github.com/kele551/hotnews/issues"><img alt="Issues" src="https://img.shields.io/github/issues/kele551/hotnews?style=flat-square&label=issues"></a>
+<img alt="Issues Closed" src="https://img.shields.io/github/issues-closed/kele551/hotnews?style=flat-square&label=resolved">
+<a href="https://github.com/kele551"><img alt="Follow Author" src="https://img.shields.io/github/followers/kele551?style=flat-square&logo=github&label=follow%20author"></a>
+
+<img alt="Last Commit" src="https://img.shields.io/github/last-commit/kele551/hotnews?style=flat-square&label=last%20commit&color=blue">
+<img alt="Commit Activity" src="https://img.shields.io/github/commit-activity/y/kele551/hotnews?style=flat-square&label=commits%2Fyear&color=blue">
+<img alt="Contributors" src="https://img.shields.io/github/contributors/kele551/hotnews?style=flat-square&label=contributors&color=blue">
+<img alt="Language" src="https://img.shields.io/github/languages/top/kele551/hotnews?style=flat-square">
+<img alt="Code Size" src="https://img.shields.io/github/languages/code-size/kele551/hotnews?style=flat-square&label=code%20size">
+<a href="https://github.com/kele551/hotnews/blob/main/CONTRIBUTING.md"><img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square"></a>
+
+<img alt="Single File" src="https://img.shields.io/badge/形态-单文件exe-blue?style=flat-square">
+<img alt="Free" src="https://img.shields.io/badge/费用-免费无广告-brightgreen?style=flat-square">
+<img alt="No Tracking" src="https://img.shields.io/badge/用户数据-不采集不上传-green?style=flat-square">
+<img alt="Auto Refresh" src="https://img.shields.io/badge/刷新-每10分钟-blue?style=flat-square">
+<a href="https://www.bilibili.com/video/BV12BpQ6mEGm"><img alt="Bilibili Demo" src="https://img.shields.io/badge/B站-演示视频-00a1d6?style=flat-square&logo=bilibili&logoColor=white"></a>
+<a href="https://github.com/kele551/hotnews/issues"><img alt="Feedback" src="https://img.shields.io/badge/反馈-欢迎提Issue-orange?style=flat-square"></a>
 
 <p>📰 <b>网页形式的国内 / 国际热点新闻图库</b>　——　单文件 exe，双击即用，无安装、无控制台窗口，每 10 分钟自动刷新</p>
 
