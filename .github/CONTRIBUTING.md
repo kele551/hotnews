@@ -10,9 +10,9 @@ hotnews（热点新闻检索）是一个人维护的小项目：Windows 单文�
 
 ## 一、提 Issue
 
-- **Bug**：用 [Bug 反馈](.github/ISSUE_TEMPLATE/bug_report.yml) 模板。
+- **Bug**：用 [Bug 反馈](ISSUE_TEMPLATE/bug_report.yml) 模板。
   版本号、Windows 版本、复现步骤是必填；栏目空白类问题请附日志片段或 `check_sources.py` 的输出。
-- **功能建议**：用 [功能建议](.github/ISSUE_TEMPLATE/feature_request.yml) 模板。
+- **功能建议**：用 [功能建议](ISSUE_TEMPLATE/feature_request.yml) 模板。
   先说清「想解决什么问题」，再说方案。
 - **安全漏洞**：**不要开公开 Issue**，按 [SECURITY.md](SECURITY.md) 的私下渠道报告。
 - 提交前请顺手做两件事：
@@ -212,7 +212,7 @@ docs: 对外文案措辞中性化，避免平台内容审查误判
 
 ## 七、许可与署名
 
-- 本项目以 **MIT** 许可发布，见 [LICENSE](LICENSE)。提交贡献即表示你同意以同一许可分发。
+- 本项目以 **MIT** 许可发布，见 [LICENSE](../LICENSE)。提交贡献即表示你同意以同一许可分发。
 - 新增源文件请带上作者署名行（中文场景「海风（kele551）」）；文档改动不需要另加署名。
 - 参与本项目即表示你同意遵守上面的用词与隐私约定（不写敏感措辞、不写私人邮箱）。
 
@@ -479,7 +479,7 @@ docs: 对外文案措辞中性化，避免平台内容审查误判
 
 自绘窗口，**不依赖系统通知**（Windows 11 且通知总开关关闭时，系统气泡会被静默丢弃）。
 
-![桌面气泡](docs/screenshot-balloon.png)
+![桌面气泡](../docs/screenshot-balloon.png)
 
 > 上图：鼠标悬停在气泡上时的样子 —— **暂停倒计时**并浮出「打开 / 退出」按钮。
 > 标题尾部的 `(5/10)` 表示这一组 10 条里的第 5 条。

@@ -42,7 +42,7 @@
 <img alt="Gitee Fork" src="https://gitee.com/kele551/hotnews/badge/fork.svg">
 <img alt="Language" src="https://img.shields.io/github/languages/top/kele551/hotnews?style=flat-square">
 <img alt="Code Size" src="https://img.shields.io/github/languages/code-size/kele551/hotnews?style=flat-square&label=code%20size">
-<a href="https://github.com/kele551/hotnews/blob/main/CONTRIBUTING.md"><img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square"></a>
+<a href="https://github.com/kele551/hotnews/blob/main/.github/CONTRIBUTING.md"><img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square"></a>
 </p>
 
 </details>
@@ -86,7 +86,7 @@
 
 - 12 个栏目全部**实测连通 + 自带高清大图**（短边 ≥ 300）才接入；实测失败的一律不采用
 - **合规口径（2026-10-09 起）：只用境内站点**；国际新闻用境内媒体的国际版。唯一例外（2026-10-11 拍板）：
-  国际娱乐栏接入 2 家境外娱乐媒体（Variety · Consequence）。依据、处置与自查见 [COMPLIANCE.md](COMPLIANCE.md) 第 7 节
+  国际娱乐栏接入 2 家境外娱乐媒体（Variety · Consequence）。依据、处置与自查见 [COMPLIANCE.md](.github/COMPLIANCE.md) 第 7 节
 
 | 栏目 | 源 |
 |---|---|
@@ -104,7 +104,7 @@
 | **国际热榜** | 中新社·国际 · 凤凰网 · 澎湃新闻 · 红星新闻 |
 
 > 热榜类栏目一律按时间倒序；国内栏里判为国际的条目不丢弃，转给国际板块（国内热榜→国际热榜、国内头条→国际要闻）。
-> 换源记录、栏目定稿过程与「实测失败、没有采用的源」完整清单见 [CONTRIBUTING.md](CONTRIBUTING.md) 第九节。
+> 换源记录、栏目定稿过程与「实测失败、没有采用的源」完整清单见 [CONTRIBUTING.md](.github/CONTRIBUTING.md) 第九节。
 
 ---
 
@@ -152,7 +152,7 @@
 { "update": { "enabled": true, "auto_update": true } }
 ```
 
-> 维护者发布流程与 `version.json` 相关的踩坑清单，见 [CONTRIBUTING.md](CONTRIBUTING.md) 第八节。
+> 维护者发布流程与 `version.json` 相关的踩坑清单，见 [CONTRIBUTING.md](.github/CONTRIBUTING.md) 第八节。
 
 ---
 
@@ -161,28 +161,28 @@
 1. **继续补实测可用的源** —— 按「真连通 + 带图（短边 ≥300）+ 有当天或近日内容」补，目标每栏稳定 ≥3 家
    （当前缺口：国内财经 2 家、国内娱乐 3 家）
 2. **移动端局域网查看** —— 为小屏做自适应布局，并把「只读浏览」与「本机管理」在界面上分清
-   （现状与权限边界见 [SECURITY.md](SECURITY.md)）
+   （现状与权限边界见 [SECURITY.md](.github/SECURITY.md)）
 3. **源可用性自检面板** —— 把 `check_sources.py` 搬进页面，一眼看出哪个源抓不到、不带图、停更
 
-> 维护原则：**不为修 bug 单独发版**（修复攒到下一个功能版本一起发）；**没测过的东西不交付**。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 第五节。
+> 维护原则：**不为修 bug 单独发版**（修复攒到下一个功能版本一起发）；**没测过的东西不交付**。详见 [CONTRIBUTING.md](.github/CONTRIBUTING.md) 第五节。
 
 ---
 
 ## 参与贡献
 
 - **维护者**：海风（kele551）—— 个人项目，单人维护；Issue / PR 一般 **3 个工作日内**首次回应
-- **安全漏洞**：**请不要开公开 Issue**，按 [SECURITY.md](SECURITY.md) 的私下渠道报告
-- **贡献指南**：怎么提 Issue / PR、代码风格、数据源增删门槛见 [CONTRIBUTING.md](CONTRIBUTING.md)；
-  产物来源与签名计划见 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)；
-  聚合与抓取边界、隐私、第三方组件许可见 [COMPLIANCE.md](COMPLIANCE.md)
+- **安全漏洞**：**请不要开公开 Issue**，按 [SECURITY.md](.github/SECURITY.md) 的私下渠道报告
+- **贡献指南**：怎么提 Issue / PR、代码风格、数据源增删门槛见 [CONTRIBUTING.md](.github/CONTRIBUTING.md)；
+  产物来源与签名计划见 [CODE_SIGNING_POLICY.md](.github/CODE_SIGNING_POLICY.md)；
+  聚合与抓取边界、隐私、第三方组件许可见 [COMPLIANCE.md](.github/COMPLIANCE.md)
 - **许可**：[MIT](LICENSE)。运行时只依赖 4 个宽松许可的第三方库（fastapi / uvicorn / feedparser / httpx），
-  无 GPL/AGPL、无商业授权组件，清单见 [COMPLIANCE.md](COMPLIANCE.md) 第 5 节
+  无 GPL/AGPL、无商业授权组件，清单见 [COMPLIANCE.md](.github/COMPLIANCE.md) 第 5 节
 
 ---
 
 ## 免责声明
 
-> 完整合规声明见 **[COMPLIANCE.md](COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
+> 完整合规声明见 **[COMPLIANCE.md](.github/COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
 > 知识产权 / 尚未闭环的合规事项）。
 
 - 本工具是**个人学习用的新闻聚合器**，只聚合各新闻网站**公开的标题、摘要与链接**，
@@ -191,7 +191,7 @@
 - 图片通过链接直接引用源站（**直链引用**，不复制、不转存到本工具的分发渠道或服务器）。
 - 本工具**不用于任何商业用途**，不含广告、不收费。
 - **不采集、不上传任何用户数据**；唯一会把"内容"发往第三方的路径是**可选的机器翻译，默认关闭**
-  （打开后国际栏的英文标题/摘要会经第三方翻译服务转中文，详见 [COMPLIANCE.md](COMPLIANCE.md) 第 3 节）。
+  （打开后国际栏的英文标题/摘要会经第三方翻译服务转中文，详见 [COMPLIANCE.md](.github/COMPLIANCE.md) 第 3 节）。
 - 抓取范围仅限各站**公开的 RSS / JSON 接口与首页**（不使用任何登录态、不读取付费内容），
   每个源每轮刷新最多请求 1 次（默认 10 分钟一轮），不并发压站；站点若通过 robots.txt
   或接口说明表达不希望被访问，会按要求移除对应来源。
