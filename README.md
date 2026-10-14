@@ -24,6 +24,7 @@
 <a href="https://github.com/kele551/hotnews"><img alt="GitHub mirror" src="https://img.shields.io/badge/%F0%9F%90%99_%E6%BA%90%E7%A0%81-GitHub%E9%95%9C%E5%83%8F-24292f?style=flat-square&logo=github&logoColor=white&labelColor=3d4552"></a>
 <a href="https://www.bilibili.com/video/BV12BpQ6mEGm"><img alt="Bilibili demo" src="https://img.shields.io/badge/%F0%9F%93%BA_%E6%BC%94%E7%A4%BA-B%E7%AB%99%E8%A7%86%E9%A2%91-00a1d6?style=flat-square&logo=bilibili&logoColor=white&labelColor=3d4552"></a>
 <a href="https://github.com/kele551/hotnews/issues"><img alt="Issues" src="https://img.shields.io/badge/%F0%9F%90%9E_%E5%8F%8D%E9%A6%88-%E6%8F%90Issue-0969da?style=flat-square&labelColor=3d4552"></a>
+<a href="#sponsor"><img alt="Sponsor" src="https://img.shields.io/badge/%E2%98%95_%E8%B5%9E%E8%B5%8F-%E8%AF%B7%E5%96%9D%E5%92%96%E5%95%A1-ff69b4?style=flat-square&labelColor=3d4552"></a>
 
 <p>📰 <b>网页形式的国内 / 国际热点新闻图库</b>　——　单文件 exe，双击即用，无安装、无控制台窗口，每 10 分钟自动刷新</p>
 
@@ -198,6 +199,8 @@
 - 权利人如认为本工具聚合了不应聚合的内容，**请提 Issue 说明**，核实后会立即移除对应来源。
 
 ---
+
+<a id="sponsor"></a>
 
 ## ♥️ 支持项目
 
