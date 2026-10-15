@@ -3,7 +3,7 @@
 
 <h1>hotnews · 热点新闻检索</h1>
 
-<a href="https://github.com/kele551/hotnews/releases" title="点击去下载"><img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=GitHub%E4%B8%8B%E8%BD%BD&color=brightgreen" height="30"></a>
+<a href="https://github.com/kele551/hotnews/releases" title="点击去下载"><img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=GitHub%E4%B8%8B%E8%BD%BD&color=brightgreen"></a>
 <a href="https://gitee.com/kele551/hotnews/access" title="Gitee 仓库访问统计 · IP 全部累计 · 每日自动更新"><img alt="Gitee 访问" src="https://img.shields.io/badge/Gitee%E8%AE%BF%E9%97%AE-IP_22-c71d24?style=flat-square&labelColor=3d4552"></a>
 
 <a href="https://github.com/kele551/hotnews/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
@@ -47,11 +47,6 @@
 </p>
 
 </details>
-
-![主界面](docs/screenshot-main.png)
-
-> 上图：打开即定位在热榜（按排名倒序），顶部可切换国内 / 国际、搜索、筛分类；
-> 右上角「开机启动」是给用户自己勾的开关，勾上后开机只在后台跑，不弹页面。
 
 ---
 
@@ -272,11 +267,6 @@
 
 
 自绘窗口，**不依赖系统通知**（Windows 11 且通知总开关关闭时，系统气泡会被静默丢弃）。
-
-![桌面气泡](docs/screenshot-balloon.png)
-
-> 上图：鼠标悬停在气泡上时的样子 —— **暂停倒计时**并浮出「打开 / 退出」按钮。
-> 标题尾部的 `(5/10)` 表示这一组 10 条里的第 5 条。
 
 一条气泡里滚动播放 **10 条**，每条 **5.6 秒**（一整组约 56 秒），标题尾部带 `(3/10)` 进度。
 
