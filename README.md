@@ -19,7 +19,6 @@
 <img alt="Single File" src="https://img.shields.io/badge/形态-单文件exe-blue?style=flat-square">
 <img alt="Free" src="https://img.shields.io/badge/费用-免费无广告-brightgreen?style=flat-square">
 <img alt="No Tracking" src="https://img.shields.io/badge/用户数据-不采集不上传-green?style=flat-square">
-<img alt="Auto Refresh" src="https://img.shields.io/badge/刷新-每10分钟-blue?style=flat-square">
 
 <a href="https://gitee.com/kele551/hotnews/releases"><img alt="Download from Gitee" src="https://img.shields.io/badge/%F0%9F%93%A5_%E4%B8%8B%E8%BD%BD-Gitee%E4%B8%BB%E6%BA%90-c71d24?style=flat-square&logo=gitee&logoColor=white&labelColor=3d4552"></a>
 <a href="https://github.com/kele551/hotnews"><img alt="GitHub mirror" src="https://img.shields.io/badge/%F0%9F%90%99_%E6%BA%90%E7%A0%81-GitHub%E9%95%9C%E5%83%8F-24292f?style=flat-square&logo=github&logoColor=white&labelColor=3d4552"></a>
