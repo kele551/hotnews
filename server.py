@@ -847,6 +847,14 @@ def _img_redirect_blocked(orig, final):
 
 # 畸形协议前缀：https:https://x  或  https://https://x（RSS 里真实存在）
 _URL_FIX = re.compile(r"^https?:/*(?=https?://)", re.I)
+# 【2026-10-15 修】「两个协议黏在一起」的畸形地址（真机日志实测 8 条图片因此被拒）：
+#     https://img-kp.mydrivers.comhttps://img1.mydrivers.com/img/20261014/xxx.png
+#   —— 前半段是个**只有主机名、没有路径**的占位（快科技文章页里那个 `img-kp` 图床），
+#   后面那半段才是真正的图。整串交给 urlsplit 会得到主机名 "img-kp.mydrivers.comhttps"
+#   → 域名解析失败 → 图片被拒（用户看到的就是"这条没图"）。
+#   ⚠ 只在「scheme://host 后面**紧跟着**又一个 scheme://」时裁掉前半段：
+#   正常地址即使查询串里带 http://（如 ?u=http://…），前半段也一定带路径或问号，不会误伤。
+_URL_GLUED = re.compile(r"^https?://[^/\s?]+(?=https?://)", re.I)
 # URL 里的日期路径，用于识别站方写死的默认图
 _IMG_DATE_PAT = (
     re.compile(r"/(20\d{2})[/\-]?(\d{2})[/\-]?(\d{2})/"),
@@ -861,10 +869,11 @@ MIN_IMG_SHORT_SIDE = 300
 
 
 def _norm_url(c, base):
-    """归一化图片地址：剥畸形协议前缀、补全协议相对地址与相对路径"""
+    """归一化图片地址：剥畸形协议前缀、剥"两个协议黏一起"、补全协议相对地址与相对路径"""
     c = html.unescape(c or "").strip().strip("\"'")
     if not c or c.startswith(("data:", "javascript:", "#")):
         return None
+    c = _URL_GLUED.sub("", c, count=1)      # 见上面 _URL_GLUED 的说明
     while _URL_FIX.match(c):
         c = _URL_FIX.sub("", c, count=1)
     if c.startswith("//"):
