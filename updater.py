@@ -24,6 +24,7 @@ version.json 结构（含 launcher 字段才支持自动下载）：
      等进程退出后由它执行「替换 + 重启」，或用户点「立即重启」时触发
 """
 import os
+import ssl
 import sys
 import json
 import hashlib
@@ -68,6 +69,43 @@ _state = {"status": "idle", "message": "", "remote": None, "latest": None}
 # 升级包名与「替换回执」文件路径也提上来当常量，VBS / BAT / Python 三处引用同一份。
 UPDATE_PKG = os.path.join(tempfile.gettempdir(), "hotnews_update.exe")
 RESULT_FILE = os.path.join(tempfile.gettempdir(), "hotnews_update.result")
+# 【2026-10-12 修】fetch_remote 三个候选全挂时，最后一次失败的**具体原因**
+# （如 ConnectionError / CERTIFICATE_VERIFY_FAILED），check() 会把它拼进提示 ——
+# 以前一律是"无法连接更新源"六个字，真实原因（网络？证书？验签？）只能靠猜。
+_last_reason = {"why": ""}
+
+
+def _fetch_reason():
+    """最近一次更新源请求失败的具体原因；成功/没发生过则为空串。"""
+    return (_last_reason.get("why") or "").strip()
+
+
+# 【2026-10-12 修「无法连接更新源」真机事故】单文件 exe 运行期间，清理工具可能把
+# %TEMP%\_MEIxxxx 里**运行后才需要读的文件**（certifi\cacert.pem、data\keywords.txt）
+# 清走 —— 已经加载进内存的 dll/pyd 删不掉所以程序照常跑，但更新检查每次都要
+# **重新创建 SSL 上下文、重新读 cacert.pem**，文件没了就秒抛异常：三个候选
+# 全部瞬间失败 → 用户看到的就是"无法连接更新源"，而远端其实是好的。
+# 对策：优先用 certifi 的 CA 束；**读不到就退到系统证书库**（Windows 的
+# load_default_certs 走系统根证书存储，不需要任何临时文件）。
+# 这不是安全降级：传输层换 CA 来源而已，升级包本身仍然必须过
+# **Ed25519 验签 + sha256** 两道闸，篡改与投毒照样进不来。
+_VERIFY = None
+_verify_cache = {}
+
+
+def _updater_verify():
+    """返回可复用的 verify 参数（SSLContext 建一次缓起来，免得每次检查都重读证书文件）。"""
+    global _VERIFY
+    if _VERIFY is not None:
+        return _VERIFY
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()   # 兜底：系统证书库
+    _verify_cache["ctx"] = ctx
+    _VERIFY = ctx
+    return _VERIFY
 
 
 def last_message():
@@ -127,22 +165,28 @@ def fetch_remote():
     """
     if httpx is None:
         return None
+    _last_reason["why"] = ""
     # 【2026-10-09 修 低-4】三个候选按顺序试：Gitee 主地址 → Gitee 备用地址 → GitHub 兜底。
     # 每个都要求「HTTP 200 + Ed25519 验签通过」才采用，任一环节不过就换下一个。
     for url in (REMOTE_VERSION_URL, REMOTE_VERSION_URL_ALT, REMOTE_VERSION_URL_GH):
         try:
             # trust_env=False：不走系统/环境代理，直连 Gitee 更快更稳（同 server._fetch）
+            # verify=_updater_verify()：见上面注释 —— certifi 文件被清走时自动退到系统证书库。
             r = httpx.get(url, timeout=5, follow_redirects=True, trust_env=False,
+                          verify=_updater_verify(),
                           headers={"User-Agent": "hotnews-updater"})
             if r.status_code != 200:
+                _last_reason["why"] = f"HTTP {r.status_code} {url.split('/')[2]}"
                 continue
             raw = r.content                      # 验签必须用**原始字节**，不能用重新序列化的
             ok, why = _verify_sig(raw, url + ".sig")
             if not ok:
+                _last_reason["why"] = why
                 print(f"[warn] 升级源验签失败（{why}），已忽略这次更新信息")
                 continue
             return json.loads(raw.decode("utf-8"))
-        except Exception:
+        except Exception as ex:
+            _last_reason["why"] = f"{type(ex).__name__} {url.split('/')[2]}"
             continue
     return None
 
@@ -155,6 +199,7 @@ def _verify_sig(raw, sig_url):
         return False, "验签模块缺失"    # fail-closed：宁可不让升级，也绝不放行未验签的更新
     try:
         s = httpx.get(sig_url, timeout=5, follow_redirects=True, trust_env=False,
+                      verify=_updater_verify(),
                       headers={"User-Agent": "hotnews-updater"})
         if s.status_code != 200:
             return False, f"拿不到签名 HTTP {s.status_code}"
@@ -179,7 +224,10 @@ def check(silent=True):
         try:
             remote = fetch_remote()
             if not remote or not remote.get("version"):
-                _state.update(status="error", message="无法连接更新源", remote=None)
+                _why = _fetch_reason()
+                _state.update(status="error",
+                              message=("无法连接更新源" + (f"（{_why}）" if _why else "")),
+                              remote=None)
                 return _state.copy()
             rv = remote["version"]
             local = _read_local_version()
@@ -259,6 +307,7 @@ def download_and_prepare(remote):
         except Exception:
             pass
         with httpx.stream("GET", url, timeout=60, follow_redirects=True,
+                          verify=_updater_verify(),
                           headers={"User-Agent": "hotnews-updater"}) as r:
             if r.status_code != 200:
                 return False, f"下载失败 HTTP {r.status_code}"
