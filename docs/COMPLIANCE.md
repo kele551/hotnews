@@ -65,7 +65,7 @@
 
 ## 5. 第三方组件与许可
 
-本项目的**代码**以 [MIT](LICENSE) 许可发布。运行时依赖（`requirements.txt` 固定版本）：
+本项目的**代码**以 [MIT](../LICENSE) 许可发布。运行时依赖（`requirements.txt` 固定版本）：
 Python 3.13 标准库 + 下列四个第三方库，全部为宽松许可（MIT / BSD 系）：
 
 | 组件 | 固定版本 | 许可证 |
