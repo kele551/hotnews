@@ -16,6 +16,8 @@
 <a href="https://github.com/kele551/hotnews/network/members"><img alt="GitHub Fork" src="https://img.shields.io/github/forks/kele551/hotnews?style=flat-square&label=GitHub%20Fork&color=blue"></a>
 <a href="https://github.com/kele551"><img alt="Follow Author" src="https://img.shields.io/github/followers/kele551?style=flat-square&logo=github&label=follow%20author&color=blue"></a>
 
+<a href="#sponsor"><img alt="Sponsor" src="https://img.shields.io/badge/%E2%98%95_%E8%B5%9E%E8%B5%8F-%E8%AF%B7%E5%96%9D%E5%92%96%E5%95%A1-ff69b4?style=flat-square&labelColor=3d4552"></a>
+
 <img alt="Single File" src="https://img.shields.io/badge/形态-单文件exe-blue?style=flat-square">
 <img alt="Free" src="https://img.shields.io/badge/费用-免费无广告-brightgreen?style=flat-square">
 <img alt="No Tracking" src="https://img.shields.io/badge/用户数据-不采集不上传-green?style=flat-square">
@@ -601,6 +603,8 @@ python build.py --list
 - 权利人如认为本工具聚合了不应聚合的内容，**请提 Issue 说明**，核实后会立即移除对应来源。
 
 ---
+
+<a id="sponsor"></a>
 
 ## ♥️ 支持项目
 
