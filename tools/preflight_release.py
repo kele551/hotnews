@@ -209,12 +209,12 @@ if not check('在仓库里运行（上一级找得到 server.py）',
 GOVERNANCE = (
     ('LICENSE', '许可'),
     ('README.md', '门面与使用说明'),
-    ('CONTRIBUTING.md', '贡献指南'),
-    ('COMPLIANCE.md', '合规声明'),
-    ('SECURITY.md', '安全报告渠道'),
-    ('CODE_OF_CONDUCT.md', '行为准则'),
-    ('CODE_SIGNING_POLICY.md', '签名与校验说明'),
-    ('CHANGELOG.md', '更新记录'),
+    ('docs/CONTRIBUTING.md', '贡献指南'),
+    ('docs/COMPLIANCE.md', '合规声明'),
+    ('docs/SECURITY.md', '安全报告渠道'),
+    ('docs/CODE_OF_CONDUCT.md', '行为准则'),
+    ('docs/CODE_SIGNING_POLICY.md', '签名与校验说明'),
+    ('docs/CHANGELOG.md', '更新记录'),
     ('requirements.txt', '依赖清单'),
     ('.github/PULL_REQUEST_TEMPLATE.md', 'PR 模板'),
     ('.github/ISSUE_TEMPLATE/bug_report.yml', 'Bug Issue 模板'),
@@ -333,7 +333,7 @@ if _ins_stale:
     say('     → 修法：把 说明.txt 里落后的版本字样改成 v%s（第一行、'
         '「三、数据源（vX.Y.Z）」、正文各小节）' % VER)
 
-_cl = read(os.path.join(REPO, 'CHANGELOG.md')) or ''
+_cl = read(os.path.join(REPO, 'docs', 'CHANGELOG.md')) or ''
 check('CHANGELOG 里有 v%s 段落' % VER,
       bool(re.search(r'^##\s+v?%s\b' % re.escape(VER), _cl, re.M)),
       '（发布说明从这里取）')
@@ -622,8 +622,8 @@ if _sv is not None:
 # ══════════════════════════════════════════════════════════════════════════
 say()
 say('⑥ 对外文档体检（私人邮箱 / 署名 / 依赖清单）')
-DOCS = ('README.md', 'CONTRIBUTING.md', 'COMPLIANCE.md', 'SECURITY.md',
-        'CODE_OF_CONDUCT.md', 'CODE_SIGNING_POLICY.md', 'CHANGELOG.md',
+DOCS = ('README.md', 'docs/CONTRIBUTING.md', 'docs/COMPLIANCE.md', 'docs/SECURITY.md',
+        'docs/CODE_OF_CONDUCT.md', 'docs/CODE_SIGNING_POLICY.md', 'docs/CHANGELOG.md',
         '说明.txt', '.github/PULL_REQUEST_TEMPLATE.md', 'docs/demo/index.html')
 _texts = {}
 for _f in DOCS:
@@ -663,23 +663,23 @@ check('对外文档里没有私人邮箱（已归一化空格/全角；允许 Gi
 
 check('README 里有署名「海风（kele551）」与仓库地址',
       ('海风（kele551）' in _rm) and ('gitee.com/kele551/hotnews' in _rm))
-check('COMPLIANCE.md 里有署名与仓库地址',
-      ('海风（kele551）' in (_texts.get('COMPLIANCE.md') or ''))
-      and ('gitee.com/kele551/hotnews' in (_texts.get('COMPLIANCE.md') or '')))
+check('docs/COMPLIANCE.md 里有署名与仓库地址',
+      ('海风（kele551）' in (_texts.get('docs/COMPLIANCE.md') or ''))
+      and ('gitee.com/kele551/hotnews' in (_texts.get('docs/COMPLIANCE.md') or '')))
 
 _req = read(os.path.join(REPO, 'requirements.txt')) or ''
 _lack = [d for d in ('fastapi', 'uvicorn', 'feedparser', 'httpx') if d not in _req]
 check('requirements.txt 列出四个核心依赖（fastapi / uvicorn / feedparser / httpx）',
       not _lack, '缺: %s' % '、'.join(_lack))
-check('COMPLIANCE.md 有「第三方组件与许可」小节',
-      '第三方组件与许可' in (_texts.get('COMPLIANCE.md') or ''))
-check('CONTRIBUTING.md 写明提交前必须跑本自检（tools/preflight_release.py）',
-      'preflight_release.py' in (_texts.get('CONTRIBUTING.md') or ''),
+check('docs/COMPLIANCE.md 有「第三方组件与许可」小节',
+      '第三方组件与许可' in (_texts.get('docs/COMPLIANCE.md') or ''))
+check('docs/CONTRIBUTING.md 写明提交前必须跑本自检（tools/preflight_release.py）',
+      'preflight_release.py' in (_texts.get('docs/CONTRIBUTING.md') or ''),
       '（贡献指南里要有这条，别人才知道有门可跑）')
 skip('对外文案红线词 0 命中',
      'CONTRIBUTING「文档与对外文案」一节明确要求**不要在仓库里逐词列举**那些词'
      '（清单自身会被内容扫描命中），所以这条判据不放进仓库脚本；'
-     '维护者工作区有专门的验证脚本（见 COMPLIANCE.md 第 8 节「自查方式」）')
+     '维护者工作区有专门的验证脚本（见 docs/COMPLIANCE.md 第 8 节「自查方式」）')
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑦ 链接与徽章的可访问性（需要联网；不可用就 SKIP）

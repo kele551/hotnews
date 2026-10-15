@@ -244,7 +244,7 @@ SOURCES = {
         # 用户 2026-10-07 决定不做这个源，别再挖了。
         {"id": "cn-sina-ent", "label": "新浪娱乐", "url": "https://ent.sina.com.cn/", "base": "https://ent.sina.com.cn", "region": "cn", "cls": "娱乐", "parser": "sina_ent"},
         # ============ 【2026-10-09 换源】新增：财经 / 娱乐 ============
-        # 目标：① 每个栏目至少 3 家网站；② 只用境内站点（合规口径见 COMPLIANCE.md 第 7 节）。
+        # 目标：① 每个栏目至少 3 家网站；② 只用境内站点（合规口径见 docs/COMPLIANCE.md 第 7 节）。
         # 下面每一条都做过真实联网实测（HTTP 状态 / 耗时 / 条数 / 带图数 / 最新时间），
         # 逐项数据记在 logs\换源-境内国际版-20261009.md；没实测通过的一律不写在这里。
         #
@@ -827,7 +827,7 @@ def _img_redirect_blocked(orig, final):
     【2026-10-10 修】/img 原来只在**请求前**校验一次来源白名单，而 httpx 是
     `follow_redirects=True`：只要白名单里任一站存在一个开放重定向（站内跳转、
     `?url=` 跳转、登录跳转都算），就能让 `/img?url=<白名单域名上的跳转地址>`
-    变成访问**任意公网地址**的代理 —— 与 SECURITY.md
+    变成访问**任意公网地址**的代理 —— 与 docs/SECURITY.md
     「只保证不去请求未登记域名」的说法对不上。
     （内网/裸 IP/非标准端口那一层原来就查了，缺的是**白名单**这一层。）
 
@@ -5800,7 +5800,7 @@ def _split_cn_scope(items):
         #     else: dom.append(it)
         # 也就是**算出来的国际条目一条都没交给 intl** → `_spill_from_cn()` 恒返回空 →
         # `_collect("intl")` 里"并入国内板块转来的国际新闻"整段失效。
-        # 后果很重：README 与 COMPLIANCE.md 都明写着
+        # 后果很重：README 与 docs/COMPLIANCE.md 都明写着
         # 「其余国际内容来自境内综合媒体报的国际新闻，由国内板块自动转入国际板块
         #   （channel 标为 cn-intl-news）」—— **这个能力实际根本不存在**，
         # 评委拿着声明核代码会直接看出来（`cn-intl-news` 一条都不会出现）。
@@ -6752,9 +6752,9 @@ def _translate_text(text):
         return hit
     # 【2026-10-10 修 声明不符】默认值从 True 改成 False。
     # 翻译会把条目标题/摘要发到**第三方服务**（mymemory / deepl 在境外，baidu 在境内），
-    # 这与 COMPLIANCE.md「不采集、不上传任何用户数据」「默认只用境内……」两句容易读成冲突，
-    # 也和 SECURITY.md 里承认的"可选机器翻译"口径对不上。
-    # 现在：**默认关闭**；用户显式打开才会出网。对应披露写进 COMPLIANCE.md 与 README.md。
+    # 这与 docs/COMPLIANCE.md「不采集、不上传任何用户数据」「默认只用境内……」两句容易读成冲突，
+    # 也和 docs/SECURITY.md 里承认的"可选机器翻译"口径对不上。
+    # 现在：**默认关闭**；用户显式打开才会出网。对应披露写进 docs/COMPLIANCE.md 与 README.md。
     if not CONFIG.get("translate", {}).get("enabled", False):
         return ""
     if _TRANS_BREAK[0]:
