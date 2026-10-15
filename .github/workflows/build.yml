@@ -117,7 +117,7 @@ jobs:
 
       # 将来若接入面向开源项目的免费代码签名，签名步骤加在这里
       # （打包之后、算 SHA256 之前），私钥只放 CI secrets。
-      # 规则见 .github/CODE_SIGNING_POLICY.md 第三节。
+      # 规则见仓库根目录 CODE_SIGNING_POLICY.md 第三节。
 
       - name: 计算并打印 SHA256
         shell: pwsh
