@@ -52,7 +52,7 @@ REMOTE_VERSION_URL_ALT = "https://gitee.com/kele551/hotnews/raw/master/version.j
 REMOTE_VERSION_URL_GH = "https://raw.githubusercontent.com/kele551/hotnews/main/version.json"
 
 # 【2026-10-07 升级通道加固】离线生成的 Ed25519 公钥；私钥只存在作者机器的
-# F:\Harness\secrets 里，绝不进仓库。客户端用它验证 version.json 的签名，
+# 作者机器的密钥目录里，绝不进仓库。客户端用它验证 version.json 的签名，
 # 这样即便 Gitee 账号被盗也推不了恶意版本（详见 fetch_remote）。
 UPDATE_PUBKEY = "f6931bd24749559c36fc14aa8fcdedd638502fec39bb010ef505a120f9a2dfbd"
 
