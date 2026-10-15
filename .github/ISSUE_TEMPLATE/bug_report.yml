@@ -9,7 +9,7 @@ body:
         感谢反馈。下面填得越全，定位越快 —— 缺了版本号和复现步骤的反馈，通常只能来回问好几轮。
 
         > **安全漏洞请不要发在这里**，按
-        > [SECURITY.md](https://github.com/kele551/hotnews/blob/main/SECURITY.md) 的私下渠道报告。
+        > [SECURITY.md](https://github.com/kele551/hotnews/blob/main/docs/SECURITY.md) 的私下渠道报告。
 
   - type: checkboxes
     id: preflight

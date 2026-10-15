@@ -43,7 +43,7 @@
 <img alt="Gitee Fork" src="https://gitee.com/kele551/hotnews/badge/fork.svg">
 <img alt="Language" src="https://img.shields.io/github/languages/top/kele551/hotnews?style=flat-square">
 <img alt="Code Size" src="https://img.shields.io/github/languages/code-size/kele551/hotnews?style=flat-square&label=code%20size">
-<a href="https://github.com/kele551/hotnews/blob/main/CONTRIBUTING.md"><img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square"></a>
+<a href="https://github.com/kele551/hotnews/blob/main/docs/CONTRIBUTING.md"><img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square"></a>
 </p>
 
 </details>
@@ -87,7 +87,7 @@
 
 > **合规口径（2026-10-09 起）：只用境内站点。** 境外来源一个不留 ——
 > 国际新闻也改用**境内媒体的国际版**（CGTN · 中新网·国际 · 凤凰/澎湃/红星/界面 报的国际新闻）。
-> 依据、处置过程与自查方式见 [COMPLIANCE.md](COMPLIANCE.md) 第 7 节。
+> 依据、处置过程与自查方式见 [COMPLIANCE.md](docs/COMPLIANCE.md) 第 7 节。
 >
 > **⚠ 唯一例外（2026-10-11 用户拍板）：国际娱乐栏接入 2 家境外娱乐媒体。**
 > 境内口径下国际娱乐的供给已被实测探到底 —— CGTN 英文文化分区 50 条里判得出国际的只有
@@ -98,7 +98,7 @@
 > **Variety**（10 条全带图）与 **Consequence**（15 条全带图）。
 > 约束：只进国际娱乐栏，不动要闻/科技/财经/体育；加主权红线过滤；
 > 总开关 `INTL_ENT_OVERSEAS`（改 `False` 即回到纯境内口径）。
-> 详见 [COMPLIANCE.md](COMPLIANCE.md) 第 7 节。
+> 详见 [COMPLIANCE.md](docs/COMPLIANCE.md) 第 7 节。
 
 ### 栏目定稿（2026-10-09 用户逐条确认）
 
@@ -521,7 +521,7 @@ python build.py --list
 2. **移动端局域网查看** —— 让手机在同一个局域网里也能打开页面看新闻。
    现状：程序默认只监听 `127.0.0.1`，要局域网访问得用 `--host 0.0.0.0`；
    而「退出程序 / 立即更新 / 开机自启」这三个有副作用的按钮**只允许本机操作**，
-   非本机访问会返回 403（见 [SECURITY.md](SECURITY.md)）。
+   非本机访问会返回 403（见 [SECURITY.md](docs/SECURITY.md)）。
    所以要做的不是简单放开监听，而是：为小屏做自适应布局，
    并把「只读浏览」与「本机管理」在界面上分清楚。
 3. **源可用性自检面板** —— 现在查「某个源怎么没内容」得开命令行跑 `check_sources.py`
@@ -541,16 +541,16 @@ python build.py --list
 - **维护者**：海风（kele551）—— 个人项目，单人维护。
 - **响应预期**：Issue / PR 一般 **3 个工作日内**给首次回应；能复现的问题排进下一个真功能版本，
   修复随版本一起发布（本项目不为单个问题单独发版）。
-- **安全漏洞**：**请不要开公开 Issue**，按 [SECURITY.md](SECURITY.md) 的私下渠道报告
+- **安全漏洞**：**请不要开公开 Issue**，按 [SECURITY.md](docs/SECURITY.md) 的私下渠道报告
   （首选 GitHub 仓库的私密漏洞报告入口）。
-- **贡献指南**：[CONTRIBUTING.md](CONTRIBUTING.md) —— 怎么提 Issue / PR、代码风格、
+- **贡献指南**：[CONTRIBUTING.md](docs/CONTRIBUTING.md) —— 怎么提 Issue / PR、代码风格、
   本地构建与自查、数据源增删的实测门槛、提交信息规范。
 - **自动构建与产物校验**：`.github/workflows/build.yml` 在 Windows runner 上装依赖、
   用 `build_exe.spec` 打包、校验版本号与署名、打印每个产物的 SHA256 并上传 artifact。
   产物从哪来、怎么自己核验 SHA256、将来的代码签名计划、以及升级通道已有的
-  Ed25519 签名校验，都写在 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。
+  Ed25519 签名校验，都写在 [CODE_SIGNING_POLICY.md](docs/CODE_SIGNING_POLICY.md)。
 - **许可**：MIT，见 [LICENSE](LICENSE)。提交贡献即表示同意以同一许可分发。
-- **合规声明**：[COMPLIANCE.md](COMPLIANCE.md) —— 聚合与抓取边界、隐私、第三方组件与许可、
+- **合规声明**：[COMPLIANCE.md](docs/COMPLIANCE.md) —— 聚合与抓取边界、隐私、第三方组件与许可、
   知识产权，以及**尚未闭环的合规事项**（见该文件第 7 节）。
 - **第三方组件与许可**：运行时只依赖 4 个第三方库（版本在 `requirements.txt` 里固定），
   全部是宽松许可，**没有 GPL/AGPL、没有需要商业授权的组件**：
@@ -563,7 +563,7 @@ python build.py --list
   | httpx | 0.28.1 | BSD-3-Clause |
 
   传递依赖（starlette / pydantic / anyio / h11 / idna / click / certifi 等）的许可证清单见
-  [COMPLIANCE.md](COMPLIANCE.md) 第 5 节。其余全部是 Python 3.13 标准库。
+  [COMPLIANCE.md](docs/COMPLIANCE.md) 第 5 节。其余全部是 Python 3.13 标准库。
 - **署名**：中文场景统一写「海风（kele551）」；仓库地址 https://gitee.com/kele551/hotnews 。
 - **发布脚本**：维护者用的 `tools/publish.py` 在维护者本机的工作区里，**不在本仓库内**；
   签名私钥与发布凭据同样不进仓库。
@@ -574,7 +574,7 @@ python build.py --list
 
 ## 免责声明
 
-> 完整合规声明见 **[COMPLIANCE.md](COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
+> 完整合规声明见 **[COMPLIANCE.md](docs/COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
 > 知识产权 / 尚未闭环的合规事项）。
 
 - 本工具是**个人学习用的新闻聚合器**，只聚合各新闻网站**公开的标题、摘要与链接**，
@@ -583,7 +583,7 @@ python build.py --list
 - 图片通过链接直接引用源站（**直链引用**，不复制、不转存到本工具的分发渠道或服务器）。
 - 本工具**不用于任何商业用途**，不含广告、不收费。
 - **不采集、不上传任何用户数据**；唯一会把"内容"发往第三方的路径是**可选的机器翻译，默认关闭**
-  （打开后国际栏的英文标题/摘要会经第三方翻译服务转中文，详见 [COMPLIANCE.md](COMPLIANCE.md) 第 3 节）。
+  （打开后国际栏的英文标题/摘要会经第三方翻译服务转中文，详见 [COMPLIANCE.md](docs/COMPLIANCE.md) 第 3 节）。
 - 抓取范围仅限各站**公开的 RSS / JSON 接口与首页**（不使用任何登录态、不读取付费内容），
   每个源每轮刷新最多请求 1 次（默认 10 分钟一轮），不并发压站；站点若通过 robots.txt
   或接口说明表达不希望被访问，会按要求移除对应来源。
