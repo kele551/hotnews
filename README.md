@@ -410,7 +410,7 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 如果想再进一步，也可以请作者喝杯咖啡（**完全自愿，不影响任何功能**）：
 
 <p align="center">
-  <img src="docs/qr-wechat.png" alt="海风的微信赞赏码" width="260">
+  <img src="docs/qr-sponsor.png" alt="海风的微信赞赏码" width="260">
   <br>
   <sub>微信扫一扫 · 金额随缘</sub>
 </p>
