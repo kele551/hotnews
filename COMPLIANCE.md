@@ -1,6 +1,6 @@
 # 合规声明（COMPLIANCE）
 
-> 本文件对应工作区章程《合规守法》（`F:\Harness\AGENTS.md` §9）。  
+> 本文件的合规口径与《合规守法》条款一致（维护者工作区章程 §9）。  
 > 作者：海风（kele551） · 仓库：https://gitee.com/kele551/hotnews  
 > 最近更新：2026-10-09
 
@@ -189,14 +189,15 @@ annotated-types（MIT）、certifi（MPL-2.0）、sgmllib3k（BSD）、soupsieve
 
 ## 8. 自查方式（可复跑）
 
-```powershell
-# 对外文案红线词（0 命中）
-& F:\Harness\toolchain\python\envs\default\Scripts\python.exe `
-  F:\Harness\projects\热点新闻\logs\verify-20261009-整改\验证脚本-总自测.py   # 第 12 节
-# 打包不夹带私人邮箱快照 / 旧 exe / 构建产物
-& F:\Harness\toolchain\python\envs\default\Scripts\python.exe `
-  F:\Harness\projects\热点新闻\logs\verify-20261009-整改\验证脚本-打包清单核对.py
+仓库自带发版前自检闸门，**克隆后直接跑**（不需要任何本机路径）：
+
+```bash
+python tools/preflight_release.py          # 默认项：治理文件齐备 / 版本号一致 / 私人邮箱 0 命中 /
+                                           # 栏目与判据回归断言 / 链接与徽章可达 / 线上升级源对齐
+python tools/preflight_release.py --e2e    # 追加端到端抓取（真联网，约 1~3 分钟）
 ```
+
+全绿（允许 `[SKIP]`）才允许发布；出现 `[FAIL]` 一律先修改，再发布。
 
 作者：海风（kele551）　https://gitee.com/kele551/hotnews
 
