@@ -16,7 +16,7 @@
 <a href="https://github.com/kele551/hotnews/network/members"><img alt="GitHub Fork" src="https://img.shields.io/github/forks/kele551/hotnews?style=flat-square&label=GitHub%20Fork&color=blue"></a>
 <a href="https://github.com/kele551"><img alt="Follow Author" src="https://img.shields.io/github/followers/kele551?style=flat-square&logo=github&label=follow%20author&color=blue"></a>
 
-<img alt="Category" src="https://img.shields.io/badge/分类-新闻聚合工具-blue?style=flat-square">
+<img alt="Category" src="https://img.shields.io/badge/分类-应用软件-blue?style=flat-square">
 <img alt="Single File" src="https://img.shields.io/badge/形态-单文件exe-blue?style=flat-square">
 <img alt="Free" src="https://img.shields.io/badge/费用-免费无广告-brightgreen?style=flat-square">
 <img alt="No Tracking" src="https://img.shields.io/badge/用户数据-不采集不上传-green?style=flat-square">
