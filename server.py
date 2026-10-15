@@ -2412,9 +2412,75 @@ _NEWS_CN_LEADERS = (
     # 【2026-10-10 补】英文源（CGTN）在 `_collect` 出口的标题**还是英文**，
     # 所以人名表必须**中英文都有** —— 真机实测漏网的就是
     # "Wang Yi meets with delegation of leaders from Pacific Island countries"。
-    "Wang Yi", "Xi Jinping", "Li Qiang", "Zhao Leji", "Wang Huning", "Ding Xuexiang",
-    "Li Xi", "Han Zheng", "Peng Liyuan", "He Lifeng", "Wang Xiaohong",
+    "Wang Yi", "Xi Jinping", "Li Qiang", "Zhao Leji", "Wang Huning",
+    "Ding Xuexiang", "Li Xi", "Han Zheng", "Peng Liyuan", "He Lifeng", "Wang Xiaohong",
 )
+
+# ⑥ 【2026-10-15 用户口径】"中国主体"要认得出来的两个补充维度
+# 起因（真机 2026-10-15 实测）：国际栏 97 条里有 9 条明明是中国的稿子，判据却返回"不知道"
+#   （`_news_subject_verdict` → None → 当成不是国内 → 留在国际栏）：
+#     「"中国绿"风行河内」「中国联合展台亮相法国戛纳电视节」
+#     「"中国鄂温克驯鹿社区的气候与社会变迁"边会在冰岛举行」
+#     「北京12345论坛如何重塑全球城市治理谈判」「欧洲议会议员：北京12345热线…」
+#     「全球最大的工业博览会在上海开幕」「亚冠精英联赛：上海海港主场战平…」
+#     「市场驱动型人民币与全球再平衡之路」「澳前总理陆克文现身南锣鼓巷…北京变化」
+#   根因：老判据只认「中国 + 特定机构/动词」的白名单，上面这些（中国地名、人民币、
+#   "中国+普通名词"）一条都不命中。
+#   用户 2026-10-15 选定口径：**中国主体的稿子一律不进国际栏**（含外交经贸类）。
+#   ① 中国地名 / 中国标识出现在标题里 → 中国主体；
+#   ② 标题**开头**就是 中国/我国/中方/China/Chinese/Beijing（主语位置）→ 中国主体。
+#   ⚠ 仍然保留"中国在客体/表态位置"的豁免（见 `_NEWS_CN_OBJECT_RX` / `_NEWS_CN_SPEAKER_RX`）：
+#     「某国总统访华」「外媒评价中国」这类**外国主体**的稿子照样留在国际栏。
+_NEWS_CN_PLACE_RX = re.compile(
+    r"北京|上海|广州|深圳|天津|重庆|成都|武汉|西安|南京|杭州|苏州|青岛|大连|厦门|长沙|郑州|"
+    r"合肥|济南|福州|昆明|贵阳|南宁|哈尔滨|长春|沈阳|石家庄|太原|兰州|银川|西宁|乌鲁木齐|拉萨|"
+    r"呼和浩特|海口|三亚|无锡|宁波|温州|东莞|佛山|珠海|中山|泉州|南通|徐州|常州|绍兴|嘉兴|"
+    r"洛阳|烟台|潍坊|唐山|保定|香港|澳门|人民币|亚冠|中超|CBA")
+_NEWS_CN_HEAD_RX = re.compile(
+    r"^[\s【\[（(「『《\"'“”‘’]*"
+    r"(?:(?:视频|图集|图解|直播|快讯|独家|组图|海报|动画|H5)\s*[丨|｜:：\-—]?\s*)?"
+    r"[\s【\[（(「『《\"'“”‘’]*\s*(?:中国|我国|中方|China|Chinese|Beijing)", re.I)
+
+# 【2026-10-15 修误判】强词表（[cn_subjects]）里有 4 个词**别的国家也在用**：
+#   外交部 / 商务部 / 国防部 / 财政部。真机实测两条真国际稿就是被它们判成国内的：
+#     「莫斯科警告说，东京的信息收集尝试将使两国关系紧张」（摘要：**俄罗斯外交部**发言人…）
+#     「伊朗就空军基地事件指控传唤英国特使」（摘要：**伊朗外交部**周二传唤…）
+#   所以这 4 个词只有在**前面不是外国国名**时才算"中国主体"：
+#     「外交部发言人表示…」→ 算（默认就是中国口径）；
+#     「俄罗斯外交部…」→ 不算。
+_NEWS_CN_GENERIC_MIN = ("外交部", "商务部", "国防部", "财政部")
+_FOREIGN_MIN_PREFIX = (
+    "美国", "俄罗斯", "苏联", "英国", "法国", "德国", "日本", "韩国", "朝鲜", "印度", "伊朗",
+    "以色列", "土耳其", "乌克兰", "欧盟", "澳大利亚", "加拿大", "巴西", "墨西哥", "阿根廷",
+    "埃及", "南非", "沙特", "阿联酋", "卡塔尔", "泰国", "越南", "菲律宾", "印尼", "马来西亚",
+    "新加坡", "巴基斯坦", "阿富汗", "叙利亚", "伊拉克", "黎巴嫩", "巴勒斯坦", "波兰", "荷兰",
+    "比利时", "西班牙", "意大利", "葡萄牙", "希腊", "瑞典", "挪威", "芬兰", "丹麦", "瑞士",
+    "奥地利", "匈牙利", "捷克", "罗马尼亚", "塞尔维亚", "白俄罗斯", "哈萨克斯坦", "古巴",
+    "委内瑞拉", "哥伦比亚", "智利", "秘鲁", "新西兰", "爱尔兰", "冰岛", "卢森堡")
+
+
+def _generic_min_is_cn(text, word):
+    """通用部委词在 text 里出现时，是不是"中国口径"（前面没有外国国名）。"""
+    for m in re.finditer(re.escape(word), text):
+        head = text[max(0, m.start() - 6):m.start()]
+        if not any(p in head for p in _FOREIGN_MIN_PREFIX):
+            return True
+    return False
+
+
+def _has_cn_marker_title(title):
+    """标题里有没有「中国标识」（中国地名 / 人民币 / 标题开头就是中国…含义的）。
+
+    ⚠ **只在标题上用，摘要上不许用**（2026-10-15 实测教训）：
+      摘要里随口提一句中国城市（「……对中国的影响」）就会被误杀 —— 真机里
+      「莫斯科警告说，东京的信息收集尝试将使两国关系紧张」与
+      「伊朗就空军基地事件指控传唤英国特使」两条**真国际稿**就是这么被判成国内的。
+      标题里出现中国地名/人民币基本就是中国的事；摘要不行。
+    """
+    t = title or ""
+    if not t:
+        return False
+    return bool(_NEWS_CN_PLACE_RX.search(t) or _NEWS_CN_HEAD_RX.match(t))
 
 # ⑤ 要闻专用的**强国内机构**（第一层：只放中国党政机构/官方口径标识）。
 #    为什么不用 `DOMESTIC_MARKERS`：那张表是为**中文源**设计的，里面有「社区」「村民」
@@ -2479,14 +2545,24 @@ def _news_subject_verdict(text):
         return True
     if any(k in t for k in _NEWS_CN_LEADERS):
         return True
-    if any(k in t for k in _news_cn_strong()):
-        return True
+    _strong_hit = [k for k in _news_cn_strong() if k in t]
+    if _strong_hit:
+        # 【2026-10-15】通用的 4 个部委词要区分"谁的部委"（见 _NEWS_CN_GENERIC_MIN 注释）
+        if any(k not in _NEWS_CN_GENERIC_MIN for k in _strong_hit):
+            return True
+        if any(_generic_min_is_cn(t, k) for k in _strong_hit
+               if k in _NEWS_CN_GENERIC_MIN):
+            return True
     return None
 
 
 def _looks_domestic_news(title):
-    """「要闻」专用（**只看标题**）：主体是不是中国。判不出来当"不是"。"""
-    return _news_subject_verdict(title) is True
+    """「要闻」专用（**只看标题**）：主体是不是中国，或标题里带中国标识。判不出来当"不是"。
+
+    【2026-10-15 用户口径】加了 `_has_cn_marker_title`：只有真机那 9 条
+    （中国地名/人民币/标题开头是中国）以前判不出来，全留在国际栏。
+    """
+    return _news_subject_verdict(title) is True or _has_cn_marker_title(title)
 
 
 def _item_texts(it):
@@ -2529,6 +2605,12 @@ def _looks_domestic_news_item(it):
     if not texts:
         return False
     v = _news_subject_verdict(texts[0])      # title 永远排第一
+    if v is True:
+        return True
+    # 【2026-10-15】标题级的「中国标识」（中国地名/人民币/标题开头是中国）→ 直接判国内。
+    # 与 `_looks_domestic_news` 同一口径；**只在标题上做**，摘要不做（见 _has_cn_marker_title 注释）。
+    if _has_cn_marker_title(texts[0]):
+        return True
     if v is not None:
         return v
     for t in texts[1:]:                      # 摘要兜底
@@ -2673,6 +2755,11 @@ def _is_domestic_for_intl(it):
             return False
         return not _ENT_INTL_SIGNAL_RX.search(ti)
     if cls == "体育":
+        # 【2026-10-15】体育原来只走"有没有体育专用的外国信号"，于是
+        # 「亚冠精英联赛：上海海港主场战平大田韩亚市民」（中国球队的比赛）留在了国际体育栏。
+        # 用户口径：中国主体一律不进国际栏 —— 所以先看中国标识/中国主体，再退回体育专用判据。
+        if _has_cn_marker_title(ti) or _looks_domestic_news_item(it):
+            return True
         return not _looks_sport_foreign(ti)
     if cls == "要闻":
         return _looks_domestic_news_item(it)
@@ -5599,6 +5686,31 @@ def _parse_gmw_list(src):
 # 加进来会让「美股/A股」这类稿子被分流到国际频道、把国内财经栏搬空；
 # 国内财经栏要稳定供应（气泡配额要求财经 ≥2 条），所以财经条目一律留在国内。
 CN_SPLIT_CLS = {"头条", "热榜", "娱乐", "科技"}
+
+# 【2026-10-15 用户口径】「国内栏只留涉华财经」——纯外国宏观财经的识别与搬运。
+# 用户原话（2026-10-15）：国内栏里出现「纯外国题材的财经稿（美联储/美国CPI）」→ **挪到国际栏**。
+# 为什么只写这一条窄规则、而不是把「财经」整个塞进 CN_SPLIT_CLS：
+#   见上面 2026-10-09 的注释 —— 那会把 A 股/美股同框的稿子一起搬走、把国内财经栏搬空，
+#   而气泡配额要求国内财经 ≥2 条。真机实测（2026-10-15，国内财经 40 条）：
+#   命中本规则只有 3 条，搬完仍剩 37 条，供应安全。
+_FOREIGN_MACRO_RX = re.compile(
+    r"美联储|美国CPI|美CPI|美国非农|非农|鲍威尔|欧洲央行|欧央行|日本央行|英国央行|加拿大央行|"
+    r"澳洲联储|褐皮书|美股|纳斯达克|道琼斯|标普500|美债|美元指数|OPEC|国际货币基金组织|"
+    r"世界银行|特朗普|白宫|美国商务部|美国财政部|欧洲统计局|欧盟统计局")
+# 涉华角度：只要命中就**不搬**（留在国内财经）
+_CN_ANGLE_RX = re.compile(
+    r"中国|我国|中方|A股|沪指|深证|创业板|科创板|北交所|人民币|港股|中概|在华|对华|"
+    r"中美|中欧|中日|中韩|国内|北京|上海|深圳")
+
+
+def _is_foreign_macro(it):
+    """这条财经稿是不是「纯外国宏观」（主体是外国央行/外国市场，且没有任何涉华角度）。"""
+    t = (it.get("title") or "")
+    if not t:
+        return False
+    if _CN_ANGLE_RX.search(t):
+        return False
+    return bool(_FOREIGN_MACRO_RX.search(t))
 # 【2026-10-12 用户截图】「北约防空网几分钟内崩溃！挪威模拟：28架苏-57+…」挂在
 # 「娱乐·凤凰网」——娱乐源的视频区混发军事新闻，栏目跟着源走就错位（用户口径：
 # 「财经类新闻一定要区别化，不能错放栏目」是同一件事）。标题命中**窄军事词表**时，
@@ -5654,13 +5766,20 @@ def _split_cn_scope(items):
         elif _strong_intl(_title):
             # 国际大奖/赛事优先判国际（诺贝尔、奥斯卡、奥运会…）。
             _is_intl = True
+        elif (it.get("cls") or "") == "财经" and _is_foreign_macro(it):
+            # 【2026-10-15 用户口径】纯外国宏观财经（美联储/美国CPI…且零涉华角度）→ 归国际财经。
+            _is_intl = True
         else:
             _cn_n, _f_n = _scope_scores(_title)
             _is_intl = _f_n >= INTL_PLACE_MIN and (
                 _f_n > _cn_n
                 or (_f_n >= W_FOREIGN_PLACE and _DIPLO_VISIT_CN_RX.search(_title)))
         d = None          # 只有"判定要转国际"时才会被赋值
-        if it.get("cls") in CN_SPLIT_CLS and _is_intl:
+        # 【2026-10-15】能参与分流的栏目 = CN_SPLIT_CLS，外加「纯外国宏观财经」这一条例外
+        #（财经整体不参与分流，见 CN_SPLIT_CLS 上面的注释）。
+        _can_move = (it.get("cls") in CN_SPLIT_CLS) or (
+            (it.get("cls") or "") == "财经" and _is_foreign_macro(it))
+        if _can_move and _is_intl:
             d = dict(it)
             d["region"] = "intl"
             d["channel"] = "cn-intl-news"     # 标明「国内媒体报的国际新闻」
@@ -6374,6 +6493,19 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     # 不能因为"别家也发过"就让某条搜不到。
     if not (q or "").strip():
         items = _dedup_same_event(items)
+    # 【2026-10-15 用户口径】国际栏出口再兜一道：
+    # 收集那一刻 CGTN 这类英文源的标题**还是英文**，判据可能判不出"中国主体"；
+    # 后台翻译把中文标题写回来之后才看得出来（真机实例：「习近平、博科出席北京合作文件签字仪式」
+    # 「中国副总理呼吁中美贸易关系更加稳定」—— 收集时漏过，译文写回后就该被拦）。
+    # 这里用**同一套** `_split_domestic_items`（幂等），只在 intl 生效。
+    if region == "intl":
+        _keep, _late = _split_domestic_items(items, "intl")
+        if _late:
+            print("[ok] intl: 出口复核再剔掉中国主体稿 %d 条（译文写回后才判得出来）" % len(_late))
+            for _d in _late[:6]:
+                print("     · [%s·%s] %s" % (_d.get("cls"), _d.get("channel"),
+                                            (_d.get("title") or "")[:48]))
+            items = _keep
     # 缺图的补一个占位，保证网格整齐
     for it in items:
         if not it["image"]:
