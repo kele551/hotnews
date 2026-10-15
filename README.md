@@ -28,9 +28,7 @@
 <a href="https://www.bilibili.com/video/BV12BpQ6mEGm"><img alt="Bilibili demo" src="https://img.shields.io/badge/%F0%9F%93%BA_%E6%BC%94%E7%A4%BA-B%E7%AB%99%E8%A7%86%E9%A2%91-00a1d6?style=flat-square&logo=bilibili&logoColor=white&labelColor=3d4552"></a>
 <a href="https://github.com/kele551/hotnews/issues"><img alt="Issues" src="https://img.shields.io/badge/%F0%9F%90%9E_%E5%8F%8D%E9%A6%88-%E6%8F%90Issue-0969da?style=flat-square&labelColor=3d4552"></a>
 
-<p>📰 <b>国内 / 国际热点新闻图库</b>　·　单文件 exe，双击即用，免安装、无控制台</p>
-
-<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee</a>（主）　·　<a href="https://github.com/kele551/hotnews">GitHub</a>（镜像）</p>
+<p>📰 <b>国内 / 国际热点新闻图库</b>　·　作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee</a>（主）　·　<a href="https://github.com/kele551/hotnews">GitHub</a>（镜像）</p>
 </div>
 
 <details>
