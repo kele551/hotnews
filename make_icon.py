@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 """生成 hotnews 图标：参考经典「NEWS 报纸」造型，做**镂空 + 立体感**版。
 
 用户要求：
@@ -9,9 +10,17 @@
 做法：1024x1024 上精细绘制（投影/高光/斜面都靠多图层 + 高斯模糊），
 再用 LANCZOS 逐级降采样出 256/128/64/48/32/24/16，合成多尺寸 ICO。
 小尺寸不会糊，也不会在大尺寸下显得糙。
+
+【中间产物不入库】逐级降采样出来的那些 PNG（icon_*.png / preview_*.png）只是合成 ICO 的
+中间产物：打包时被排除（`build.py` 的 EXCLUDE_DIRS）、自检跳过、发布完全用不到，
+曾经入库的 `_ico_png/` 9 个 PNG 已于 2026-10-16 移出仓库（归档在维护者工作区的 `logs/` 下）。
+所以现在这些 PNG 只写到系统临时目录、合成后即删 —— 跑完本脚本，仓库里只会多出
+`hotnews.ico` 这一个真正要入库的文件，不会再掉出 `_ico_png/`。
 """
 import os
+import shutil
 import sys
+import tempfile
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -203,15 +212,19 @@ def main():
               fill=(186, 199, 219, 255))
 
     # ---------- 导出 ----------
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_ico_png")
-    os.makedirs(out_dir, exist_ok=True)
-    for s in SIZES:
-        canvas.resize((s, s), Image.LANCZOS).save(os.path.join(out_dir, "icon_%d.png" % s))
-    canvas.resize((256, 256), Image.LANCZOS).save(os.path.join(out_dir, "preview_256.png"))
-    canvas.resize((128, 128), Image.LANCZOS).save(os.path.join(out_dir, "preview_128.png"))
-    # 合成多尺寸 ICO：直接以各尺寸帧写入，Windows 才会挑到最合适的那张
-    frames = [Image.open(os.path.join(out_dir, "icon_%d.png" % s)) for s in SIZES]
-    frames[0].save(OUT_ICO, format="ICO", sizes=[(s, s) for s in SIZES])
+    # 逐级降采样出来的 PNG 是中间产物，不入库（见文件头）——
+    # 写到系统临时目录，合成 ICO 后由 finally 清理掉，仓库里只留 hotnews.ico。
+    out_dir = tempfile.mkdtemp(prefix="hotnews_ico_")
+    try:
+        for s in SIZES:
+            canvas.resize((s, s), Image.LANCZOS).save(os.path.join(out_dir, "icon_%d.png" % s))
+        canvas.resize((256, 256), Image.LANCZOS).save(os.path.join(out_dir, "preview_256.png"))
+        canvas.resize((128, 128), Image.LANCZOS).save(os.path.join(out_dir, "preview_128.png"))
+        # 合成多尺寸 ICO：直接以各尺寸帧写入，Windows 才会挑到最合适的那张
+        frames = [Image.open(os.path.join(out_dir, "icon_%d.png" % s)) for s in SIZES]
+        frames[0].save(OUT_ICO, format="ICO", sizes=[(s, s) for s in SIZES])
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
     print("已生成:", OUT_ICO, "尺寸:", SIZES)
     return 0
 

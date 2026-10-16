@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 """
 hotnews —— 热点新闻检索（国内 / 国际）
 FastAPI 后端：抓取 RSS、解析题图、图片代理、翻译、SSR 首屏
