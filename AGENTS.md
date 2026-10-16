@@ -46,6 +46,19 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 - 加分/换源这类改动，请在 PR / 回复里附**实测三连**：能连通、带图（短边 ≥300）、有当天或近日内容；
 - 界面/口径类改动，说明你**怎么验证的**（跑了哪条命令、看了哪个栏目）。
 
+## 平台（三个，代码一致）
+
+代码同时镜像到三处：**Gitee（主源）** / **GitHub（镜像）** / **AtomGit（代码镜像）**。
+**二进制发行包只发 Gitee 与 GitHub** —— AtomGit 目前没有附件上传接口（它的 Release 只提供源码归档）。
+
+```powershell
+git push atomgit main --tags                    # AtomGit（令牌走 GIT_ASKPASS，不会出现在命令行）
+# GitHub：走工作区的纯 REST 工具（origin 虽然是 GitHub，但这条线路走 REST 更稳）
+# Gitee：**不能直接 push main**，必须用 CONTRIBUTING 5.2 的「做法二」（远端 master 带签名数据）
+```
+
+三个平台改完都要推，**内容必须与 Gitee `master` 一致**（判定方法：`git diff atomgit/main gitee/master` 应为空）。
+
 ## 任务从哪来
 
 GitHub Issues 里带 `good first issue` / `help wanted` 标签的条目，每条都写了**验收标准**。
