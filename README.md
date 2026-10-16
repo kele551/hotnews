@@ -29,7 +29,7 @@
 
 <p>📰 <b>国内 / 国际热点新闻图库</b>　·　本地抓取，只看标题与原文链接</p>
 
-<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a></p>
+<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
 </div>
 
 <details>

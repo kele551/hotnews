@@ -49,3 +49,27 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 ## 任务从哪来
 
 GitHub Issues 里带 `good first issue` / `help wanted` 标签的条目，每条都写了**验收标准**。
+仓库里还有一份机器可读的任务清单 [TASKS.md](TASKS.md)。
+
+---
+
+## English summary (for AI agents)
+
+- **What it is**: a local web app — `app.py` picks a port and starts `server.py` (FastAPI, ~7000 lines) which
+  fetches, de-duplicates, splits domestic/international, translates and proxies images; the UI lives in
+  `static/`; `updater.py` handles signed online updates.
+- **Run / verify**: `python app.py` · `python -m py_compile server.py app.py updater.py` ·
+  `python build.py --list` · `python tools/preflight_release.py` (the release gate — must be all green).
+- **Never**:
+  - **don't hand-edit `version.json`** — the local copy must stay minimal (`{"version": "..."}`);
+    the remote copy is the full, signed update source;
+  - **never force-push** (`git push -f`) the Gitee `master` branch: it carries the signed `version.json`
+    commits that every installed client reads. Use the temp-branch replay in CONTRIBUTING §5.2;
+  - write `hotnews_update.vbs` as **UTF-16** (UTF-8 with BOM makes Windows Script Host fail and breaks updates);
+  - change the domestic/international rules casually — the release gate asserts them with a real corpus;
+  - rewrite line endings wholesale (this repo stores **LF**, except `说明.txt` which stays CRLF);
+  - introduce local machine paths, private emails or tokens into the repo;
+  - banned wording anywhere: 绕过 / 翻墙 / 梯子 / 科学上网 / 墙 / 破解 / 屏蔽.
+- **Commits**: one change per commit, Chinese conventional prefixes (`fix:` / `feat:` / `docs:` / `chore:`),
+  and state how you verified it (which command, which column).
+- **Backlog**: [TASKS.md](TASKS.md) and issues labelled `good first issue`.
