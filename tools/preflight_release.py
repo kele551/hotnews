@@ -427,7 +427,7 @@ check('国内 / 国际划分的三条判据函数都在（_has_cn_marker_title /
 # 为什么不搬那份 scanner：它不在本仓库里（只在维护者工作区），搬进来就破坏"克隆即可运行"。
 _scanned, _hit_terms = 0, []
 SCAN_EXT = ('.py', '.html', '.md', '.txt', '.json', '.yml', '.yaml', '.spec')
-SCAN_SKIP_DIRS = {'runtime', '.git', '__pycache__', '_ico_png', 'docs', 'build_tmp', 'dist', 'build'}
+SCAN_SKIP_DIRS = {'runtime', '.git', '__pycache__', 'docs', 'build_tmp', 'dist', 'build'}
 SCAN_SKIP_FILES = {'keywords.txt', 'hotnews_cn_test.json'}
 _QUOTED_SOCIAL = re.compile(r'["\']社会["\']')
 _SELF = os.path.abspath(__file__)          # 本脚本自己

@@ -302,24 +302,28 @@ python build.py --list
 ### 5.1 升级源与 `version.json`（自 README 迁入，2026-10-15）
 
 > ✅ **GitHub 那条兜底已生效**（2026-10-10 同步）：GitHub `main` 上的 `version.json` 已换成与 Gitee `master`
-> **逐字节一致**的**完整版**（852 B，带 `launcher.url/sha256/size` 与 `notes`），配套的 `version.json.sig`
+> **逐字节一致**的**完整版**（1004 B，带 `launcher.url/sha256/size` 与 `notes`），配套的 `version.json.sig`
 > 也一并同步；客户端用内置公钥对 GitHub 拉回来的原始字节**验签通过**，下面三条升级源地址现在都能用。
 >
 > ⚠️ **维护者注意**：仓库内那份 `version.json` 必须**继续是精简版（只有 `version`）**，
 > 而且**往 GitHub 推代码时不要把它一起推上去** —— 那会把 `main` 上的完整版覆盖回精简版，
-> GitHub 兜底会再次失效（推完请回读确认 `main` 上的 `version.json` 仍是 852 B 的完整版）。
+> GitHub 兜底会再次失效（推完请回读确认 `main` 上的 `version.json` 仍是 1004 B 的完整版）。
 
 **⚠ 仓库里的 `version.json` 与 `version.json.sig` 不是一对（重要）**
 
-- 仓库内 `version.json` 是**精简版（25 字节，只有 `version` 字段）**，是给源码运行读版本号用的；
+- 仓库内 `version.json` 是**精简版（24 字节，只有 `version` 字段）**，是给源码运行读版本号用的；
 - 仓库内 `version.json.sig` 签的是**远端发布用的完整版**（含 `launcher.url/sha256/size` 与 `notes`，
-  852 字节），Gitee `master` 与 GitHub `main` 上放的都是这一份；
+  1004 字节），Gitee `master` 与 GitHub `main` 上放的都是这一份；
 - 所以**拿本地这两个文件做验签自检一定失败**，这不是 bug、也不用"修"。
 - **验签必须针对「远端完整版 version.json 的原始字节」**：
   先把远端 `version.json` 用 HTTP 取回（`r.content`，**不要**重新 `json.dumps` 再序列化），
   再连同远端 `version.json.sig` 交给 `_ed25519.checkvalid`。自己把两部分拼起来"对一下"没有意义。
 - 本地跑真实验签的姿势：临时 `curl` 远端 `version.json` + `version.json.sig` 到临时目录再验，
   不要用仓库里这份精简版当输入。
+
+> 📏 **本节数字要跟着文件结构一起校**：上面这两个字节数不是永恒不变的 —— 完整版后来加了 `notes`
+> 等内容，就从 852 B 长到了 1004 B。**这份文件的结构以后再变，改完记得顺手把本节里的字节数与结构示例
+> 一起校正**，否则读者会拿旧数字去对，越对越怀疑整段说明。（2026-10-16 实测：本地 24 B / 远端完整版 1004 B。）
 
 ### 5.2 发布新版本的注意事项（自 README 迁入，2026-10-15）
 
