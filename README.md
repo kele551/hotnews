@@ -29,7 +29,7 @@
 
 <p>📰 <b>国内 / 国际热点新闻图库</b>　·　本地抓取，只看标题与原文链接</p>
 
-<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
+<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a>　·　<a href="https://atomgit.com/kele551/hotnews">AtomGit（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
 </div>
 
 <details>
@@ -58,7 +58,8 @@
 - 页面右上角「检查更新」手动触发
 - 右下角气泡提醒（见下文），点气泡可直接打开对应新闻
 
-> 国内用户请从 Gitee 下载（速度快）。GitHub 仓库为镜像。
+> **国内用户请从 Gitee 下载（速度快）**；**三个平台代码一致**：[Gitee](https://gitee.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· [AtomGit](https://atomgit.com/kele551/hotnews)（代码镜像，只提供源码归档）。
+> **二进制发行包请从 Gitee（主）或 GitHub（镜像）下载**；三个平台都收 Issue / PR。
 
 ---
 

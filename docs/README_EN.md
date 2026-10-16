@@ -1,6 +1,6 @@
 # hotnews — a local news digest for Windows
 
-> Author: **HaiFeng (kele551)** · Gitee (primary): <https://gitee.com/kele551/hotnews> · GitHub (mirror): <https://github.com/kele551/hotnews>
+> Author: **HaiFeng (kele551)** · Gitee (primary): <https://gitee.com/kele551/hotnews> · GitHub (mirror): <https://github.com/kele551/hotnews> · AtomGit (code mirror): <https://atomgit.com/kele551/hotnews>
 > 中文说明见 [../README.md](../README.md)
 
 A **local web app in a single exe** (no installer). It fetches **public headlines and links** from Chinese
