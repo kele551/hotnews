@@ -22,6 +22,8 @@ _cn_check.json
 _smoke_*.json
 hotnews_cn_test.json
 _shot/
+# 图标生成的中间产物（make_icon.py 现在只写系统临时目录；这条是防旧版脚本再掉出来）
+_ico_png/
 _news.opml
 hotnews_build_archive/
 _mefcl_*.py

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 r"""
 hotnews 打包脚本 —— 产出两种包
   1) hotnews-vX.zip                    源码包（需系统 Python，手动 pip install）
@@ -36,7 +37,7 @@ EXCLUDE_DIRS = {"__pycache__", ".git", ".idea", ".vscode", "venv", ".venv", ".bu
                 ".pytest_cache",
                 # .gitignore：构建产物与历史归档目录
                 "dist", "build", "build_tmp", "runtime_build",
-                "hotnews_build_archive", "_shot", "_ico_png"}
+                "hotnews_build_archive", "_shot"}
 # 与 .gitignore 同步（文件名级，仓库根目录里的固定名字）
 EXCLUDE_FILES = {"build.py", "uvicorn.log", "nohup.out", "pyi.log"}
 # 与 .gitignore 同步（模式级，用 fnmatch）—— 注意别把 *.zip / *.exe 放进来，

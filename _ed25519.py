@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 """Ed25519 纯 Python 实现（签名 + 验签），零第三方依赖。
 
 【为什么自己写】这台机器上 cryptography / nacl / rsa 一个都没有装，

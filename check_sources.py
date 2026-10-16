@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 """数据源自检：跑一遍 SOURCES，报告条数 / 最新时间 / 是否有图"""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -362,10 +362,11 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 
 - **维护者**：海风（kele551）—— 个人项目，单人维护；Issue / PR 一般 **3 个工作日内**给首次回应，能复现的问题排进下一个真功能版本（本项目不为单个问题单独发版）。
 - **安全漏洞**：**请不要开公开 Issue**，按 [SECURITY.md](docs/SECURITY.md) 的私下渠道报告（首选 GitHub 仓库的私密漏洞报告入口）。
-- **贡献指南**：怎么提 Issue / PR、代码风格、本地构建与自查、数据源增删的实测门槛、提交信息规范见 [CONTRIBUTING.md](docs/CONTRIBUTING.md)。
+- **贡献指南**：怎么提 Issue / PR、代码风格、本地构建与自查、数据源增删的实测门槛、提交信息规范见 [CONTRIBUTING.md](docs/CONTRIBUTING.md)；参与讨论的底线见[行为准则](docs/CODE_OF_CONDUCT.md)。
+- **更新记录**：每一版改了什么、发在哪个平台，见 [CHANGELOG.md](docs/CHANGELOG.md)。
 - **自动构建与产物校验**：`.github/workflows/build.yml` 在 Windows runner 上装依赖、用 `build_exe.spec` 打包、校验版本号与署名、打印每个产物的 SHA256 并上传 artifact；产物来源、SHA256 自核验、将来的代码签名计划，以及升级通道已有的 Ed25519 签名校验，见 [CODE_SIGNING_POLICY.md](docs/CODE_SIGNING_POLICY.md)。
 - **第三方组件与许可**：运行时只依赖 4 个第三方库（版本在 `requirements.txt` 里固定），全部是宽松许可，**没有 GPL/AGPL、没有需要商业授权的组件**：fastapi 0.142.2（MIT）· uvicorn 0.54.0（BSD-3-Clause）· feedparser 6.0.14（BSD-2-Clause）· httpx 0.28.1（BSD-3-Clause）；传递依赖（starlette / pydantic / anyio / h11 / idna / click / certifi 等）的清单见 [COMPLIANCE.md](docs/COMPLIANCE.md) 第 5 节，其余全部是 Python 3.13 标准库。
-- **许可与合规**：MIT，见 [LICENSE](LICENSE)，提交贡献即表示同意以同一许可分发；聚合与抓取边界、隐私、知识产权，以及**尚未闭环的合规事项**见 [COMPLIANCE.md](docs/COMPLIANCE.md)（第 7 节）。
+- **许可与合规**：MIT，见 [LICENSE](LICENSE)，提交贡献即表示同意以同一许可分发；聚合与抓取边界、隐私、知识产权，以及**数据源合规口径（只用境内站点）与它的唯一例外**见 [COMPLIANCE.md](docs/COMPLIANCE.md)（第 7 节与第 7.1 节）。
 - **署名与发布**：中文场景统一写「海风（kele551）」，仓库地址 https://gitee.com/kele551/hotnews ；维护者用的 `tools/publish.py`、签名私钥与发布凭据都在维护者本机工作区，**不在本仓库内**。
 - **行尾与打包清单**：见上文「仓库约定」——`.gitattributes` 统一 LF（`说明.txt` 保持 CRLF）；`python build.py --list` 可以在真正打包前核对清单里没有本机调试产物。
 
@@ -374,7 +375,7 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 ## 免责声明
 
 > 完整合规声明见 **[COMPLIANCE.md](docs/COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
-> 知识产权 / 尚未闭环的合规事项）。
+> 知识产权 / 数据源合规口径与唯一例外）。
 
 - 本工具是**个人学习用的新闻聚合器**，只聚合各新闻网站**公开的标题、摘要与链接**，
   **不存储、不修改、不转载原文内容**。
