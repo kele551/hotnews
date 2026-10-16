@@ -12,7 +12,7 @@
 | H-03 | `docs/COMPLIANCE.md` 编号错乱（两个 `7.1`、中文与阿拉伯序号混用）；README 说"尚未闭环"与第 7 节标题"已闭环"矛盾 | ★★ | `docs/COMPLIANCE.md`、`README.md` | 章节编号唯一且连续；两处对"唯一例外是否闭环"的说法一致 | #4 | done |
 | H-04 | 主源码文件头缺署名（`app.py` / `server.py` / `updater.py` / `build.py` / `check_sources.py` / `make_icon.py` / `_ed25519.py` / `tools/patch_index.py`），`说明.txt` 首部也无署名 | ★ | 上述文件 | 每个 `.py` 文件头有 `# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews`；`说明.txt` 首部有署名行 | #5 | done |
 | H-05 | `说明.txt` 两处「国内原来那栏」指代不明（删栏目名后留下的残句），与 README 的栏目名口径统一 | ★ | `说明.txt` | 两处都写成明确栏目名（如「民生栏 / 国内体育栏」），与 README 一致 | #6 | done |
-| H-06 | README 里「数据源（v1.5.5）」同一句出现两次（H2 与折叠标题），删一处 | ★ | `README.md` | 全文搜索该标题只剩一处 | #7 | done |
+| H-06 | README 里「数据源（v1.5.5）」同一句出现两次（H2 与折叠标题），删一处 | ★ | `README.md` | 全文搜索该标题只剩一处 | #7 | done（设计如此：发布闸门要求小节标题与折叠标题两处都在） |
 | H-07 | `_ico_png/` 9 个 PNG 是图标生成的中间产物（打包排除、发布不用），移出仓库或加一句说明 | ★★ | `_ico_png/`、`build.py`、README | 仓库里不再有无人引用的中间产物（或 README 说明其用途） | #8 | done |
 | H-08 | `.gitignore` 里 `Harnesssecrets*` 看似笔误，改成带注释的说明或删除 | ★ | `.gitignore` | 每条忽略规则都能说清为什么在 | #9 | done |
 
