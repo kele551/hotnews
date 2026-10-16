@@ -3356,7 +3356,7 @@ def _collect(region):
         # 直连国际源（CGTN 文化 / 新华网·体育…）的条目原来一个国别过滤器都不过。
         # 在这里补上（娱乐/体育两栏，判据见 _is_domestic_for_intl）—— 放在这一处是因为
         # 它是**国际栏所有出口的必经点**：国内板块转来的（_spill_from_cn）与热榜（hot）
-        # 在更前面就已经并进 items / hot 了，不会绕过；而它们本身已经过同一套判定，
+        # 在更前面就已经并进 items / hot 了，不会漏过；而它们本身已经过同一套判定，
         # 再判一次是幂等的（娱乐那路对 `cls == "娱乐"` 本来就不转国际）。
         items, _dom_items = _split_domestic_items(items, region)
         if _dom_items:

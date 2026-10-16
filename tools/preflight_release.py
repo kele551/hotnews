@@ -633,8 +633,16 @@ for _f in DOCS:
 check('对外文档读得到（%d 份）' % len(DOCS), len(_texts) == len(DOCS),
       '缺: %s' % '、'.join(f for f in DOCS if f not in _texts))
 
+# 2026-10-16: 把仓库自己的 tools/*.py 也纳入下面同一套邮箱检查 —— 之前只扫对外文档，
+# 结果这个自检脚本的注释里就长期留着一个真实邮箱（还是"加空格"的写法）。
+for _f in ['tools/' + _n for _n in sorted(os.listdir(os.path.join(REPO, 'tools')))
+           if _n.endswith('.py')]:
+    _t = read(os.path.join(REPO, _f))
+    if _t is not None:
+        _texts[_f] = _t
+
 # 私人邮箱检查：先把正文归一化（去空白与零宽字符、全角转半角）再匹配。
-# 归一化之后再匹配，`75219857 @qq.com` 这种"加空格规避"的写法会被还原成正常邮箱、照样命中
+# 归一化之后再匹配，把邮箱中间插空格 / 零宽字符这类规避写法会被还原成正常邮箱、照样命中
 # （狐径的自检就是这么修的）。**不额外做"邮箱域名裸关键字"检查**：本项目的 README 要
 # 正经登记数据源域名（如 ent.sina.com.cn），那种检查会把数据源当成私人邮箱误报。
 FULLWIDTH = {0x3000: ' ', 0xFF20: '@', 0xFF0E: '.', 0xFF0B: '+', 0xFF0D: '-'}
