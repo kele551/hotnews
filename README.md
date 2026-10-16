@@ -243,6 +243,10 @@ pip install -r requirements.txt
 python app.py            # 或 python -m uvicorn server:app --port 8000
 ```
 
+> **想改代码？先看 [项目结构与上手路线](docs/ARCHITECTURE.md)** —— 15 分钟看懂：哪个文件管什么、
+> 想加一个新闻源 / 改分流口径 / 改界面该动哪里、改完要跑什么。
+> ⚠ 动升级链路（`version.json` / `updater.py`）前，务必先读 [CONTRIBUTING.md](docs/CONTRIBUTING.md) 第 5.2 节的两条红线。
+
 </details>
 
 ---
