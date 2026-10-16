@@ -8,6 +8,30 @@ hotnews（热点新闻检索）是一个人维护的小项目：Windows 单文�
 
 ---
 
+## 〇、最短路径：提交一个改动（三步走）
+
+> 这条链就是"做完"的定义：**认领 → 改并自证 → 提交时贴出验收输出**。
+> 维护者侧怎么复核见 [REVIEWING.md](REVIEWING.md)。
+
+1. **认领**：在 [TASKS.md](../TASKS.md) 里挑一条（每行都带 issue 号与**验收命令**），或先开 Issue 说清方案；
+2. **改 + 自证**：一次只做一件事；改完**必须真的跑**：
+
+   ```powershell
+   python -m py_compile app.py server.py updater.py    # 语法检查
+   python app.py                                       # 真跑一次，看页面（别只看代码）
+   python tools/preflight_release.py                   # 行为类改动尽量全绿
+   ```
+
+   改**数据源**的还要附「条目数 / 带图数 / 最新时间 / 通道」的实测结果；改**分流口径**的要在闸门里同时补一条断言；
+3. **提交**：中文提交信息（`fix:` / `feat:` / `docs:` / `chore:`），并在 PR / Issue 里**贴出上面命令的输出** ——
+   写"应该没问题"的会被要求补验证。
+
+**不需要任何令牌或私有凭据**：自检里需要凭据的检查会自动 `[SKIP]` 并打印原因。
+⚠ 动升级链路（`version.json` / `updater.py`）之前，先读第 5.2 节的两条红线。
+用 AI 助手一起改也可以：先让它读 [../AGENTS.md](../AGENTS.md)（禁区清单）与 [ARCHITECTURE.md](ARCHITECTURE.md)（结构）。
+
+---
+
 ## 一、提 Issue
 
 - **Bug**：用 [Bug 反馈](../.github/ISSUE_TEMPLATE/bug_report.yml) 模板。

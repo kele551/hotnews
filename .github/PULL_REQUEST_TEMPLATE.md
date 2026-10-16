@@ -22,6 +22,8 @@
 - [ ] **没有整文件重写行尾**（仓库多数文件是 LF，`说明.txt` 是 CRLF；`core.autocrlf=true`）
 - [ ] 没有改到 `version.json` 的对外格式（线上升级源依赖它，改错会让在线升级整个失效）
 - [ ] 提交信息符合规范（见 docs/CONTRIBUTING.md「提交信息规范」）
+- [ ] 跑了仓库自带的闸门并把结果贴到下面「实测 / 验证记录」：`python tools/preflight_release.py`（行为类改动的判据；有红项就说明为什么）
+- [ ] 我认领的任务来自 [TASKS.md](../TASKS.md) 或相关 Issue，**它的「验收命令」输出已贴在下面**（没贴 = 还没做完）
 
 ## 实测 / 验证记录
 
