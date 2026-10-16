@@ -363,6 +363,9 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 - **维护者**：海风（kele551）—— 个人项目，单人维护；Issue / PR 一般 **3 个工作日内**给首次回应，能复现的问题排进下一个真功能版本（本项目不为单个问题单独发版）。
 - **安全漏洞**：**请不要开公开 Issue**，按 [SECURITY.md](docs/SECURITY.md) 的私下渠道报告（首选 GitHub 仓库的私密漏洞报告入口）。
 - **贡献指南**：怎么提 Issue / PR、代码风格、本地构建与自查、数据源增删的实测门槛、提交信息规范见 [CONTRIBUTING.md](docs/CONTRIBUTING.md)。
+- **参与讨论**：提交 Issue、评审 PR 和交流时的行为底线见 [CODE_OF_CONDUCT.md](docs/CODE_OF_CONDUCT.md)。
+- **更新记录**：每个版本改了什么、修复了什么见 [CHANGELOG.md](docs/CHANGELOG.md)。
+- **维护者评审**：复现、检查与合并贡献的流程见 [REVIEWING.md](docs/REVIEWING.md)。
 - **自动构建与产物校验**：`.github/workflows/build.yml` 在 Windows runner 上装依赖、用 `build_exe.spec` 打包、校验版本号与署名、打印每个产物的 SHA256 并上传 artifact；产物来源、SHA256 自核验、将来的代码签名计划，以及升级通道已有的 Ed25519 签名校验，见 [CODE_SIGNING_POLICY.md](docs/CODE_SIGNING_POLICY.md)。
 - **第三方组件与许可**：运行时只依赖 4 个第三方库（版本在 `requirements.txt` 里固定），全部是宽松许可，**没有 GPL/AGPL、没有需要商业授权的组件**：fastapi 0.142.2（MIT）· uvicorn 0.54.0（BSD-3-Clause）· feedparser 6.0.14（BSD-2-Clause）· httpx 0.28.1（BSD-3-Clause）；传递依赖（starlette / pydantic / anyio / h11 / idna / click / certifi 等）的清单见 [COMPLIANCE.md](docs/COMPLIANCE.md) 第 5 节，其余全部是 Python 3.13 标准库。
 - **许可与合规**：MIT，见 [LICENSE](LICENSE)，提交贡献即表示同意以同一许可分发；聚合与抓取边界、隐私、知识产权，以及**尚未闭环的合规事项**见 [COMPLIANCE.md](docs/COMPLIANCE.md)（第 7 节）。
