@@ -4,7 +4,7 @@
 <h1>hotnews · 热点新闻检索</h1>
 
 <a href="https://github.com/kele551/hotnews/releases" title="点击去下载"><img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=GitHub%E4%B8%8B%E8%BD%BD&color=brightgreen" height="30"></a>
-<a href="https://gitee.com/kele551/hotnews/access" title="Gitee 仓库访问统计 · 实时计数"><img alt="Gitee 访问" src="https://hits.sh/gitee.com/kele551/hotnews.svg?label=Gitee%E8%AE%BF%E9%97%AE&color=c71d24&style=flat-square" height="30"></a>
+<a href="https://gitcode.com/kele551/hotnews" title="GitCode 仓库访问统计 · 实时计数"><img alt="GitCode 访问" src="https://hits.sh/gitcode.com/kele551/hotnews.svg?label=GitCode%E8%AE%BF%E9%97%AE&color=c71d24&style=flat-square" height="30"></a>
 
 <a href="https://github.com/kele551/hotnews/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
 <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square">
@@ -31,6 +31,14 @@
 
 <p>作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a>　·　<a href="https://atomgit.com/kele551/hotnews">AtomGit（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
 </div>
+
+> **📦 已迁移到 GitCode，本仓库（Gitee）停止更新（2026-10-17）**
+>
+> **Gitee 最后一版是 v1.5.6（2026-10-17）**；以后的更新只在 [GitCode](https://gitcode.com/kele551/hotnews/releases)（主源）与 [GitHub](https://github.com/kele551/hotnews)（镜像）发布。
+>
+> - **为什么迁**：Gitee 不公开发行版附件的下载数，统计不到真实下载量；GitCode（=AtomGit）能放 exe 附件、有准确的下载数接口，API 也更全。
+> - **老用户怎么过渡**：照常从本仓库升级即可，升到 **v1.5.6** 后客户端会自动切到 GitCode，不用重装、不用改配置。
+> - **三平台关系**：GitCode（主源）· Gitee（历史 + 旧入口）· GitHub（镜像），代码逐字节一致。
 
 <details>
 <summary>📊 <b>仓库数据一览</b>（点击展开）</summary>
