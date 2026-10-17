@@ -1,3 +1,9 @@
 {
-  "version": "1.5.6"
+  "version": "1.5.6",
+  "launcher": {
+    "url": "https://gitcode.com/kele551/hotnews/releases/download/v1.5.6/hotnews-v1.5.6.exe",
+    "sha256": "1F122F5DC16DB806A6956FEED4F4CBDA3E77BBBF30BAFFD3896A90C9DE72AEAD",
+    "size": 14304994
+  },
+  "notes": "更新内容\n· 升级源切到 GitCode（国内访问更快），Gitee / GitHub 保留兜底\n· Ed25519 验签照旧：验不过 / 缺签名一律拒绝并保留当前版本\n· 旧版本升级到本版后自动切到 GitCode，无需重装"
 }
