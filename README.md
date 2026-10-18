@@ -50,22 +50,22 @@
 
 ## 使用
 
-下载 [最新 Release](https://gitcode.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.5.exe`，双击运行，自动打开浏览器。
+下载 [最新 Release](https://gitcode.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.6.exe`，双击运行，自动打开浏览器。
 
 - 自动选端口（8000 起，被占则顺延）
 - 启动时自动检查更新（可关闭，见 `config.json`）
 - 页面右上角「检查更新」手动触发
 - 右下角气泡提醒（见下文），点气泡可直接打开对应新闻
 
-> **国内用户请从 Gitee 下载（速度快）**；**三个平台代码一致**：[Gitee](https://gitee.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· [AtomGit](https://atomgit.com/kele551/hotnews)（代码镜像，只提供源码归档）。
-> **二进制发行包请从 Gitee（主）或 GitHub（镜像）下载**；三个平台都收 Issue / PR。
+> **国内用户请从 GitCode 下载（速度快）**；**三个平台代码一致**：[GitCode](https://gitcode.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· [Gitee](https://gitee.com/kele551/hotnews)（历史入口，2026-10-17 起停更，只留最后一版）。
+> **二进制发行包请从 GitCode（主）或 GitHub（镜像）下载**；三个平台都收 Issue / PR。
 
 ---
 
-## 数据源（v1.5.5）
+## 数据源（v1.5.6）
 
 <details>
-<summary><b>数据源（v1.5.5）</b>（点击展开）</summary>
+<summary><b>数据源（v1.5.6）</b>（点击展开）</summary>
 
 
 每个源都是**实测连通 + 带图**之后才加入的；实测失败的（无法访问、无图、停更）一律没有采用。
