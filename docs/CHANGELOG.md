@@ -4,6 +4,11 @@
 > 每一条都对应发行版：**GitCode（主源）** / **GitHub（镜像）**；**Gitee 自 2026-10-17 起停更**，只保留最后一版。
 > 代码另在 [AtomGit](https://atomgit.com/kele551/hotnews) 有镜像（只提供源码归档）。下载与校验值见各发行版页面。
 
+## v1.5.7（2026-10-20）
+
+页面页脚的仓库地址换成 GitHub（可点）：首页与「国际」页右下角从已停更的 `gitee.com/kele551/hotnews`
+换成 **`github.com/kele551/hotnews`**，点一下直接打开项目主页；只改显示，抓取与划分逻辑未动
+
 ## v1.5.6（2026-10-17）
 
 在线升级源切到 GitCode（主源）：本版起「检查更新」从 GitCode 取升级源，GitHub 保持镜像；
