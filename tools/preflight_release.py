@@ -607,6 +607,70 @@ if _sv is not None:
     except Exception as _e:
         check('升级通道证书兜底断言可执行', False, '%s: %s' % (type(_e).__name__, _e))
 
+    # ⑮ 静态界面文件自愈（2026-10-18 事故固化：%TEMP%\_MEIxxxx\static 被清理后，
+    #    页面只剩兜底文字、用户报「打开没有显示」—— 服务其实一直正常）
+    try:
+        import static_heal as _shd
+        import shutil as _shr
+        import tempfile as _tf
+        _st_root = _tf.mkdtemp(prefix='hotnews_static_')
+        try:
+            _st_src = os.path.join(_st_root, 'src')
+            _shr.copytree(os.path.join(REPO, 'static'), _st_src)
+            _st_la = os.path.join(_st_root, 'localappdata')
+            _d1 = _shd.ensure_static(_st_src, REPO, '9.9.9', True, localappdata=_st_la)
+            check('打包态把 static/ 复制到稳定目录（%LOCALAPPDATA%\\hotnews\\static-版本）',
+                  _d1 != _st_src and os.path.isfile(os.path.join(_d1, 'index.html')), _d1)
+            # 模拟"临时目录被清理"：把解包目录整个删掉，再启动一次
+            _shr.rmtree(_st_src, ignore_errors=True)
+            _d2 = _shd.ensure_static(_st_src, REPO, '9.9.9', True, localappdata=_st_la)
+            check('临时目录被清空后仍能从稳定副本取到 index.html',
+                  os.path.isfile(os.path.join(_d2, 'index.html')), _d2)
+            # 源码态不复制（改模板立即生效）
+            check('源码态不做复制（改了 static/ 立即生效）',
+                  _shd.ensure_static(os.path.join(_st_root, 'nope'), REPO, '9.9.9', False,
+                                     localappdata=_st_la) == os.path.join(_st_root, 'nope'))
+            # 旧版本副本要被清掉，不能越攒越多
+            _old = os.path.join(_st_la, 'hotnews', 'static-1.0.0')
+            os.makedirs(_old, exist_ok=True)
+            open(os.path.join(_old, 'index.html'), 'w', encoding='utf-8').write('old')
+            _shd.ensure_static(_st_src, REPO, '9.9.9', True, localappdata=_st_la)
+            check('旧版本的 static-* 副本会被清掉', not os.path.isdir(_old), _old)
+        finally:
+            _shr.rmtree(_st_root, ignore_errors=True)
+
+        # 模板读失败不许把空串永久缓存（否则文件回来了页面也一直空，只能重启）
+        # 做法：把两个查找目录都指向不存在的路径 → 一定读失败；再恢复 → 必须能读回来。
+        _keep_dir = _sv.STATIC_DIR
+        _keep_base = _sv.BASE_DIR
+        _keep_tpl = dict(_sv._HTML_TPL)
+        try:
+            _sv.STATIC_DIR = os.path.join(_st_root, '不存在的目录')
+            _sv.BASE_DIR = os.path.join(_st_root, '也不存在')
+            _sv._HTML_TPL.clear()
+            _bad = _sv._html_template('index.html')
+            _cached_bad = 'index.html' in _sv._HTML_TPL
+            _sv.STATIC_DIR = _keep_dir
+            _sv.BASE_DIR = _keep_base
+            _good = _sv._html_template('index.html')
+        finally:
+            _sv.STATIC_DIR = _keep_dir
+            _sv.BASE_DIR = _keep_base
+            _sv._HTML_TPL.clear()
+            _sv._HTML_TPL.update(_keep_tpl)
+        check('模板读失败不缓存空串，恢复后能重新读到',
+              (not _bad) and (not _cached_bad) and bool(_good), 'len=%d' % len(_good or ''))
+
+        # 界面文件缺失时给的是说明页，不再是裸露的 <h1>hotnews</h1>
+        _idx_src = read(os.path.join(REPO, 'server.py')) or ''
+        check('界面文件缺失时返回说明页（不再只有 hotnews 三个字）',
+              '界面文件缺失' in (_sv._MISSING_UI_PAGE or '')
+              and 'return HTMLResponse("<h1>hotnews</h1>")' not in _idx_src)
+    except ModuleNotFoundError as _e:
+        skip('静态界面文件自愈断言', '缺少第三方依赖 %s' % _e.name)
+    except Exception as _e:
+        check('静态界面文件自愈断言可执行', False, '%s: %s' % (type(_e).__name__, _e))
+
     # 抓取/import 期间打出来的东西里不该有异常痕迹
     _cap_txt = _cap.buf.getvalue()
     _traces = [l for l in _cap_txt.split('\n')

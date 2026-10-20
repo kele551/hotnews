@@ -1,5 +1,5 @@
-hotnews · 热点新闻检索 v1.5.5
-作者：海风（kele551）   https://gitee.com/kele551/hotnews
+hotnews · 热点新闻检索 v1.5.7
+作者：海风（kele551）   https://gitcode.com/kele551/hotnews
 =====================================
 
 一、项目说明
@@ -14,7 +14,7 @@ hotnews · 热点新闻检索 v1.5.5
   运行：uvicorn，默认 http://localhost:8000
   入口：app.py（选端口 / 开浏览器 / 单实例检测）
 
-三、数据源（v1.5.5 现役清单）
+三、数据源（v1.5.7 现役清单）
 
   ┌─ 实时热榜 · 国内 ─── v1.5.1 按指定定为三家 ─────────────────
   │ 澎湃新闻   cache.thepaper.cn 官方 contentapi 的 hotNews
@@ -182,8 +182,8 @@ hotnews · 热点新闻检索 v1.5.5
   · 启动时后台静默检查新版本（约 5 秒后，不阻塞使用）
   · 发现新版 → 自动下载 → 校验 sha256 → 退出时自动替换并重启
   · 页面右上角「检查更新」按钮可手动触发
-  · 更新源：Gitee（国内下载稳定，约 1.4MB/s）
-    https://gitee.com/kele551/hotnews
+  · 更新源：GitCode（国内下载稳定，约 1.4MB/s）
+    https://gitcode.com/kele551/hotnews
   · 关闭自动更新：config.json 里把 update.enabled 改成 false
   · 检查失败（无网络）静默忽略，不影响正常使用
   · v1.2.1 修复：替换 exe 时不再弹黑窗（改用 PowerShell 隐藏执行）；
@@ -219,7 +219,7 @@ hotnews · 热点新闻检索 v1.5.5
 
 十一、已知取舍
   · 本副本早期按「热点新闻检索 · 项目说明」文档重建，现已接管
-    Gitee 仓库 https://gitee.com/kele551/hotnews.git（已转公开）作为
+    GitCode 仓库 https://gitcode.com/kele551/hotnews（主源）作为
     更新源，GitHub 为镜像（https://github.com/kele551/hotnews）。
   · httpx 走 trust_env=False 直连：环境里的代理会让 RSS 抓取从
     0.1s 劣化到约 20s，因此全程绕开代理。

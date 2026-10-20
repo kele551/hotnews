@@ -1,3 +1,9 @@
 {
-  "version": "1.5.6"
+  "version": "1.5.7",
+  "launcher": {
+    "url": "https://gitcode.com/kele551/hotnews/releases/download/v1.5.7/hotnews-v1.5.7.exe",
+    "sha256": "AC0D871885219CE806BC48DE34C1010E4536C9717E1E6F8928BFD65B9AAD19B2",
+    "size": 14308517
+  },
+  "notes": "更新内容\n· 页面页脚的仓库地址换成 GitHub（可点）\n· 只改显示，抓取与国内/国际划分逻辑未动"
 }
