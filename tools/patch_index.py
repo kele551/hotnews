@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 """安全地给 static/index.html 打补丁：只做"插入"，绝不裁剪原文件。
 
 【为什么单独写个脚本】之前用 PowerShell 的 Substring 插 CSS，把第一处 </style>

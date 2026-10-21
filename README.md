@@ -3,8 +3,8 @@
 
 <h1>hotnews · 热点新闻检索</h1>
 
-<a href="https://github.com/kele551/hotnews/releases" title="点击去下载"><img alt="Downloads" src="https://img.shields.io/github/downloads/kele551/hotnews/total?style=flat-square&label=GitHub%E4%B8%8B%E8%BD%BD&color=brightgreen" height="30"></a>
-<a href="https://gitee.com/kele551/hotnews/access" title="Gitee 仓库访问统计 · 实时计数"><img alt="Gitee 访问" src="https://hits.sh/gitee.com/kele551/hotnews.svg?label=Gitee%E8%AE%BF%E9%97%AE&color=c71d24&style=flat-square" height="30"></a>
+<a href="https://gitcode.com/kele551/hotnews/releases" title="点击去下载（GitHub + GitCode 合计 · 实时）"><img alt="Downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Ddownloads&style=flat-square" height="30"></a>
+<a href="https://gitcode.com/kele551/hotnews" title="浏览量 · Gitee + GitCode 合计 · 实时"><img alt="浏览量" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Dviews&style=flat-square" height="30"></a>
 
 <a href="https://github.com/kele551/hotnews/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
 <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square">
@@ -12,7 +12,6 @@
 <img alt="Last Commit" src="https://img.shields.io/github/last-commit/kele551/hotnews?style=flat-square&label=last%20commit&color=blue">
 
 <a href="https://github.com/kele551/hotnews/stargazers"><img alt="GitHub Star" src="https://img.shields.io/github/stars/kele551/hotnews?style=flat-square&logo=github&label=GitHub%20Star&color=gold"></a>
-<a href="https://gitee.com/kele551/hotnews"><img alt="Gitee Star" src="https://gitee.com/kele551/hotnews/badge/star.svg"></a>
 <a href="https://github.com/kele551/hotnews/network/members"><img alt="GitHub Fork" src="https://img.shields.io/github/forks/kele551/hotnews?style=flat-square&label=GitHub%20Fork&color=blue"></a>
 <a href="https://github.com/kele551"><img alt="Follow Author" src="https://img.shields.io/github/followers/kele551?style=flat-square&logo=github&label=follow%20author&color=blue"></a>
 
@@ -21,7 +20,7 @@
 <img alt="Free" src="https://img.shields.io/badge/费用-免费无广告-brightgreen?style=flat-square">
 <img alt="No Tracking" src="https://img.shields.io/badge/用户数据-不采集不上传-green?style=flat-square">
 
-<a href="https://gitee.com/kele551/hotnews/releases"><img alt="Download from Gitee" src="https://img.shields.io/badge/%F0%9F%93%A5_%E4%B8%8B%E8%BD%BD-Gitee%E4%B8%BB%E6%BA%90-c71d24?style=flat-square&logo=gitee&logoColor=white&labelColor=3d4552"></a>
+<a href="https://gitcode.com/kele551/hotnews/releases"><img alt="Download from GitCode" src="https://img.shields.io/badge/%F0%9F%93%A5_%E4%B8%8B%E8%BD%BD-GitCode%E4%B8%BB%E6%BA%90-c71d24?style=flat-square&logo=gitee&logoColor=white&labelColor=3d4552"></a>
 <a href="https://github.com/kele551/hotnews"><img alt="GitHub mirror" src="https://img.shields.io/badge/%F0%9F%90%99_%E6%BA%90%E7%A0%81-GitHub%E9%95%9C%E5%83%8F-24292f?style=flat-square&logo=github&logoColor=white&labelColor=3d4552"></a>
 <a href="https://www.bilibili.com/video/BV12BpQ6mEGm"><img alt="Bilibili demo" src="https://img.shields.io/badge/%F0%9F%93%BA_%E6%BC%94%E7%A4%BA-B%E7%AB%99%E8%A7%86%E9%A2%91-00a1d6?style=flat-square&logo=bilibili&logoColor=white&labelColor=3d4552"></a>
 <a href="https://github.com/kele551/hotnews/issues"><img alt="Issues" src="https://img.shields.io/badge/%F0%9F%90%9E_%E5%8F%8D%E9%A6%88-%E6%8F%90Issue-0969da?style=flat-square&labelColor=3d4552"></a>
@@ -29,8 +28,9 @@
 
 <p>📰 <b>国内 / 国际热点新闻图库</b>　·　本地抓取，只看标题与原文链接</p>
 
-<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitee.com/kele551/hotnews">Gitee（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a>　·　<a href="https://atomgit.com/kele551/hotnews">AtomGit（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
+<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitcode.com/kele551/hotnews">GitCode（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a>　·　<a href="https://atomgit.com/kele551/hotnews">AtomGit（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
 </div>
+
 
 <details>
 <summary>📊 <b>仓库数据一览</b>（点击展开）</summary>
@@ -41,7 +41,6 @@
 <img alt="Contributors" src="https://img.shields.io/github/contributors/kele551/hotnews?style=flat-square&label=contributors">
 <a href="https://github.com/kele551/hotnews/issues"><img alt="Issues" src="https://img.shields.io/github/issues/kele551/hotnews?style=flat-square&label=issues"></a>
 <img alt="Resolved" src="https://img.shields.io/github/issues-closed/kele551/hotnews?style=flat-square&label=resolved">
-<img alt="Gitee Fork" src="https://gitee.com/kele551/hotnews/badge/fork.svg">
 <img alt="Language" src="https://img.shields.io/github/languages/top/kele551/hotnews?style=flat-square">
 <img alt="Code Size" src="https://img.shields.io/github/languages/code-size/kele551/hotnews?style=flat-square&label=code%20size">
 <a href="https://github.com/kele551/hotnews/blob/main/docs/CONTRIBUTING.md"><img alt="PRs Welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square"></a>
@@ -51,22 +50,22 @@
 
 ## 使用
 
-下载 [最新 Release](https://gitee.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.5.exe`，双击运行，自动打开浏览器。
+下载 [最新 Release](https://gitcode.com/kele551/hotnews/releases) 里的 `hotnews-v1.5.7.exe`，双击运行，自动打开浏览器。
 
 - 自动选端口（8000 起，被占则顺延）
 - 启动时自动检查更新（可关闭，见 `config.json`）
 - 页面右上角「检查更新」手动触发
 - 右下角气泡提醒（见下文），点气泡可直接打开对应新闻
 
-> **国内用户请从 Gitee 下载（速度快）**；**三个平台代码一致**：[Gitee](https://gitee.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· [AtomGit](https://atomgit.com/kele551/hotnews)（代码镜像，只提供源码归档）。
-> **二进制发行包请从 Gitee（主）或 GitHub（镜像）下载**；三个平台都收 Issue / PR。
+> **国内用户请从 GitCode 下载（速度快）**；**三个平台代码一致**：[GitCode](https://gitcode.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· [Gitee](https://gitee.com/kele551/hotnews)（历史入口，2026-10-17 起停更，只留最后一版）。
+> **二进制发行包请从 GitCode（主）或 GitHub（镜像）下载**；三个平台都收 Issue / PR。
 
 ---
 
-## 数据源（v1.5.5）
+## 数据源（v1.5.7）
 
 <details>
-<summary><b>数据源明细（v1.5.5）</b>（点击展开）</summary>
+<summary><b>数据源明细（v1.5.7）</b>（点击展开）</summary>
 
 
 每个源都是**实测连通 + 带图**之后才加入的；实测失败的（无法访问、无图、停更）一律没有采用。
@@ -362,10 +361,11 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 
 - **维护者**：海风（kele551）—— 个人项目，单人维护；Issue / PR 一般 **3 个工作日内**给首次回应，能复现的问题排进下一个真功能版本（本项目不为单个问题单独发版）。
 - **安全漏洞**：**请不要开公开 Issue**，按 [SECURITY.md](docs/SECURITY.md) 的私下渠道报告（首选 GitHub 仓库的私密漏洞报告入口）。
-- **贡献指南**：怎么提 Issue / PR、代码风格、本地构建与自查、数据源增删的实测门槛、提交信息规范见 [CONTRIBUTING.md](docs/CONTRIBUTING.md)。
+- **贡献指南**：怎么提 Issue / PR、代码风格、本地构建与自查、数据源增删的实测门槛、提交信息规范见 [CONTRIBUTING.md](docs/CONTRIBUTING.md)；参与讨论的底线见[行为准则](docs/CODE_OF_CONDUCT.md)。
+- **更新记录**：每一版改了什么、发在哪个平台，见 [CHANGELOG.md](docs/CHANGELOG.md)。
 - **自动构建与产物校验**：`.github/workflows/build.yml` 在 Windows runner 上装依赖、用 `build_exe.spec` 打包、校验版本号与署名、打印每个产物的 SHA256 并上传 artifact；产物来源、SHA256 自核验、将来的代码签名计划，以及升级通道已有的 Ed25519 签名校验，见 [CODE_SIGNING_POLICY.md](docs/CODE_SIGNING_POLICY.md)。
 - **第三方组件与许可**：运行时只依赖 4 个第三方库（版本在 `requirements.txt` 里固定），全部是宽松许可，**没有 GPL/AGPL、没有需要商业授权的组件**：fastapi 0.142.2（MIT）· uvicorn 0.54.0（BSD-3-Clause）· feedparser 6.0.14（BSD-2-Clause）· httpx 0.28.1（BSD-3-Clause）；传递依赖（starlette / pydantic / anyio / h11 / idna / click / certifi 等）的清单见 [COMPLIANCE.md](docs/COMPLIANCE.md) 第 5 节，其余全部是 Python 3.13 标准库。
-- **许可与合规**：MIT，见 [LICENSE](LICENSE)，提交贡献即表示同意以同一许可分发；聚合与抓取边界、隐私、知识产权，以及**尚未闭环的合规事项**见 [COMPLIANCE.md](docs/COMPLIANCE.md)（第 7 节）。
+- **许可与合规**：MIT，见 [LICENSE](LICENSE)，提交贡献即表示同意以同一许可分发；聚合与抓取边界、隐私、知识产权，以及**数据源合规口径（只用境内站点）与它的唯一例外**见 [COMPLIANCE.md](docs/COMPLIANCE.md)（第 7 节与第 7.1 节）。
 - **署名与发布**：中文场景统一写「海风（kele551）」，仓库地址 https://gitee.com/kele551/hotnews ；维护者用的 `tools/publish.py`、签名私钥与发布凭据都在维护者本机工作区，**不在本仓库内**。
 - **行尾与打包清单**：见上文「仓库约定」——`.gitattributes` 统一 LF（`说明.txt` 保持 CRLF）；`python build.py --list` 可以在真正打包前核对清单里没有本机调试产物。
 
@@ -374,7 +374,7 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 ## 免责声明
 
 > 完整合规声明见 **[COMPLIANCE.md](docs/COMPLIANCE.md)**（聚合边界 / 抓取边界 / 隐私 / 第三方组件与许可 /
-> 知识产权 / 尚未闭环的合规事项）。
+> 知识产权 / 数据源合规口径与唯一例外）。
 
 - 本工具是**个人学习用的新闻聚合器**，只聚合各新闻网站**公开的标题、摘要与链接**，
   **不存储、不修改、不转载原文内容**。
@@ -409,4 +409,4 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 
 ---
 
-<p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://gitee.com/kele551/hotnews">Gitee 主仓库</a> · <a href="https://github.com/kele551/hotnews">GitHub 镜像</a></sub></p>
+<p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://gitcode.com/kele551/hotnews">GitCode 主仓库</a> · <a href="https://github.com/kele551/hotnews">GitHub 镜像</a></sub></p>

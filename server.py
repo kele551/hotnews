@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 """
 hotnews —— 热点新闻检索（国内 / 国际）
 FastAPI 后端：抓取 RSS、解析题图、图片代理、翻译、SSR 首屏
@@ -64,6 +65,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse  # noqa: 
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import updater  # noqa: E402
+import static_heal  # noqa: E402  【2026-10-18 修】静态界面文件自愈（见 static_heal.py 文件头）
 
 
 def _res(rel):
@@ -94,6 +96,13 @@ def _read_version():
 
 
 VERSION = _read_version()
+
+# 【2026-10-18 修 高-1】静态界面文件自愈 —— 用户报「打开没有显示」的真实原因。
+# 事发：程序在跑，但 %TEMP%\_MEIxxxx\static 被清理临时目录的动作当成垃圾删掉了
+# （现场只剩 25 个内存映射中的 dll/pyd），于是 `/` 只剩兜底文字、`/static/*` 全 500。
+# 现在打包态一律改从 %LOCALAPPDATA%\hotnews\static-<版本>\ 读界面文件，细节见 static_heal.py。
+STATIC_DIR = static_heal.ensure_static(
+    STATIC_DIR, BASE_DIR, VERSION, bool(getattr(sys, "frozen", False)))
 
 # 【2026-10-09 修 中-5】进程启动时刻：/api/version 会把 uptime 带出去，
 # app.py 二次启动时据此判断"对面是不是一个正常服务的实例"（见 app.py 的 find_running）。
@@ -6907,6 +6916,27 @@ def proxy_img(url: str = Query(...)):
                     headers={"Cache-Control": f"public, max-age={IMG_CACHE_TTL}"})
 
 
+# 【2026-10-18 修】界面模板读不到时的说明页 —— 服务是好的，但页面文件没了。
+# 用文字页而不是裸露的 <h1>hotnews</h1>，好让用户知道发生了什么、点一下就好。
+_MISSING_UI_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>热点新闻 · 界面文件缺失</title></head>
+<body style="margin:0;font-family:system-ui,'Microsoft YaHei',sans-serif;background:#0f1115;color:#e8eaf0">
+<div style="max-width:640px;margin:12vh auto;padding:0 24px;line-height:1.9">
+<h1 style="font-size:22px">界面文件缺失</h1>
+<p>抓取服务本身是正常的（数据接口可用），但页面模板读不到 ——
+通常是临时目录被清理时把界面文件删掉了。</p>
+<p>请按下面任一种方式恢复：</p>
+<ol style="padding-left:20px">
+<li>关闭本页，从<strong>桌面 / 开始菜单 / 右下角托盘图标</strong>重新打开「热点新闻」；</li>
+<li>还不行就结束进程后重开：任务管理器里结束 <code>热点新闻.exe</code>，再双击程序。</li>
+</ol>
+<p style="color:#8b93a7;font-size:13px">作者：海风（kele551） ·
+https://gitcode.com/kele551/hotnews</p>
+</div></body></html>"""
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     v = _load_version()
@@ -6928,7 +6958,10 @@ def index(request: Request):
         ssr = ssr.replace('__SSR_REGION__', "cn")
         ssr = ssr.replace("__SSR_VERSION__", VERSION)
         return HTMLResponse(ssr, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
-    return HTMLResponse("<h1>hotnews</h1>")
+    # 【2026-10-18 修】原来是裸露的 "<h1>hotnews</h1>"，用户完全看不出发生了什么，
+    # 只会说"打开没有显示"。现在明确告诉用户界面文件丢了、怎么办（服务本身是好的）。
+    return HTMLResponse(_MISSING_UI_PAGE, status_code=503,
+                        headers={"Cache-Control": "no-store"})
 
 
 # 【2026-10-09 修 低-8】静态 HTML 模板缓存：`/` 与 `/world` 原来**每个请求都读一次盘**
@@ -6938,14 +6971,24 @@ _HTML_TPL = {}
 
 
 def _html_template(name):
-    """读并缓存 static/<name>；读不到返回空串（调用方各自兜底）。"""
-    if name not in _HTML_TPL:
+    """读并缓存 static/<name>；读不到返回空串（调用方各自兜底）。
+
+    【2026-10-18 修】读失败**不再缓存空串**：原来一次读失败就把 "" 永久记住，
+    即使文件后来回来了（或换了稳定目录）页面也一直是空的，只能重启程序。
+    现在每次都重试，成功后才进缓存。
+    """
+    if _HTML_TPL.get(name):
+        return _HTML_TPL[name]
+    for d in (STATIC_DIR, os.path.join(BASE_DIR, "static")):
         try:
-            with open(os.path.join(STATIC_DIR, name), "r", encoding="utf-8") as f:
-                _HTML_TPL[name] = f.read()
+            with open(os.path.join(d, name), "r", encoding="utf-8") as f:
+                tpl = f.read()
         except Exception:
-            _HTML_TPL[name] = ""
-    return _HTML_TPL[name]
+            continue
+        if tpl:
+            _HTML_TPL[name] = tpl
+            return tpl
+    return ""
 
 
 def _load_version():
@@ -6959,6 +7002,13 @@ def _load_version():
     return {"version": VERSION}
 
 
+# 【2026-10-18 修】目录可能在运行中被清空/删除：mount 前先确保它存在，
+# 否则 StaticFiles 会在**请求时**抛 RuntimeError（页面 500），而不是给个 404。
+try:
+    if not os.path.isdir(STATIC_DIR):
+        os.makedirs(STATIC_DIR, exist_ok=True)
+except Exception:
+    pass
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

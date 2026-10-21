@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
 """
 hotnews 自动更新模块
 --------------------------------------------------------------
@@ -42,6 +43,9 @@ except ImportError:
 # 国内下载源：Gitee（raw.giteeusercontent.com 是 Gitee raw 的实际存储域名，国内直连稳定）
 REMOTE_VERSION_URL = "https://raw.giteeusercontent.com/kele551/hotnews/raw/master/version.json"
 REMOTE_VERSION_URL_ALT = "https://gitee.com/kele551/hotnews/raw/master/version.json"
+# 【2026-10-17】主源切到 GitCode（国内、快、下载数可统计）；上面两个保留兜底。
+# GitCode 没有 Gitee 那种 raw 直链，用它的 API raw：/raw/version.json?ref=main
+REMOTE_VERSION_URL_GC = "https://gitcode.com/api/v5/repos/kele551/hotnews/raw/version.json?ref=main"
 # 【2026-10-09 修 低-4】GitHub 侧作为**第三候选**兜底：Gitee 万一取不到
 # （网络不通 / 内容审查 451 / 仓库临时维护），还能落到 GitHub 的 raw。
 # 三个候选都拿到 **原始字节** 后统一走同一套 Ed25519 验签，验不过就换下一个 ——
@@ -168,7 +172,7 @@ def fetch_remote():
     _last_reason["why"] = ""
     # 【2026-10-09 修 低-4】三个候选按顺序试：Gitee 主地址 → Gitee 备用地址 → GitHub 兜底。
     # 每个都要求「HTTP 200 + Ed25519 验签通过」才采用，任一环节不过就换下一个。
-    for url in (REMOTE_VERSION_URL, REMOTE_VERSION_URL_ALT, REMOTE_VERSION_URL_GH):
+    for url in (REMOTE_VERSION_URL_GC, REMOTE_VERSION_URL, REMOTE_VERSION_URL_ALT, REMOTE_VERSION_URL_GH):
         try:
             # trust_env=False：不走系统/环境代理，直连 Gitee 更快更稳（同 server._fetch）
             # verify=_updater_verify()：见上面注释 —— certifi 文件被清走时自动退到系统证书库。
@@ -179,7 +183,13 @@ def fetch_remote():
                 _last_reason["why"] = f"HTTP {r.status_code} {url.split('/')[2]}"
                 continue
             raw = r.content                      # 验签必须用**原始字节**，不能用重新序列化的
-            ok, why = _verify_sig(raw, url + ".sig")
+            # 2026-10-17: 升级源可能带查询串（GitCode 的 ?ref=main），.sig 要插在 ? 之前
+            if "?" in url:
+                _p, _q = url.split("?", 1)
+                _sig_url = _p + ".sig?" + _q
+            else:
+                _sig_url = url + ".sig"
+            ok, why = _verify_sig(raw, _sig_url)
             if not ok:
                 _last_reason["why"] = why
                 print(f"[warn] 升级源验签失败（{why}），已忽略这次更新信息")
