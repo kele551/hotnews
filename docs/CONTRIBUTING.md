@@ -1,6 +1,6 @@
 # 参与贡献（CONTRIBUTING）
 
-作者：**海风（kele551）** · 仓库：https://gitee.com/kele551/hotnews （GitHub 同名镜像）
+作者：**海风（kele551）** · 仓库：https://gitcode.com/kele551/hotnews （GitHub 同名镜像）
 
 hotnews（热点新闻检索）是一个人维护的小项目：Windows 单文件 exe + 本机 FastAPI 后端
 + 原生前端（HTML / CSS / JS，无框架、无打包器）。欢迎反馈与 PR，
@@ -158,7 +158,7 @@ python build.py --list
 ### 4.1 Python
 
 - 文件头保留 `# -*- coding: utf-8 -*-`；新增文件按署名规则加一行：
-  `# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews`
+  `# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews`
 - 缩进 4 空格；模块级常量用大写 + 下划线，且**紧跟一行中文注释说明为什么取这个值**
   （例如 `MIN_IMG_SHORT_SIDE = 300` 后面要写清「为什么不是 200、为什么不是 400」）——
   这个仓库里最值钱的东西就是这些「为什么」，改数值前先读注释。
@@ -199,7 +199,7 @@ python build.py --list
   的私密安全公告。
 - **署名**：中文场景统一「海风（kele551）」；ASCII 场景（exe 文件属性、英文文档）
   用 `HaiFeng (kele551)`，版权行 `Copyright (C) 2026 HaiFeng (kele551)`。
-  仓库地址写 `gitee.com/kele551/hotnews`。**文件名不带版本号**（就叫 `热点新闻.exe`），
+  仓库地址写 `gitcode.com/kele551/hotnews`。**文件名不带版本号**（就叫 `热点新闻.exe`），
   版本号只写进 `version.json` 与 exe 文件属性。
 
 ### 4.4 数据源（增删的硬门槛）

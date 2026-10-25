@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
+# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
 """
 hotnews 单文件入口（无窗口版）
 双击 exe → 若已有实例在跑就直接打开浏览器 → 否则选端口启动服务 → 自动开浏览器

@@ -105,7 +105,7 @@ jobs:
             throw "exe 文件版本（$fileVer）与 version.json（$v）不一致 —— version.json 与打包产物对不上"
           }
           if ($company -ne "HaiFeng (kele551)") { throw "CompanyName 署名不对：$company" }
-          if ($comments -ne "gitee.com/kele551/hotnews") { throw "Comments（仓库地址）不对：$comments" }
+          if ($comments -ne "gitcode.com/kele551/hotnews") { throw "Comments（仓库地址）不对：$comments" }
 
           # version.json 不能带 BOM：带了会让本机打包当场 JSONDecodeError（spec 里已用 utf-8-sig 容忍，
           # 但线上升级源必须是干净的无 BOM 版本，这里一并卡住）

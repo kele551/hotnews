@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
+# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
 """热点新闻 —— 发版前自检闸门（必须全绿才允许发布）
 
 为什么这个文件在仓库里：
@@ -69,9 +69,10 @@ INTL_FINAL = ('要闻', '科技', '财经', '娱乐', '体育', '热榜')
 # 已经**整栏下线**的栏目名（国内不许再登记，国际栏的「要闻 / 体育」是正式栏目、不在其中）
 DOMESTIC_GONE = ('社会', '要闻', '体育')
 
-GITEE_REPO = 'https://gitee.com/kele551/hotnews'
+GITCODE_REPO = 'https://gitcode.com/kele551/hotnews'
+GITEE_REPO = GITCODE_REPO      # 历史变量名（部分小节仍按这个名字引用；主源已迁 GitCode）
 GITHUB_REPO = 'https://github.com/kele551/hotnews'
-UA = 'HotnewsPreflight/1.0 (+%s)' % GITEE_REPO
+UA = 'HotnewsPreflight/1.0 (+%s)' % GITCODE_REPO
 
 USAGE = """热点新闻发版前自检 —— 用法
 
@@ -636,6 +637,37 @@ if _sv is not None:
             open(os.path.join(_old, 'index.html'), 'w', encoding='utf-8').write('old')
             _shd.ensure_static(_st_src, REPO, '9.9.9', True, localappdata=_st_la)
             check('旧版本的 static-* 副本会被清掉', not os.path.isdir(_old), _old)
+
+            # 【2026-10-25 修】同一个版本号重新打包：包里界面变了必须以包为准，
+            #   否则稳定副本永远读上一次那一份 —— 新界面在 exe 里带着，打开却"改了没生效"。
+            #   同时"直接改稳定副本"的手工补丁通道不能被顶死。
+            _shr.copytree(os.path.join(REPO, 'static'), _st_src)      # 模拟 %TEMP% 又解包出来了
+            _cur = os.path.join(_st_la, 'hotnews', 'static-9.9.9')
+            _live = os.path.join(_cur, 'index.html')
+            _shr.rmtree(os.path.join(_st_la, 'hotnews', '界面备份'), ignore_errors=True)
+            _shd.ensure_static(_st_src, REPO, '9.9.9', True, localappdata=_st_la)
+            check('包内界面没变时不折腾本地副本（签名对得上，也不产生备份）',
+                  _shd.read_stamp(_cur) == _shd.bundle_sig(_st_src)
+                  and not os.path.isdir(_shd.backup_dir(_st_la)),
+                  _shd.read_stamp(_cur)[:12])
+            with io.open(_live, 'w', encoding='utf-8', newline='\n') as _f:
+                _f.write('<html>手工补丁</html>')                      # 手工补丁通道
+            _shd.ensure_static(_st_src, REPO, '9.9.9', True, localappdata=_st_la)
+            _now = read(_live) or ''
+            check('手工补丁（直接改稳定副本）重启后还在', _now == '<html>手工补丁</html>', _now[:40])
+            with io.open(os.path.join(_st_src, 'intl.html'), 'w', encoding='utf-8',
+                         newline='\n') as _f:
+                _f.write('<html>包里换了新界面</html>')                 # 同版本号重新打包
+            _shd.ensure_static(_st_src, REPO, '9.9.9', True, localappdata=_st_la)
+            _bd = _shd.backup_dir(_st_la)
+            _bk = sorted(f for f in (os.listdir(_bd) if os.path.isdir(_bd) else [])
+                         if f.startswith('index.html.'))
+            _intl_new = read(os.path.join(_cur, 'intl.html')) or ''
+            check('同版本号重打包：新界面生效（读的是包里那套）',
+                  _intl_new == '<html>包里换了新界面</html>' and os.path.isfile(_live), _intl_new[:40])
+            _kept = (read(os.path.join(_bd, _bk[0])) or '') if _bk else ''
+            check('同版本号重打包：被顶掉的手工补丁进了「界面备份」，随时能换回去',
+                  len(_bk) == 1 and _kept == '<html>手工补丁</html>', _bk)
         finally:
             _shr.rmtree(_st_root, ignore_errors=True)
 
@@ -660,6 +692,31 @@ if _sv is not None:
             _sv._HTML_TPL.update(_keep_tpl)
         check('模板读失败不缓存空串，恢复后能重新读到',
               (not _bad) and (not _cached_bad) and bool(_good), 'len=%d' % len(_good or ''))
+
+        # 模板改了要**不重启就生效**：源码态改 static/、打包态直接改稳定副本那份 html，
+        # 都指着这条（缓存认文件 mtime+大小，见 server._html_template）。
+        _tmp_static = _tf.mkdtemp(prefix='hotnews_tpl_')      # 自己的临时目录，别碰已删的 _st_root
+        _tpl_p = os.path.join(_tmp_static, 'index.html')
+        try:
+            _sv._HTML_TPL.clear()
+            _sv.STATIC_DIR = _tmp_static
+            _sv.BASE_DIR = os.path.join(_tmp_static, '也不存在')
+            with io.open(_tpl_p, 'w', encoding='utf-8', newline='\n') as _f:
+                _f.write('<html>第一版</html>')
+            _t1 = _sv._html_template('index.html')
+            with io.open(_tpl_p, 'w', encoding='utf-8', newline='\n') as _f:
+                _f.write('<html>第二版（内容变了，没重启）</html>')
+            _t2 = _sv._html_template('index.html')
+            _t3 = _sv._html_template('index.html')          # 再读一次：必须还是第二版，且走缓存
+            check('改了模板不重启也能读到新内容（手工补丁通道的前提）',
+                  _t1 == '<html>第一版</html>' and _t2 == '<html>第二版（内容变了，没重启）</html>'
+                  and _t3 == _t2, '%s|%s' % ((_t1 or '')[:12], (_t2 or '')[:12]))
+        finally:
+            _shr.rmtree(_tmp_static, ignore_errors=True)
+            _sv.STATIC_DIR = _keep_dir
+            _sv.BASE_DIR = _keep_base
+            _sv._HTML_TPL.clear()
+            _sv._HTML_TPL.update(_keep_tpl)
 
         # 界面文件缺失时给的是说明页，不再是裸露的 <h1>hotnews</h1>
         _idx_src = read(os.path.join(REPO, 'server.py')) or ''
@@ -734,10 +791,10 @@ check('对外文档里没有私人邮箱（已归一化空格/全角；允许 Gi
       not _mail_hits, '；'.join(_mail_hits[:3]))
 
 check('README 里有署名「海风（kele551）」与仓库地址',
-      ('海风（kele551）' in _rm) and ('gitee.com/kele551/hotnews' in _rm))
+      ('海风（kele551）' in _rm) and ('gitcode.com/kele551/hotnews' in _rm))
 check('docs/COMPLIANCE.md 里有署名与仓库地址',
       ('海风（kele551）' in (_texts.get('docs/COMPLIANCE.md') or ''))
-      and ('gitee.com/kele551/hotnews' in (_texts.get('docs/COMPLIANCE.md') or '')))
+      and ('gitcode.com/kele551/hotnews' in (_texts.get('docs/COMPLIANCE.md') or '')))
 
 _req = read(os.path.join(REPO, 'requirements.txt')) or ''
 _lack = [d for d in ('fastapi', 'uvicorn', 'feedparser', 'httpx') if d not in _req]
@@ -970,5 +1027,48 @@ else:
     _tail = [l for l in _e2e_log.strip().split('\n') if l.strip()][-6:]
     for _l in _tail:
         say('     | %s' % _l.strip()[:100])
+
+# ══════════════════════════════════════════════════════════════════════════
+# 老仓库（Gitee）地址清扫（章程 4.19.5，2026-10-23 用户要求）
+#   发布文件里一律不许再出现老仓库（Gitee）域名；历史的 CHANGELOG 除外。
+#   version.json 是带签名的线上升级源，这里只警告（改了必须重新签名并发版）。
+# ══════════════════════════════════════════════════════════════════════════
+say()
+say('老仓库地址清扫：发布文件里不含 Gitee 域名')
+# 关键字拆开拼：不然"禁止清单"自己会被扫成命中（2026-10-19 邮箱那次就是这么翻车的）
+_NEEDLE = 'gitee' + '.com/kele551'
+_NEEDLE2 = 'raw.gitee' + 'usercontent'
+_bad_gitee = []
+_scan_ext = ('.md', '.txt', '.py', '.ps1', '.json', '.html', '.yml', '.yaml')
+_skip_names = {'CHANGELOG.md', 'version.json'}
+for _dp, _dn, _fn in os.walk(REPO):
+    if os.sep + '.git' in _dp:
+        continue
+    _dn[:] = [d for d in _dn if d not in ('.git', 'node_modules', 'build_tmp')]
+    for _f in _fn:
+        if not _f.lower().endswith(_scan_ext) or _f in _skip_names:
+            continue
+        _p = os.path.join(_dp, _f)
+        try:
+            _t = io.open(_p, encoding='utf-8-sig', errors='replace').read()
+        except Exception:
+            continue
+        for _i, _ln in enumerate(_t.splitlines(), 1):
+            if _NEEDLE in _ln or _NEEDLE2 in _ln:
+                _bad_gitee.append('%s:%d' % (os.path.relpath(_p, REPO), _i))
+check('发布文件里没有老仓库（Gitee）地址', not _bad_gitee,
+      '；'.join(_bad_gitee[:5]) + (' 等 %d 处' % len(_bad_gitee) if len(_bad_gitee) > 5 else ''))
+
+_vj_gitee = []
+try:
+    _vjt = io.open(os.path.join(REPO, 'version.json'), encoding='utf-8-sig').read()
+    for _ln in _vjt.splitlines():
+        if _NEEDLE in _ln:
+            _vj_gitee.append(_ln.strip()[:80])
+except Exception:
+    pass
+check_warn('version.json（线上升级源）里也不含 Gitee 地址', not _vj_gitee,
+           '；'.join(_vj_gitee[:2]) + '（改了要重新签名并发版）' if _vj_gitee else '')
+
 
 finish()

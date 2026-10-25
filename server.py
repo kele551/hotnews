@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
+# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
 """
 hotnews —— 热点新闻检索（国内 / 国际）
 FastAPI 后端：抓取 RSS、解析题图、图片代理、翻译、SSR 首屏
@@ -17,6 +17,8 @@ import hashlib
 import hmac              # 【2026-10-09 修 高-4】本机令牌比对（标准库，不引入新依赖）
 import ipaddress         # 【2026-10-09 修 高-1】判图片域名解析出来的是不是内网/回环地址
 import socket            # 同上：只解析域名，不建连接
+import sqlite3           # 【2026-10-25 新增】跨天归档（见下面「跨天归档与历史检索」一节）
+                        #   标准库自带，不新增第三方依赖；打包时 PyInstaller 会自动收进去。
 import threading
 import urllib.parse
 import webbrowser
@@ -61,7 +63,8 @@ if getattr(sys, "frozen", False):
 import httpx  # noqa: E402
 import feedparser  # noqa: E402
 from fastapi import FastAPI, Query, Request, Response  # noqa: E402
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse  # noqa: E402
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,  # noqa: E402
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import updater  # noqa: E402
@@ -121,7 +124,7 @@ APP_URL = "http://localhost:8000"
 #   但**不把浏览器 UA 整个换掉** —— 实测部分源（如 mefcl）会按 UA 判断是不是
 #   普通浏览器访问，纯 bot UA 会被挡在门外（等于把源打挂）。故采用「浏览器 UA + 追加标识」：
 #   既保留了兼容性，又满足自报身份的要求。
-BOT_ID = "HotnewsAggregator/1.5 (+https://gitee.com/kele551/hotnews)"
+BOT_ID = "HotnewsAggregator/1.5 (+https://gitcode.com/kele551/hotnews)"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 " + BOT_ID)
 
@@ -386,6 +389,51 @@ NOIMG_SOURCES = set()
 #   · 要给它们**更短的超时**（BODY_IMG_TIMEOUT），别让一条慢页面把整轮补图拖住。
 BODY_IMAGE_CHANNELS = {s["id"] for _rg in SOURCES.values() for s in _rg if s.get("body_image")}
 BODY_IMG_TIMEOUT = 3.0     # 「去正文页取首图」的单条上限（秒）
+
+# 【2026-10-25 新增】来源 → 色相表（界面把每家媒体的名字染成固定颜色，见 static/index.html 的 srcHue）。
+# 为什么在服务端按"配置里的第几家"发牌，而不是前端直接按名字散列：
+#   拿当天真机池子试过 —— 纯散列（连乘黄金角都试了）18 个名字两两最小只差 0~3°，
+#   IT之家 168°、快科技 173° 几乎同色，而这两家恰好是条数最多的（各 41 条），
+#   最该分开的两家反而分不开。按固定顺序发牌、色相走黄金角递推，
+#   33 家在 360° 上近似均匀铺开（最小间隔约 10°），而且颜色只跟"第几家"有关，
+#   刷新、换排序、重开程序都不变色。
+# 表外的名字（以后新上的热榜媒体）退回前端按名字散列，不会没颜色，只是可能和别家挨得近。
+HOT_SOURCE_LABELS = ("凤凰网", "红星新闻")   # 热榜条目转发的媒体名，不在 SOURCES 里，实测 2026-10-25 见过
+
+# 用户点名的色相，优先于上面那套自动发牌（2026-10-25）。
+#   红星新闻 → 0°（正红）：自动发到 303°（品红），用户看了真机截图说"太难看了，还是红色吧"。
+#     正好和 10-24 那条「热榜来源站点用红字」同一个红，热榜那行的徽章也不用换颜色。
+#   界面 → 25°（橙红）：原本占着 0° 的是界面（配置里第一个源）。红星要来正红，界面就得让位，
+#     不然头条栏里两家顶着一模一样的红。挪 25° 后和最近的 中新网·财经(40°) 差 15°，不撞。
+SRC_HUE_PICKS = {"红星新闻": 0, "界面": 25}
+
+
+def _build_src_hues():
+    out, i = {}, 0
+    for _rg in ("cn", "intl", "hot"):
+        for s in SOURCES.get(_rg, []):
+            lb = (s.get("label") or "").strip()
+            if not lb or lb in out:
+                continue
+            hue = SRC_HUE_PICKS.get(lb, int(round((i * 137.508) % 360)))   # 黄金角：相邻两家不会挨成同一种颜色
+            i += 1
+            out[lb] = hue
+            # 条目上有时写的是源 id（归档里的老数据、热榜的通道名），指到同一个颜色
+            sid = (s.get("id") or "").strip()
+            if sid:
+                out.setdefault(sid, hue)
+    for lb in HOT_SOURCE_LABELS:
+        if lb and lb not in out:
+            out[lb] = SRC_HUE_PICKS.get(lb, int(round((i * 137.508) % 360)))
+            i += 1
+    # 手工点了名、但源表里还没有的（以后新加的源先定色再上线），也补进去
+    for lb, hv in SRC_HUE_PICKS.items():
+        out.setdefault(lb, hv)
+    return out
+
+
+SRC_HUES = _build_src_hues()
+
 
 _MISS = object()    # 缓存「没有这条」的哨兵：None 本身是「抓取失败」的合法缓存值
 
@@ -1182,6 +1230,72 @@ def _refeed_if_mojibake(raw, doc):
     return None
 
 
+# ============ 源健康度（只读观测，2026-10-24 UI 整改新增）============
+# 右栏要显示「每个源最近抓到没有 / 抓了几条 / 连续失败几次」。做法是**被动记录**：
+# 在抓取链路（_parse_one / _parse_hot）里顺手写一笔内存表，
+# 绝不为它单独发请求；`GET /api/sources` 只读这份表 ——
+# 所以页面上「打开/刷新源健康度」不会触发任何抓取（这是用户明确要求的硬约束）。
+#
+# 为什么不用日志或磁盘：气泡/页面都要能立刻读到；而且这些数字只在本次进程内有效，
+# 重启后重新积累（不落盘 = 不会把上次的陈旧状态当成本轮的健康度）。
+_SRC_HEALTH = {}          # id -> {id,label,region,cls,status,lastTs,lastCount,failStreak,okCount,failCount,error}
+_SRC_HEALTH_LOCK = threading.Lock()
+# 热榜不是 RSS 源，走 _parse_hot 里的三个平台函数；这里给它们起稳定的伪源 id。
+HOT_SRC_LIST = (("hot-thepaper", "澎湃新闻热榜", "_hot_thepaper"),
+                ("hot-cdsb", "红星新闻热榜", "_hot_cdsb"),
+                ("hot-ifeng", "凤凰网热榜", "_hot_ifeng"))
+
+
+def _note_src_health(src, ok, count=0, error=""):
+    """记一笔某个源的抓取结果。src 传 SOURCES 里的那一项（热榜用伪源字典）。
+
+    ⚠ 这段是**纯观测**：任何异常都在内部吞掉，绝不允许影响抓取/气泡主链路。
+    """
+    try:
+        sid = src.get("id") or src.get("label") or "?"
+        now = time.time()
+        with _SRC_HEALTH_LOCK:
+            ent = _SRC_HEALTH.get(sid)
+            if ent is None:
+                ent = {"id": sid,
+                       "label": src.get("label") or sid,
+                       "region": src.get("region") or "",
+                       "cls": src.get("cls") or "",
+                       "status": "idle",
+                       "lastTs": 0, "lastCount": 0, "failStreak": 0,
+                       "okCount": 0, "failCount": 0, "error": ""}
+                _SRC_HEALTH[sid] = ent
+            if ok:
+                # 抓通但 0 条：不报「失败」，只标「降级」——站方改版/当期没更新都能看出苗头
+                ent["status"] = "ok" if int(count or 0) > 0 else "warn"
+                ent["lastTs"] = now
+                ent["lastCount"] = int(count or 0)
+                ent["failStreak"] = 0
+                ent["okCount"] = int(ent.get("okCount") or 0) + 1
+                ent["error"] = ""
+            else:
+                ent["status"] = "fail"
+                ent["lastTs"] = now
+                ent["lastCount"] = 0
+                ent["failStreak"] = int(ent.get("failStreak") or 0) + 1
+                ent["failCount"] = int(ent.get("failCount") or 0) + 1
+                ent["error"] = str(error or "")[:80]
+    except Exception:
+        pass
+
+
+def _all_sources_meta():
+    """所有「应该出现」的源（用于把还没抓过的源以 idle 状态也列出来）。"""
+    out = []
+    for _rg in ("cn", "intl"):
+        for s in (SOURCES.get(_rg) or []):
+            out.append({"id": s.get("id"), "label": s.get("label") or s.get("id"),
+                        "region": _rg, "cls": s.get("cls") or ""})
+    for _sid, _label, _fn in HOT_SRC_LIST:
+        out.append({"id": _sid, "label": _label, "region": "hot", "cls": "热榜"})
+    return out
+
+
 def _parse_one(src):
     """带**单源隔离**的解析入口。
 
@@ -1194,6 +1308,8 @@ def _parse_one(src):
     except Exception as ex:
         print(f"[warn] 源解析异常，已跳过该源: {src.get('id') or src.get('url')} - "
               f"{type(ex).__name__}: {ex}")
+        # 【2026-10-24】健康度：这个源本轮失败（连续失败次数 +1，右栏会标红）
+        _note_src_health(src, False, 0, f"{type(ex).__name__}: {ex}")
         return []
     # 【2026-10-09 用户要求「国际，娱乐栏目还是有国内新闻，你怎么不归纳到国内版里」】
     # 国际频道的娱乐/文化条目里，凡属**国内题材**（上海时装周、毛泽东故居、中国国庆…）
@@ -1205,6 +1321,8 @@ def _parse_one(src):
             print("[ok] %s: 国际栏剔除国内题材的娱乐/文化 %d 条"
                   % (src.get("id") or "?", len(_items) - len(_keep)))
         _items = _keep
+    # 【2026-10-24】健康度：这个源本轮抓到了多少条（0 条会在右栏标成「降级」，可能改版）
+    _note_src_health(src, True, len(_items))
     return _items
 
 
@@ -1703,11 +1821,21 @@ def _parse_hot():
     """实时热榜：聚合 {澎湃新闻, 红星新闻, 凤凰网} 三家（用户指定）。
     每条带平台标签（label），按「平台内归一化热度」跨平台混合排序。任一平台失败不影响其它。"""
     parts = []
-    for fn in (_hot_thepaper, _hot_cdsb, _hot_ifeng):
+    # 【2026-10-24 UI 整改】顺手把每个热榜平台的健康度记一笔（纯观测，不影响取数）。
+    for sid, label, fn_name in HOT_SRC_LIST:
+        fn = globals().get(fn_name)
+        if fn is None:
+            continue
         try:
-            parts.extend(fn())
+            _got = fn() or []
         except Exception as ex:
             print(f"[warn] 热榜子源异常: {type(ex).__name__}")
+            _note_src_health({"id": sid, "label": label, "region": "hot", "cls": "热榜"},
+                             False, 0, type(ex).__name__)
+            continue
+        _note_src_health({"id": sid, "label": label, "region": "hot", "cls": "热榜"},
+                         True, len(_got))
+        parts.extend(_got)
     print(f"[ok] hot: 多平台聚合共 {len(parts)} 条")
     if not parts:
         return parts
@@ -3193,6 +3321,8 @@ def _collect_fast(region):
         # 判据把国际新闻真移走 —— 首屏第一帧就是干净的国内稿。
         PRELOAD_ALL["cn"] = list(items)
         _note_item_hosts(items)   # 图片域名按全量登记（含即将转去国际的那批）
+        # 【2026-10-25 归档】记**分流前的全量**（与搜索池同一份），四个采集出口口径一致
+        _hist_record("cn", items)
         items, _ = _split_cn_scope(items)
     else:
         _note_item_hosts(items)   # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
@@ -3219,6 +3349,7 @@ def _collect(region):
               f"按站方栏目分流 国内 {len(dom)} / 国际 {len(_intl)}")
         PRELOAD_ALL["hot"] = list(dom)
         _note_item_hosts(dom)     # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
+        _hist_record("hot", dom)  # 【2026-10-25 归档】见 _hist_record
         return _select_fresh(dom, "hot")
     out = []
     with ThreadPoolExecutor(max_workers=16) as ex:
@@ -3308,6 +3439,7 @@ def _collect(region):
         # 「列表里是财经、搜出来变头条」这种自相矛盾。见 _fix_finance_cls 的三处一致性说明。
         _fix_finance_cls(_merged_all, region)
         PRELOAD_ALL[region] = _merged_all
+        _hist_record(region, _merged_all)   # 【2026-10-25 归档】国内：热榜+RSS 的完整池子
         # 用户要求：国内「头条」里的国际新闻全部移到国际板块
         _dom, _intl = _split_cn_scope(_merged_all)
         if _intl:
@@ -3375,6 +3507,7 @@ def _collect(region):
                 print(f"     · [{_d.get('cls')}·{_d.get('channel')}] {(_d.get('title') or '')[:56]}")
     _fix_finance_cls(hot + items, region)
     PRELOAD_ALL[region] = hot + items
+    _hist_record(region, hot + items)       # 【2026-10-25 归档】国际：热榜+RSS 的完整池子
     _note_item_hosts(hot + items)  # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
     return _select_fresh(hot + items, region)
 
@@ -4373,12 +4506,12 @@ def _show_toast(title, msg, warn=False):
 # 跨栏目合并的新条目基线 + 节流（两次通知最小间隔）
 NEWS_BASELINE = set()
 NEWS_LAST_TOAST = 0.0
-# 【节流 2026-10-07】刷新仍是每 10 分钟一轮（保证「常看常新」），
-# 但普通「更新提醒」气泡没必要每轮都弹 —— 那一天最多 144 次，太吵。
-# 改成 30 分钟最多一次（3 轮里最多打扰 1 次，内容照样是最新的）。
+# 【节流 2026-10-07】刷新每轮都弹太吵（那天最多 144 次），普通「更新提醒」限流到 30 分钟一次。
+# 【2026-10-07 用户要求「气泡提示缩短到10分钟轮播，轮播内容不能重复」】改成 10 分钟。
+# 【2026-10-25 抓取改成 5 分钟一轮后这里保持 10 分钟不变】用户要的是页面「常看常新」，
+# 不是通知更频繁 —— 抓取两轮里最多打扰一次，观感和以前一样，只是数据更新更快。
 # 注意：「新闻大事」和「我的软件发布」两条**不受这个节流限制**，仍然即时。
-# 【2026-10-07 用户要求「气泡提示缩短到10分钟轮播，轮播内容不能重复」】
-NEWS_TOAST_MIN = 10 * 60        # 原来 30 分钟，改成跟刷新周期一致
+NEWS_TOAST_MIN = 10 * 60        # 两次「更新提醒」气泡的最小间隔（秒）
 NEWS_LOCK = threading.Lock()
 
 
@@ -4395,15 +4528,22 @@ def _has_cjk(s):
 #           科技，财经，娱乐等。财经类新闻一定要区别化类，不能错放栏目」
 # 以及追加要求：「气泡：不要那句固定字样，哪个栏目就是哪个栏目」。
 #
-# 规则（与需求书《气泡规格-20261009.md》第 2 条逐字对应）：
+# 规则（2026-10-25 按用户新的口径重排，旧版见下一段注释）：
 #   · 一组 BALLOON_PLAY_COUNT=10 条；
-#   · 配额：头条 1~2、科技 ≥2、财经 ≥2、娱乐 ≥2；
-#   · 余下的名额按 软件 → 热榜 → 国际 → 其余栏目 的顺序补足；
-#   · 任何一栏当期没有条目，就用别的栏目补满 10 条（**绝不空着**）；
+#   · 配额：头条 2、国内热榜 3、国际热点 2、科技 1、财经 1、娱乐 1；
+#   · 任何一栏当期没有条目，名额顺着 软件 → 热榜 → 国际 → 全部 补下去（**绝不空着**）；
 #   · 同一来源默认只取一条（沿用 2026-10-07「快科技不停推送」的修复），
 #     实在凑不满才允许同源重复。
-BALLOON_CLS_QUOTA = (("头条", 2), ("科技", 2), ("财经", 2), ("娱乐", 2))
-BALLOON_FILL_ORDER = ("软件", "热榜")
+#
+# 【2026-10-25 为什么重排】用户原话：「其实大部分用户，不会特意去翻新闻看，都是桌面的
+# 气泡新闻精准投放。国内国际热点，头条新闻」—— 也就是气泡才是主消费入口，页面是次要的。
+# 旧配额（头条2/科技2/财经2/娱乐2 + 软件1 + 热榜1，国际只在剩名额时补 1 条）里，
+# 用户点名的三样「国内热点、国际热点、头条」有两样是"看运气补位"的：热榜常年只有 1 条、
+# 国际常常 0 条。现在把它们提到配额内并给足名额。
+# 旧规则（2026-10-09 需求书《气泡规格-20261009.md》第 2 条）：头条 1~2、科技 ≥2、财经 ≥2、
+# 娱乐 ≥2，余下按 软件 → 热榜 → 国际 补足 —— 保留在下面 BALLOON_FILL_ORDER 里当兜底顺序。
+BALLOON_CLS_QUOTA = (("头条", 2), ("热榜", 3), ("国际", 2), ("科技", 1), ("财经", 1), ("娱乐", 1))
+BALLOON_FILL_ORDER = ("软件", "热榜", "国际")
 # 日志与统计时的栏目固定顺序（头条在前，其余按配额与补位顺序，最后是国际/其他兜底）
 BALLOON_CLS_ORDER = ("头条", "科技", "财经", "娱乐", "软件", "热榜", "国际", "其他")
 
@@ -4677,8 +4817,18 @@ def _same_event(t1, t2):
                              cjk_common=_cjk_common, is_prefix=_prefix)
 
 
-def _dedup_same_event(items):
+def _dedup_same_event(items, same_wording_only=False, with_also=False):
     """跨来源去重：同一件事只留**最先出现的那一条**，保持原顺序。
+
+    `same_wording_only=True`（2026-10-25 为归档检索加）：只做下面①那一档确定性折叠，
+    跳过②「同一事件不同措辞」。归档里同一个词跨 30 天会攒下一批稿子，
+    用户明确在搜东西时不能把别家的报道折成一条 —— 与 /api/news 带 q 时不做②是同一条规矩。
+    默认 False，既有调用点行为完全不变。
+
+    `with_also=True`（2026-10-25 为「同一件事，几家在报」加）：折叠掉的那些**不丢**，
+    挂到留下的这条上 —— `it["also"]`（最多 6 条兄弟稿）+ `it["also_n"]`（几家在报，
+    按**不同来源**算，含本条自己）。只有一条时不挂（那是同一家媒体自己的副本，说不上"几家"）。
+    判据一个字没改，只是把"顺手扔掉"改成"顺手记一笔"，所以不会引入新的误判。
 
     两道闸，先硬后软：
 
@@ -4701,8 +4851,22 @@ def _dedup_same_event(items):
     只比较**不同 label**（同一家媒体自己发的多条不合并 —— 那是它自己的不同稿件）；
     先比长度再算交集，长度差太大直接跳过，避免无谓开销。
     """
-    kept, keys = [], []
-    hard_ids, hard_links, hard_norm = set(), set(), {}
+    kept, keys, owners = [], [], []
+    hard_ids, hard_links, hard_norm = {}, {}, {}     # 值 = 折叠到谁身上（with_also 要用）
+    buckets = {}                                     # id(owner 条目) -> [owner, [被它折叠掉的兄弟稿]]
+    if with_also:
+        # 上一次运行挂上去的标注先清掉：这一轮没再折叠到兄弟稿的条目，
+        # 不能继续顶着个"N 家在报"（池子每 10 分钟换一批，旧标注会一直赖着）。
+        for _it in items:
+            _it.pop("also", None)
+            _it.pop("also_n", None)
+
+    def _fold(owner, dup_item):
+        if not with_also or owner is None or owner is dup_item:
+            return                          # 找不到折叠到谁身上：宁可不记，也别记出个 None
+        # 条目是 dict（不可哈希），用 id() 当键；这一轮里 owner 一定还活着（都在 items 里）。
+        buckets.setdefault(id(owner), [owner, []])[1].append(dup_item)
+
     for it in items:
         lb = it.get("label") or ""
         title = it.get("title") or ""
@@ -4714,10 +4878,11 @@ def _dedup_same_event(items):
         _nt = _title_norm(title)
         if (_id and _id in hard_ids) or (_lk and _lk in hard_links) \
                 or (_nt and _nt in hard_norm):
+            _fold(hard_ids.get(_id) or hard_links.get(_lk) or hard_norm[_nt][2], it)
             continue
         _dup_hard = False
         if len(_nt) >= 6:
-            for _ot, (_onums, _oords) in hard_norm.items():
+            for _ot, (_onums, _oords, _owner) in hard_norm.items():
                 if len(_ot) < 6:
                     continue
                 _lo, _hi = (_nt, _ot) if len(_nt) <= len(_ot) else (_ot, _nt)
@@ -4725,6 +4890,7 @@ def _dedup_same_event(items):
                     continue
                 if not _nums_conflict(nums, _onums) and not _ordinals_conflict(ords, _oords):
                     _dup_hard = True
+                    _fold(_owner, it)
                     break
         if _dup_hard:
             continue
@@ -4733,7 +4899,9 @@ def _dedup_same_event(items):
         cg = _cjk_trigrams(title)     # 第三档用：中文实词 3-gram
         dr = _dirs(title)             # 方向词（上调/下调…）
         dup = False
-        for klb, kg, knums, kords, kcg, kdr, knt in keys:
+        # same_wording_only 时比对集合给空的 —— ②一条都判不到，①照常生效
+        for j, (klb, kg, knums, kords, kcg, kdr, knt) in enumerate(
+                (() if same_wording_only else keys)):
             if klb and lb and klb == lb:
                 continue
             _lcp = _common_prefix_len(_nt, knt)
@@ -4754,22 +4922,72 @@ def _dedup_same_event(items):
             if _dup_verdict_full(g, kg, dr, kdr,
                                  cjk_common=_cjk_common, is_prefix=_prefix):
                 dup = True
+                _fold(owners[j], it)
                 break
         if dup:
             continue
         keys.append((lb, g, nums, ords, cg, dr, _nt))
+        owners.append(it)
         if _id:
-            hard_ids.add(_id)
+            hard_ids[_id] = it
         if _lk:
-            hard_links.add(_lk)
+            hard_links[_lk] = it
         if _nt:
-            hard_norm[_nt] = (nums, ords)
+            hard_norm[_nt] = (nums, ords, it)
         kept.append(it)
+    if with_also:
+        for owner, sibs in buckets.values():
+            labels = {owner.get("label") or ""} | {(s.get("label") or "") for s in sibs}
+            if len(labels) < 2:
+                continue            # 只有同一家媒体自己的副本 —— 谈不上"几家在报"
+            sibs.sort(key=lambda s: -(int(s.get("published") or 0)))
+            owner["also"] = [{"label": s.get("label") or "",
+                              "title": s.get("title") or "",
+                              "link": s.get("link") or "",
+                              "cls": (s.get("cls") or "").strip(),
+                              "region": s.get("region") or "",
+                              "published": int(s.get("published") or 0)}
+                             for s in sibs[:6]]
+            owner["also_n"] = len(labels)
+            # 【2026-10-25 借鉴 GitHub 同类项目】last30days-skill-cn 的「跨平台同频热点」、
+            # imsyy/DailyHotApi 的多平台热榜：同一条新闻**同时上几家实时热榜**，
+            # 比"几家媒体都发了稿"更能说明它是真热点（热榜是各站读者投票/点击堆出来的）。
+            # 所以单独数一个 `cross_hot` = 这一事件里出现过的**不同热榜平台数**（含本条自己），
+            # ≥2 才记（一家上榜说明不了什么）。界面拿它标「全网热榜 ×N」，
+            # 气泡拿它做同栏目内的第一排序键（见 `_pick_balloon_items` 的 sort_key）。
+            _hot_lb = {(s.get("label") or "") for s in sibs if _is_hot_board(s)}
+            if _is_hot_board(owner):
+                _hot_lb.add(owner.get("label") or "")
+            _hot_lb.discard("")
+            if len(_hot_lb) >= 2:
+                owner["cross_hot"] = len(_hot_lb)
+            else:
+                owner.pop("cross_hot", None)
     return kept
 
 
-def _pick_balloon_items(fresh):
+def _is_hot_board(it):
+    """这条是不是「实时热榜」那一类条目（各站的榜，而不是普通新闻）。
+    region 在页面侧是 "hot"，个别合并路径只写 cls，所以两个口径都认。"""
+    return (it.get("region") or "") == "hot" or (it.get("cls") or "").strip() == "热榜"
+
+
+def _annotate_cross_hot(pool):
+    """就地给整池子算一遍「同一事件被几家热榜同时收录」（cross_hot）。
+    复用 `_dedup_same_event(with_also=True)`，判据一个字不改；返回值不用管，
+    标注写在条目字典上（页面 /api/news 也是同一批字典，两边口径天然一致）。"""
+    try:
+        _dedup_same_event(list(pool), with_also=True)
+    except Exception:
+        pass
+    return pool
+
+
+def _pick_balloon_items(fresh, count=None):
     """按栏目配额挑一组气泡条目（纯函数：只读 fresh，不改任何外部状态，便于单测）。
+
+    2026-10-25 加 `count` 参数：默认仍是气泡的 10 条；「今日 60 秒」日报要 15 条，
+    用同一个挑选器保证两个出口的口径一致（同一套配额、同一套去重、同一个排序）。
 
     这是本次「气泡扩容 + 栏目覆盖」的核心：原来只按 国际/国内/热榜 三个板块平分，
     10 个席位里 科技/财经/娱乐 常常一条都轮不到（用户反馈「财经、娱乐看不到」）。
@@ -4777,12 +4995,13 @@ def _pick_balloon_items(fresh):
     2026-10-10 追加：进门前先合并「同一件事」—— 气泡只有 10 个席位，
     同一件事占掉两个座位时用户一眼就看出重复（这是用户报的原话场景）。
     """
+    cap = int(count or BALLOON_PLAY_COUNT)
     fresh = _dedup_same_event(list(fresh))
     picked, used, labels = [], set(), []
 
     def take(cands, maxn=1, no_repeat_src=True):
         for it in cands:
-            if len(picked) >= BALLOON_PLAY_COUNT or maxn <= 0:
+            if len(picked) >= cap or maxn <= 0:
                 return
             if id(it) in used:
                 continue
@@ -4798,41 +5017,341 @@ def _pick_balloon_items(fresh):
     def by_cls(name):
         return [x for x in fresh if (x.get("cls") or "") == name]
 
-    def sort_key(x):
-        return x.get("published", 0)
+    def cands(name):
+        """配额/补位用的候选集。'热榜' 和 '国际' 是两个跨栏目的口径，得单独定义：
+          · 热榜 = 国内热榜（cls 是热榜、但不是国际区的）；
+          · 国际 = 国际区的非热榜条目（国际热榜那批归到「热榜」以外的国际口径）。
+        两个定义互斥，同一个名额不会因为一条既算热榜又算国际而被占两次。"""
+        if name == "热榜":
+            return [x for x in fresh if (x.get("cls") or "") == "热榜" and not _is_intl_item(x)]
+        if name == "国际":
+            return [x for x in fresh if _is_intl_item(x) and (x.get("cls") or "") != "热榜"]
+        return by_cls(name)
 
-    # ① 按配额先占位：头条 / 科技 / 财经 / 娱乐
+    def sort_key(x):
+        # 【2026-10-25 用户「一定要精准投放，实时，热点，重大」】
+        # 第一排序键改成 `cross_hot`（同一条新闻被几家实时热榜同时收录，见 _dedup_same_event），
+        # 第二键才是时间。理由：热榜条目的 published 恒为 0（榜接口不给时间），
+        # 只按时间排在栏内等于按抓取顺序；而"多家榜同时上榜"是读者用点击投出来的重大信号。
+        return (-(int(x.get("cross_hot") or 0)), int(x.get("published") or 0))
+
+    def order(cands_list):
+        return sorted(cands_list, key=sort_key, reverse=True)
+
+    # ① 按配额先占位：头条 2 / 国内热榜 3 / 国际 2 / 科技 1 / 财经 1 / 娱乐 1
+    #    （2026-10-25 用户「国内国际热点，头条新闻」的新口径，见 BALLOON_CLS_QUOTA 上面那段）
     for _cls, _n in BALLOON_CLS_QUOTA:
-        if len(picked) >= BALLOON_PLAY_COUNT:
+        if len(picked) >= cap:
             break
-        take(sorted(by_cls(_cls), key=sort_key, reverse=True), _n)
+        take(order(cands(_cls)), _n)
     # ② 补位第一轮：软件 → 热榜 → 国际，**每个候选栏目最多 1 条**。
-    #    为什么限制 1 条：这样「所有栏目都有货」时日志正好是用户给的那一行
-    #      滚动播放 10 条（头条2/科技2/财经2/娱乐2/软件1/热榜1）
-    #    （配额 8 条 + 软件 1 + 热榜 1 = 10）；哪一栏当期没货，名额就顺着往下走。
+    #    哪一栏当期没货，名额就顺着往下走；③④ 再放开条数把席位填满。
     for _cls in BALLOON_FILL_ORDER:
-        if len(picked) >= BALLOON_PLAY_COUNT:
+        if len(picked) >= cap:
             break
-        take(sorted(by_cls(_cls), key=sort_key, reverse=True), 1)
-    if len(picked) < BALLOON_PLAY_COUNT:
-        take(sorted([x for x in fresh if _is_intl_item(x)], key=sort_key, reverse=True), 1)
-    # ③ 还差就接着补：软件 / 热榜不限 1 条 → 全部条目按时间 → 最后放开"同来源只取一条"凑满
+        take(order(cands(_cls)), 1)
+    # ③ 还差就接着补：补位栏目不限 1 条 → 全部条目按时间 → 最后放开"同来源只取一条"凑满
     for _cls in BALLOON_FILL_ORDER:
-        if len(picked) >= BALLOON_PLAY_COUNT:
+        if len(picked) >= cap:
             break
-        take(sorted(by_cls(_cls), key=sort_key, reverse=True),
-             BALLOON_PLAY_COUNT - len(picked))
-    if len(picked) < BALLOON_PLAY_COUNT:
-        take(sorted([x for x in fresh if _is_intl_item(x)], key=sort_key, reverse=True),
-             BALLOON_PLAY_COUNT - len(picked))
-    if len(picked) < BALLOON_PLAY_COUNT:
-        take(sorted(fresh, key=sort_key, reverse=True),
-             BALLOON_PLAY_COUNT - len(picked))
-    # ④ 某栏目当期没货 / 同源被去重挡住 → 放开"同来源只取一条"再补满 10 条
-    if len(picked) < BALLOON_PLAY_COUNT:
-        take(sorted(fresh, key=sort_key, reverse=True),
-             BALLOON_PLAY_COUNT - len(picked), no_repeat_src=False)
+        take(order(cands(_cls)), cap - len(picked))
+    if len(picked) < cap:
+        take(order(fresh), cap - len(picked))
+    # ④ 某栏目当期没货 / 同源被去重挡住 → 放开"同来源只取一条"再补满
+    if len(picked) < cap:
+        take(order(fresh), cap - len(picked), no_repeat_src=False)
     return picked
+
+
+# ============ 气泡「同一件事不重复投放」的跨轮记忆（2026-10-25 新增） ============
+# 用户原话：「右下角，气泡轮播新闻，一定要精准投放，实时，热点，重大，
+#             不能几个网站的新闻重复投放」
+# 已有的两道闸为什么挡不住这句话：
+#   · `_dedup_same_event`（在 `_pick_balloon_items` 进门处）只在**同一轮的 fresh 列表里**
+#     合并同一件事 —— 上一轮播过的稿子不在这一轮的列表里，自然挡不住；
+#   · `_BALLOON_SHOWN`（在 `_notify_news`）按 `id`/整句标题记账，只能挡**同一条**，
+#     挡不住「同一件事换了个网站、标题措辞不同」的那批兄弟稿。
+#     而热榜/头条本来就是多家转发的重灾区：同一件事往往分属不同 cls、不同来源，
+#     隔 10 分钟又各占一个气泡席位 —— 这就是用户看到的"几个网站重复投放"。
+# 所以这里加一份**有时限的事件记忆**：凡真的进了气泡的条目，把它的事件指纹存下来；
+# 下一轮挑之前先按同一套判据（`_dup_verdict_full` / `_nums_conflict` / `_ordinals_conflict`）
+# 把"和已播事件是同一件事"的条目整个去掉，不进配额、不占席位。
+# 判据沿用现有阈值，**没有放宽也没有收紧**，只是把它的作用范围从"本轮"扩到"最近几小时"。
+_BALLOON_EVENT_TTL = 6 * 3600    # 记忆窗口：6 小时。同一件事的后续发展（新数字/新序数）
+                                 # 按现有判据会被放行，所以窗口长一点也不会压掉真正的新闻。
+_BALLOON_EVENT_MAX = 400         # 最多记 400 个事件（10 条/轮 × 几十轮），防止长跑内存涨
+_BALLOON_EVENTS = []             # [{at, nt, g, cg, dr, nums, ords, title}]，按写入先后排列
+_BALLOON_EVENT_LOCK = threading.Lock()
+
+
+def _balloon_event_sig(title):
+    """一条标题的「事件指纹」，字段与 `_dedup_same_event` 第②档比对的完全一致。"""
+    t = title or ""
+    return {"nt": _title_norm(t),
+            "g": _title_grams(t),
+            "cg": _cjk_trigrams(t),
+            "dr": _dirs(t),
+            "nums": _nums(t),
+            "ords": _ordinals(t),
+            "title": t[:60]}
+
+
+def _balloon_same_event(a, b):
+    """两个事件指纹是不是同一件事 —— 判据与 `_dedup_same_event` 第②档同源，阈值不外溢。"""
+    if not a["nt"] or not b["nt"]:
+        return False
+    if a["nt"] == b["nt"]:
+        return True                              # 归一化后整句一样（只差标点/大小写）
+    if _nums_conflict(a["nums"], b["nums"]):     # 数字冲突 → 一定不是同一件事
+        return False
+    if _ordinals_conflict(a["ords"], b["ords"]):  # 序数冲突 → 同上
+        return False
+    g1, g2 = a["g"], b["g"]
+    if not g1 or not g2:
+        return False
+    lo, hi = (len(g1), len(g2)) if len(g1) < len(g2) else (len(g2), len(g1))
+    if not hi or lo / hi < 0.15:                 # Jaccard 上界预筛，省掉无谓的集合运算
+        return False
+    _lcp = _common_prefix_len(a["nt"], b["nt"])
+    _prefix = bool(a["nt"].startswith(b["nt"]) or b["nt"].startswith(a["nt"]))
+    return _dup_verdict_full(g1, g2, a["dr"], b["dr"],
+                             cjk_common=len(a["cg"] & b["cg"]) - max(0, _lcp - 2),
+                             is_prefix=_prefix)
+
+
+def _balloon_event_remember(items):
+    """把真的播出去的条目记成"已播事件"；顺带清掉超出窗口的旧记录。"""
+    now = time.time()
+    with _BALLOON_EVENT_LOCK:
+        for it in items:
+            t = it.get("title") or ""
+            if t:
+                _BALLOON_EVENTS.append(dict(_balloon_event_sig(t), at=now))
+        cutoff = now - _BALLOON_EVENT_TTL
+        while _BALLOON_EVENTS and _BALLOON_EVENTS[0]["at"] < cutoff:
+            _BALLOON_EVENTS.pop(0)
+        if len(_BALLOON_EVENTS) > _BALLOON_EVENT_MAX:
+            del _BALLOON_EVENTS[:-_BALLOON_EVENT_MAX]
+
+
+def _balloon_event_filter(items):
+    """去掉与"已播事件"是同一件事的条目 → (留下的, 被去掉的)。记忆为空时原样返回。"""
+    with _BALLOON_EVENT_LOCK:
+        mem = [m for m in _BALLOON_EVENTS if m["at"] >= time.time() - _BALLOON_EVENT_TTL]
+    if not mem:
+        return list(items), []
+    keep, drop = [], []
+    for it in items:
+        sig = _balloon_event_sig(it.get("title") or "")
+        if any(_balloon_same_event(sig, m) for m in mem):
+            drop.append(it)
+        else:
+            keep.append(it)
+    return keep, drop
+
+
+# ============ 「今日 60 秒」日报 + 通知时段（2026-10-25 借鉴 GitHub 同类项目） ============
+# 借鉴来源（本机 github.com 页面打不开，全部走 api.github.com 读 README，实测可用）：
+#   · vikiboss/60s（5.8k★）——「每天 60 秒读懂世界」：一条编号清单看完当天要闻，
+#     它的典型使用场景里就写着「🔔 桌面通知提醒」；
+#   · sansan0/TrendRadar（63k★）—— timeline 时段调度：早晚各一次汇总、
+#     以及"什么时间推送 / 什么时间不推送"；
+#   · Jesseovo/last30days-skill-cn（1.9k★）—— 跨平台「同频热点」：
+#     同一件事在多个平台同时上榜才算真热点（对应上面的 cross_hot）。
+# 为什么值得抄：用户 2026-10-25 的原话是「其实大部分用户，不会特意去翻新闻看，
+# 都是桌面的气泡新闻精准投放」—— 那就把"一天一屏看完"做成产品的主菜，
+# 而不是让用户去翻 200 条列表。
+# 与这些项目的关键差别：**全部本机生成**，不接任何第三方日报 API、不上传任何数据
+# （60s 那份要请求别人的公共接口，我们直接用本机已经抓好的池子挑）。
+DIGEST_COUNT = 15            # 日报条数（60 秒读完的体量）
+DIGEST_TIMES_DEFAULT = "08:00,20:00"
+NOTIFY_DEFAULTS = {
+    "quiet_on": True,               # 夜间免打扰总开关（默认开：22:30–07:30 不弹气泡）
+    "quiet_start": "22:30",
+    "quiet_end": "07:30",
+    "digest_on": True,              # 每日速览播报（默认开）
+    "digest_times": DIGEST_TIMES_DEFAULT,
+}
+_WEEKDAY_CN = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+
+
+def _notify_cfg():
+    """读通知设置（config.local.json 的 notify 段优先），缺项按 NOTIFY_DEFAULTS 补齐。"""
+    sec = {}
+    try:
+        sec = dict((CONFIG.get("notify") or {}))
+    except Exception:
+        sec = {}
+    for k, v in NOTIFY_DEFAULTS.items():
+        sec.setdefault(k, v)
+    return sec
+
+
+def _save_notify_cfg(patch):
+    """把改动写进本机私有配置 %LOCALAPPDATA%\\hotnews\\config.local.json 的 notify 段。
+    只动 notify，其它键（翻译邮箱等本机私有项）原样保留；写失败也不抛，返回 False。"""
+    try:
+        cur = {}
+        try:
+            with open(_LOCAL_CONFIG, "r", encoding="utf-8-sig") as f:
+                cur = json.load(f) or {}
+        except Exception:
+            cur = {}
+        if not isinstance(cur, dict):
+            cur = {}
+        sec = dict(NOTIFY_DEFAULTS)          # 先铺默认值：老文件缺键时不再 KeyError
+        sec.update(cur.get("notify") or {})
+        sec.update(patch or {})
+        cur["notify"] = {k: sec[k] for k in NOTIFY_DEFAULTS}
+        os.makedirs(os.path.dirname(_LOCAL_CONFIG), exist_ok=True)
+        with open(_LOCAL_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(cur, f, ensure_ascii=False, indent=2)
+        CONFIG.setdefault("notify", {}).update(cur["notify"])
+        return True
+    except Exception as ex:
+        print("[warn] 通知设置写入失败: %s: %s" % (type(ex).__name__, ex))
+        return False
+
+
+def _hm_to_min(s, default=-1):
+    """'22:30' → 分钟；不合法返回 default。"""
+    try:
+        h, m = str(s).strip().split(":")
+        h, m = int(h), int(m)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h * 60 + m
+    except Exception:
+        pass
+    return default
+
+
+def _in_quiet_hours(ts=None):
+    """现在是不是"夜间免打扰"时段（支持跨零点：22:30 → 次日 07:30）。
+    关掉开关 / 时间写错 → 一律判 False（宁可多弹，也不因为配置坏掉而静音整个提醒）。"""
+    cfg = _notify_cfg()
+    if not cfg.get("quiet_on"):
+        return False
+    a = _hm_to_min(cfg.get("quiet_start"), -1)
+    b = _hm_to_min(cfg.get("quiet_end"), -1)
+    if a < 0 or b < 0 or a == b:
+        return False
+    t = time.localtime(ts)
+    now = t.tm_hour * 60 + t.tm_min
+    return now >= a or now < b if a > b else a <= now < b
+
+
+def _digest_pool():
+    """日报的候选池：三个板块合并 + 就地标一次 cross_hot（与页面 /api/news 同一批字典）。"""
+    pool = list(PRELOAD.get("cn") or []) + list(PRELOAD.get("hot") or []) \
+        + list(PRELOAD.get("intl") or [])
+    pool = [x for x in pool if _has_cjk(x.get("title"))]
+    return _annotate_cross_hot(pool)
+
+
+def _daily_digest(n=DIGEST_COUNT, pool=None):
+    """挑「今日 60 秒」的 n 条（复用气泡那套配额 + 同一套判重，口径不分叉）。"""
+    pool = pool if pool is not None else _digest_pool()
+    if not pool:
+        return []
+    # 日报要"今天"的：热榜条目 published 恒为 0（榜接口不给时间），不能按时间筛掉；
+    # 普通条目只留 24 小时内的，避免把昨天的稿当今天的新闻推给用户。
+    cutoff = time.time() - 24 * 3600
+    pool = [x for x in pool
+            if int(x.get("published") or 0) == 0 or int(x.get("published") or 0) >= cutoff]
+    return _pick_balloon_items(pool, count=n)
+
+
+def _digest_lines(items):
+    out = []
+    for i, it in enumerate(items, 1):
+        title = (it.get("title") or "").strip()
+        if _is_intl_item(it) and not it.get("translated") and it.get("title_en"):
+            title = (it.get("title_en") or title).strip()
+        out.append({"i": i,
+                    "cls": _balloon_cls_key(it),
+                    "title": title,
+                    "source": (it.get("source") or it.get("label") or "").strip(),
+                    "link": it.get("link") or "",
+                    "published": int(it.get("published") or 0),
+                    "cross_hot": int(it.get("cross_hot") or 0)})
+    return out
+
+
+def _digest_text(items):
+    """60s 风格的纯文本日报（复制/命令行看都是这一份）。"""
+    t = time.localtime()
+    head = "今日 60 秒 · %04d年%02d月%02d日 %s" % (
+        t.tm_year, t.tm_mon, t.tm_mday, _WEEKDAY_CN[t.tm_wday])
+    lines = ["%2d. 【%s】%s（%s）" % (x["i"], x["cls"], x["title"], x["source"])
+             for x in _digest_lines(items)]
+    lines.append("—— 由「热点新闻」在本机生成 · %02d:%02d · 共 %d 条"
+                 % (t.tm_hour, t.tm_min, len(lines)))
+    return head, "\n".join(lines)
+
+
+_DIGEST_LAST_SLOT = [""]        # 已播报过的 "日期-时段"，防同一时段重复弹
+
+
+def _digest_slot(now=None):
+    """现在该不该播日报：命中 digest_times 里某个时刻的 [该时刻, +90 分钟) 就返回那个时刻。
+    抓取是 5 分钟一轮，落在窗口里就播一次、同一时段当天只播一次。
+    窗口给到 90 分钟而不是 30 分钟，是为了照顾"机器 8 点没开、9 点才开机"的常见情形。"""
+    cfg = _notify_cfg()
+    if not cfg.get("digest_on"):
+        return ""
+    t = time.localtime(now)
+    now_min = t.tm_hour * 60 + t.tm_min
+    for hm in str(cfg.get("digest_times") or "").split(","):
+        hm = hm.strip()
+        m0 = _hm_to_min(hm, -1)
+        if m0 < 0:
+            continue
+        if m0 <= now_min < m0 + 90:
+            return "%04d-%02d-%02d %s" % (t.tm_year, t.tm_mon, t.tm_mday, hm)
+    return ""
+
+
+def _notify_digest(force=False):
+    """弹「今日 60 秒」气泡（一条一条轮播，与更新提醒同一套自绘气泡）。"""
+    slot = _digest_slot()
+    if not slot and not force:
+        return False
+    if not force and _DIGEST_LAST_SLOT[0] == slot:
+        return False
+    if _in_quiet_hours() and not force:
+        print("[ok] 今日 60 秒：现在处于夜间免打扰时段，跳过播报")
+        return False
+    if not force:
+        # 刚弹过「更新提醒」/「大事提醒」就让一让，别连着炸两个气泡（同一块屏幕右下角）。
+        try:
+            if time.time() - max(NEWS_LAST_TOAST, _MAJOR_LAST_TOAST) < 240:
+                return False
+        except Exception:
+            pass
+    items = _daily_digest()
+    if not items:
+        print("[warn] 今日 60 秒：池子里没有可用条目，跳过")
+        return False
+    head, _txt = _digest_text(items)
+    entries = [("%s · %d/%d" % (x["cls"], x["i"], len(items)),
+                x["title"][:72], False, x["link"]) for x in _digest_lines(items)]
+    _DIGEST_LAST_SLOT[0] = slot
+    try:
+        _balloon_event_remember(items)      # 日报播过的事件，更新提醒不再重复投放
+    except Exception:
+        pass
+    print("[ok] 今日 60 秒：%s（%d 条，%s）" % (head, len(items), _balloon_cls_tally(items)))
+    _show_toast_list(entries)
+    return True
+
+
+# ============ 关键词订阅：已于 2026-10-25 整体取消 ============
+# 用户原话：「这个搜索栏要么精简，要么取消，用户是看新闻的，不是来搜索的」，
+# 并在追问里选定「两处全收 + 连同订阅功能一起取消」。
+# 因此这一节原来的本机词表（%LOCALAPPDATA%\hotnews\keywords_sub.json）、
+# /api/keywords 读写接口、气泡的「只在命中时弹」过滤全部删除。
+# 老用户机器上残留的 keywords_sub.json 不再被任何代码读取，留着不碍事（本机私有数据，
+# 程序不删用户文件，也不上传）。界面与气泡的其余逻辑与此前一致：气泡仍按栏目配额挑 10 条。
 
 
 def _notify_news(items):
@@ -4857,51 +5376,80 @@ def _notify_news(items):
     now = time.time()
     if now - NEWS_LAST_TOAST < NEWS_TOAST_MIN:
         return
+    # 【2026-10-25 借鉴 TrendRadar 的时段调度】夜间免打扰：默认 22:30–07:30 不弹气泡。
+    # 只挡"主动弹"的这几类提醒，页面本身照常刷新；开关在右侧「程序设置」里，随时可关。
+    if _in_quiet_hours(now):
+        return
     NEWS_LAST_TOAST = now
     fresh = [it for it in items if it.get("id") in added]
+    # 先给整池子标一遍「同一条新闻被几家实时热榜同时收录」（cross_hot），
+    # 下面 `_pick_balloon_items` 拿它当第一排序键 —— 多家榜同上榜 = 用户要的"热点、重大"。
+    _annotate_cross_hot(items)
     # 【2026-10-07 用户反馈「还是有英文新闻播报」】气泡里**只留中文条目**。
     # 国际热榜里曾有境外英文源，之前"优先中文"只是排序、挡不住它
     # 从热榜那 2 个名额挤进来。这里直接按"标题有没有汉字"过滤，最干脆。
     fresh = [x for x in fresh if _has_cjk(x.get("title"))]
     if not fresh:
+        _balloon_trace("跳过：本轮新增 %d 条没有中文标题（气泡只播中文）" % len(added))
         return
-    # 【2026-10-07 用户要求「轮播内容不能重复」】优先播没播过的条目；
-    # 全都播过一遍了才清空记录、开新一轮。这样连续几轮不会反复看到同几条。
+    # 【2026-10-25 用户要求「用户是看新闻的，不是来搜索的」】原来的「气泡只在命中时弹」
+    # （按订阅词过滤）连同订阅功能一起取消了 —— 界面入口没了以后，这个过滤会变成
+    # "用户没设过词却一直被静音"的暗坑，所以这里不再过滤，直接往下走。
+    # 【2026-10-07 用户要求「轮播内容不能重复」】优先播没播过的条目。
+    # 【2026-10-25 待办 #65】"全都播过就整份清空重来"改成了**按条记 12 小时**：
+    # 本轮新增的一条都没播过时才往下走，都播过就这一轮不弹（下一句留记录）。
+    # 为什么不再清空：清空等于把几千条历史一起忘掉，隔几天又冒回新增列表的老新闻
+    # 立刻能再投一次 —— 那是用户明确反对的"重复投放"，闸不能自己拆自己。
     try:
-        _seen = _BALLOON_SHOWN
+        _seen = _balloon_seen()
         _unseen = [x for x in fresh if (x.get("id") or x.get("title")) not in _seen]
-        if _unseen:
-            fresh = _unseen + [x for x in fresh if x not in _unseen]
-        else:
-            _seen.clear()
-            print("[ok] 气泡轮播：上一轮已播完，开始新一轮")
     except Exception:
-        pass
-    if not fresh:
+        _unseen = list(fresh)
+    if not _unseen:
+        _balloon_trace("跳过：本轮新增 %d 条最近都播过（不重复投放）" % len(fresh))
         return
+    fresh = _unseen
+    # 【2026-10-25 用户要求「不能几个网站的新闻重复投放」】跨轮"同一件事"闸。
+    # 上一轮气泡播过的那件事，这一轮别的网站的兄弟稿（标题措辞不同、id 也不同）
+    # 不能再占席位 —— 判据与本轮内部去重完全相同，只是把视野扩到最近 6 小时。
+    # 全被挡掉时**这一轮就不弹**：宁缺毋滥，用户要的是精准投放，不是每 10 分钟看一遍旧闻。
+    try:
+        _novel, _dupes = _balloon_event_filter(fresh)
+    except Exception:
+        _novel, _dupes = fresh, []
+    if _dupes:
+        _balloon_trace("去掉 %d 条「已播事件的别家稿」，本轮可播 %d 条"
+                       % (len(_dupes), len(_novel)))
+    if not _novel:
+        _balloon_trace("跳过：本轮新增 %d 条都是已播过的同一件事（不重复投放）" % len(fresh))
+        return
+    fresh = _novel
     # 【2026-10-09 用户要求「增加 10 组新闻」「哪个栏目就是哪个栏目」】
     # 挑选逻辑整段换成 _pick_balloon_items（按栏目配额：头条/科技/财经/娱乐 + 软件/热榜/国际补足），
     # 第一行改成这条自己的栏目名（_balloon_head），热榜那条还带平台出处。
     # 旧逻辑（国际/国内/热榜 三个板块平分 6 席）已删除：那样 10 席里科技/财经/娱乐 常常一条都轮不到。
     picked = _pick_balloon_items(fresh)
     if not picked:
+        _balloon_trace("跳过：%d 条候选按栏目配额没挑出可播的" % len(fresh))
         return
     entries = [_balloon_entry(it) for it in picked[:BALLOON_PLAY_COUNT]]
     if len(added) > len(entries):
         _e = entries[-1]
         entries[-1] = (_e[0], _e[1] + f"　（本次共新增 {len(added)} 条）") + tuple(_e[2:])
-    # 记录已播，保证"轮播内容不能重复"
+    # 记录已播，保证"轮播内容不能重复"（按条记 12 小时，见 _balloon_mark_shown）
     try:
-        for _it in picked:
-            _BALLOON_SHOWN.add(_it.get("id") or _it.get("title"))
-        if len(_BALLOON_SHOWN) > 3000:
-            _BALLOON_SHOWN.clear()
+        _balloon_mark_shown([_it.get("id") or _it.get("title") for _it in picked])
+    except Exception:
+        pass
+    # 【2026-10-25】同一批条目还要按"事件"记一笔：下一轮别的网站的兄弟稿才会被挡掉。
+    try:
+        _balloon_event_remember(picked)
     except Exception:
         pass
     # 【2026-10-09 用户要求】日志口径改成**按栏目报数**，形如
-    #   [ok] 更新提醒：滚动播放 10 条（头条2/科技2/财经2/娱乐2/软件1/热榜1）
-    print("[ok] 更新提醒：滚动播放 %d 条（%s）"
-          % (len(entries), _balloon_cls_tally(picked)))
+    #   滚动播放 10 条（头条2/科技2/财经2/娱乐2/软件1/热榜1）
+    _balloon_trace("滚动播放 %d 条（%s）"
+                   % (len(entries), _balloon_cls_tally(picked)))
     _show_toast_list(entries)
 
 
@@ -5918,9 +6466,55 @@ MY_SOFTWARE_KEYWORDS = (
 MY_SOFTWARE_CHANNELS = {"cn-mefcl", "cn-ghpym", "cn-iplay", "cn-soft"}   # 软件发布类站点
 _MY_SOFT_SEEN = set()
 _MY_SOFT_READY = [False]
-# 已经播过气泡的条目 id —— 用户要求「轮播内容不能重复」。
-# 每轮优先挑没播过的；全都播过了才清空重来（保证一直有新内容可播）。
-_BALLOON_SHOWN = set()
+# 已经播过气泡的条目 → 上次播出的时间戳。用户要求「轮播内容不能重复」。
+# 【2026-10-25 待办 #65】原来这是一份 set，且"本轮新增的全播过"时**整份清空**重来 ——
+# 清空那一刻等于把几千条历史一起忘了：只要有条目隔几天又冒回新增列表（热榜反复上榜
+# 是常态），它就会被当成"没播过"再投一次，正是用户说的"不能重复投放"被自己拆了。
+# 现在改成**按条过期**：每条记 `_BALLOON_SHOWN_TTL` 小时，过期自然忘，
+# 名单长度还有硬顶（超了从最久没播的开始删），长跑不会把内存吃掉。
+_BALLOON_SHOWN = {}
+_BALLOON_SHOWN_TTL = 12 * 3600     # 一条新闻在"播过"名单里记 12 小时
+_BALLOON_SHOWN_MAX = 3000          # 名单条数硬顶
+_BALLOON_SHOWN_LOCK = threading.Lock()
+
+
+def _balloon_seen():
+    """当前还在"最近播过"名单里的条目键（过期的顺手删掉，不整份清空）。"""
+    now = time.time()
+    with _BALLOON_SHOWN_LOCK:
+        for k in [k for k, v in _BALLOON_SHOWN.items() if v < now - _BALLOON_SHOWN_TTL]:
+            _BALLOON_SHOWN.pop(k, None)
+        return set(_BALLOON_SHOWN.keys())
+
+
+def _balloon_mark_shown(keys):
+    """把真播出去的条目记进名单；超上限就从"最久没播"的那头删。"""
+    now = time.time()
+    with _BALLOON_SHOWN_LOCK:
+        for k in keys:
+            if k:
+                _BALLOON_SHOWN[str(k)] = now
+        over = len(_BALLOON_SHOWN) - _BALLOON_SHOWN_MAX
+        if over > 0:
+            for k in sorted(_BALLOON_SHOWN, key=lambda x: _BALLOON_SHOWN[x])[:over]:
+                _BALLOON_SHOWN.pop(k, None)
+
+
+# 【2026-10-25 待办 #65】气泡这一轮为什么弹 / 为什么不弹，留一份可查的记录。
+# print 那行本来就会进 hotnews.log（打包态 stdout 接的就是那个文件），但排查
+# "气泡怎么不响了"时不该让用户去翻日志文件 —— 这里再留最近若干条在内存里，
+# 跟着 GET /api/notify 一起回（只增不减，老调用方不受影响）。
+_BALLOON_TRACE = []
+_BALLOON_TRACE_MAX = 12
+
+
+def _balloon_trace(text):
+    """记一句气泡投放的决定（同时打日志）。返回原文，调用方可接着用。"""
+    print("[气泡] %s" % text)
+    _BALLOON_TRACE.append("%s %s" % (datetime.now(CST).strftime("%m-%d %H:%M"), text))
+    while len(_BALLOON_TRACE) > _BALLOON_TRACE_MAX:
+        _BALLOON_TRACE.pop(0)
+    return text
 
 
 def _notify_my_software(items):
@@ -6022,6 +6616,10 @@ def _notify_major(items):
     now = time.time()
     if now - _MAJOR_LAST_TOAST < MAJOR_TOAST_MIN:
         return
+    # 【2026-10-25】夜间免打扰同样挡这一类（时段可在「程序设置」里关）。
+    # 大事本身不会因为晚上不弹就消失：早上解除免打扰后，它仍在页面热榜/头条里。
+    if _in_quiet_hours(now):
+        return
     _MAJOR_LAST_TOAST = now
     sample = fresh[:BALLOON_PLAY_COUNT]
     entries = []
@@ -6038,6 +6636,13 @@ def _notify_major(items):
         _e = entries[-1]
         entries[-1] = (_e[0], _e[1] + f"　（另有 {len(fresh) - len(entries)} 条同类）") + tuple(_e[2:])
     print(f"[ok] 大事提醒：滚动播放 {len(entries)} 条")
+    # 【2026-10-25 用户「不能几个网站的新闻重复投放」】大事提醒播过的事件也写进"已播事件"记忆，
+    # 这样随后那波「更新提醒」不会把同一场地震/同一条快讯再播一遍。
+    # 注意**只写不读**：大事提醒本身不做跨轮过滤 —— 这类通知漏报比多报严重。
+    try:
+        _balloon_event_remember(sample)
+    except Exception:
+        pass
     _show_toast_list(entries)
 
 
@@ -6102,21 +6707,31 @@ def _check_update_once():
 
 @app.on_event("startup")
 def _warmup():
-    """后台预热两个 Region + 静默检查更新"""
-    _load_trans_cache()          # 载入历史译文缓存，避免重复消耗免费翻译额度
-    # 【2026-10-09 修 中-4】cleanup_leftovers 现在会**返回上一次替换脚本留下的回执**
-    # （成功 / 失败 / 失败原因）。失败说明"上次升级没落地"，要在日志与气泡里说清楚，
-    # 不能再像以前那样静默什么都不做。
-    _last_swap = ""
-    try:
-        _last_swap = updater.cleanup_leftovers() or ""
-        if _last_swap:
-            print(f"[update] 上次替换回执: {_last_swap}")
-    except Exception:
-        _last_swap = ""
-    TRAY.start()                 # 右下角托盘图标（非 Windows 静默降级）
-    BALLOON.start()              # 右下角自绘气泡（系统通知被关也照样弹）
+    """后台预热两个 Region + 静默检查更新
+
+    【2026-10-24 UI 整改·冷启动指标】启动事件里**只做必需且极快的事**：
+    托盘/气泡的 start() 都只是起后台线程，不阻塞；其余（读译文缓存、升级残留检查）
+    全部挪进后台线程 run() 里做 —— 「进程启动 → GET / 200」不再等这些磁盘动作。
+    页面本身靠 SSR 首屏（PRELOAD 为空时立刻返回 loading，前端骨架屏接管），
+    所以「先出页面、数据后到」的观感不受影响。
+    实测数字见 logs\\UI整改-20261024\\测试日志.txt。
+    """
+    TRAY.start()                 # 右下角托盘图标（非 Windows 静默降级，内部起线程）
+    BALLOON.start()              # 右下角自绘气泡（系统通知被关也照样弹，内部起线程）
+
     def run():
+        # —— 以下三件事与首屏无关，一律放在后台线程里做 ——
+        _load_trans_cache()      # 载入历史译文缓存，避免重复消耗免费翻译额度
+        # 【2026-10-09 修 中-4】cleanup_leftovers 现在会**返回上一次替换脚本留下的回执**
+        # （成功 / 失败 / 失败原因）。失败说明"上次升级没落地"，要在日志与气泡里说清楚，
+        # 不能再像以前那样静默什么都不做。
+        _last_swap = ""
+        try:
+            _last_swap = updater.cleanup_leftovers() or ""
+            if _last_swap:
+                print(f"[update] 上次替换回执: {_last_swap}")
+        except Exception:
+            _last_swap = ""
         # 【2026-10-09 修 中-4】上次升级失败过 → 开机就说清楚，并给出可执行的动作
         if _last_swap.upper().startswith("FAIL"):
             try:
@@ -6221,11 +6836,19 @@ def _warmup():
                             # 一条都轮不到，跟用户「涉及头条/科技/财经/娱乐」的要求不符。
                             # 配额顺序仍是国际媒体优先（用户看得懂中文），再交给统一的挑选器。
                             _ordered = (_intl + _hot + _cn)
+                            _annotate_cross_hot(_ordered)   # 启动播报也按"几家榜同上榜"优先
                             _pick = _pick_balloon_items(_ordered)[:BALLOON_PLAY_COUNT]
                             if not _pick:
                                 print("[warn] 启动气泡：没有可用条目，跳过")
                                 return
                             _ents = [_balloon_entry(x) for x in _pick]
+                            # 【2026-10-25 用户「不能几个网站的新闻重复投放」】
+                            # 启动播报播过的这件事也得进"已播事件"记忆 —— 否则几分钟后
+                            # 第一波「更新提醒」会把同一条新闻的别家稿再播一遍。
+                            try:
+                                _balloon_event_remember(_pick)
+                            except Exception:
+                                pass
                             _n_intl = sum(1 for x in _pick if x.get("region") == "intl")
                             print("[ok] 启动气泡：播报 %d 条（%s；含国际 %d 条）"
                                   % (len(_ents), _balloon_cls_tally(_pick), _n_intl))
@@ -6262,13 +6885,16 @@ def _warmup():
             print(f"[warn] intl 补入转入条目失败: {type(_ex).__name__}")
 
     def refresh_loop():
-        # 用户要求：所有栏目统一每 10 分钟自动刷新（不分国内/国际），无需手动。
+        # 【2026-10-25 用户要求「热榜和头条的新闻条数太多，版面太大，把刷新频率缩短了，
+        #  常看常新的原则」】抓取周期 10 分钟 → **5 分钟**一轮。
+        #  气泡不受影响：「更新提醒」的 NEWS_TOAST_MIN 仍是 10 分钟，也就是两轮里最多打扰一次，
+        #  用户要的「及时」是页面及时，不是通知及时。
         # 一轮内重建 热榜 + 国内源 + 国际源，刷新后弹气泡（更新提醒 / 大事提醒）。
         # 【2026-10-09 修 中-7】改走 _collect_exclusive：与页面按需抓取（_kick_collect）
         # 共用同一把「正在抓取」的闸，保证同一 region 同一时刻只有一轮。
-        # 已被占着就跳过本轮（下一轮 10 分钟后再来），绝不并发跑两轮。
+        # 已被占着就跳过本轮（下一轮 5 分钟后再来），绝不并发跑两轮。
         while True:
-            time.sleep(600)          # 10 分钟一轮
+            time.sleep(300)          # 5 分钟一轮
             try:
                 _collect_exclusive("hot")
             except Exception:
@@ -6296,6 +6922,9 @@ def _warmup():
                 _notify_news(merged)
                 _notify_major(merged)
                 _notify_my_software(merged)      # 用户要求：作品被发布必须及时知道
+                # 【2026-10-25 借鉴 vikiboss/60s + TrendRadar 时段调度】
+                # 每天 08:00 / 20:00 各播一次「今日 60 秒」（可在「程序设置」里关）。
+                _notify_digest()
             except Exception:
                 pass
 
@@ -6371,6 +7000,348 @@ def _kick_collect(region):
 
     threading.Thread(target=_run, daemon=True).start()
     return True
+
+
+# ============ 跨天归档与历史检索（2026-10-25 新增）============
+# 【为什么做】程序叫「热点新闻检索」，但可搜的池子只活在内存里：
+#   · 主列表只留当天（用户要求常看常新），往前翻就没了；
+#   · 关掉程序，当天抓到的新闻也一起没了。
+# 这里把**每轮抓到的完整池子**（PRELOAD_ALL，含前面几天）落到本机 SQLite，
+# 搜索时能选「今天 / 近 7 天 / 近 30 天」，还能看一个词这几天热到什么程度。
+#
+# 【四条硬约束】
+#   ① 只用标准库 sqlite3 —— 不新增第三方依赖（requirements.txt 不变，打包不用多收包）；
+#   ② 归档是**本机私有数据**：只写 %LOCALAPPDATA%\hotnews\history\history.db，
+#      不上传、不外发、页面上也不显示这个路径；表里只有新闻本身字段，
+#      没有机器名、用户名、浏览记录之类的个人信息；
+#   ③ 归档绝不能拖垮抓取：写库全包在 try 里，失败只打一行 [warn]，
+#      并且 5 分钟内不再撞第二次（只读盘/满盘时不会每轮都报错）；
+#   ④ 有保留上限：只留 HIST_KEEP_DAYS 天，且行数硬顶 HIST_MAX_ROWS ——
+#      长期运行不能把用户的盘越占越大。
+_HIST_DIR = os.path.join(os.getenv("LOCALAPPDATA") or tempfile.gettempdir(),
+                         "hotnews", "history")
+_HIST_PATH = os.path.join(_HIST_DIR, "history.db")
+HIST_KEEP_DAYS = 30      # 只留最近 30 天（按 last_seen 淘汰：还在流转的条目不会被误删）
+HIST_MAX_ROWS = 60000    # 行数硬顶，超了从最久没见过的开始删
+# 查询窗口上限：能选到 90 天，但归档只留 30 天 —— 超出部分是空的。
+# 页面拿到 oldestDay 就知道实际能搜到哪天，不会把"没搜到"当成"没发生过"。
+HIST_KEEP_DAYS_MAX_QUERY = 90
+_HIST_LOCK = threading.Lock()
+_HIST_CONN = None
+_HIST_DISABLED_UNTIL = 0.0    # 建库/写库失败后的冷静期终点
+_HIST_PRUNE_UNTIL = 0.0       # 清旧最多每 6 小时一次
+_HIST_STATS = {"written": 0, "lastWrite": 0, "error": ""}
+
+# 摘要这一列叫 `summary` 不叫 `desc`：DESC 是 SQL 关键字，当列名要么处处加引号，
+# 要么哪天写漏一次就是一个查不出来的语法错。对外字段名仍然叫 desc（与 /api/news 一致）。
+_HIST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS news (
+  key        TEXT PRIMARY KEY,
+  region     TEXT,
+  channel    TEXT,
+  label      TEXT,
+  cls        TEXT,
+  title      TEXT,
+  summary    TEXT,
+  link       TEXT,
+  image      TEXT,
+  published  INTEGER,
+  day        TEXT,
+  heat       INTEGER,
+  translated INTEGER,
+  times      INTEGER,
+  first_seen INTEGER,
+  last_seen  INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_news_day  ON news(day);
+CREATE INDEX IF NOT EXISTS ix_news_seen ON news(last_seen);
+"""
+
+_HIST_COLS = ("key", "region", "channel", "label", "cls", "title", "summary",
+              "link", "image", "published", "day", "heat", "translated",
+              "times", "first_seen", "last_seen")
+
+# 一条新闻被反复抓到（每 10 分钟一轮）不该变成 10 行重复数据，所以按主键 upsert：
+#   · title / summary：直接换新 —— 后台翻译会把英文标题写回成中文，必须跟上来；
+#   · label / cls / image：新值非空才覆盖，别被某一轮的解析失败抹掉已有的图；
+#   · heat：取两边较大值（热榜数字只涨不跌，跌了多半是源站换口径，不是真降了）；
+#   · times：被抓到几轮，页面用它说明「这条在归档里出现过几次」；
+#   · first_seen 不更新（保留第一次见到的时间），last_seen 每轮刷新（淘汰看它）。
+_HIST_UPSERT = (
+    "INSERT INTO news (" + ",".join(_HIST_COLS) + ") VALUES ("
+    + ",".join("?" for _ in _HIST_COLS) + ") "
+    "ON CONFLICT(key) DO UPDATE SET "
+    "title=excluded.title, summary=excluded.summary, "
+    "label=CASE WHEN excluded.label<>'' THEN excluded.label ELSE news.label END, "
+    "cls=CASE WHEN excluded.cls<>'' THEN excluded.cls ELSE news.cls END, "
+    "image=CASE WHEN excluded.image<>'' THEN excluded.image ELSE news.image END, "
+    "heat=MAX(news.heat, excluded.heat), "
+    "translated=excluded.translated, last_seen=excluded.last_seen, "
+    "times=news.times+1"
+)
+
+# 查询时一次最多取回这么多行（搜索与趋势各自用各自的 limit，都夹在 HIST_SCAN_MAX 以内）
+HIST_SCAN_MAX = 2000
+
+
+def _hist_day(ts):
+    """时间戳 → 本地日期字符串（归档按天分组、按天筛窗口都靠它）。"""
+    try:
+        return datetime.fromtimestamp(int(ts), CST).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now(CST).strftime("%Y-%m-%d")
+
+
+def _hist_conn():
+    """取（惰性建）归档库连接。建库失败 → 设冷静期并抛出让调用方吞掉。"""
+    global _HIST_CONN, _HIST_DISABLED_UNTIL
+    if _HIST_CONN is not None:
+        return _HIST_CONN
+    try:
+        os.makedirs(_HIST_DIR, exist_ok=True)
+        c = sqlite3.connect(_HIST_PATH, check_same_thread=False)
+        # busy_timeout：抓取线程在写、页面线程在读，读的时候等一下而不是直接报错
+        c.execute("PRAGMA busy_timeout=1500")
+        c.executescript(_HIST_SCHEMA)
+        c.commit()
+        _HIST_CONN = c
+        print(f"[ok] 新闻归档已就绪（保留 {HIST_KEEP_DAYS} 天）")
+        return c
+    except Exception as ex:
+        _HIST_CONN = None
+        _HIST_DISABLED_UNTIL = time.time() + 300
+        _HIST_STATS["error"] = (f"{type(ex).__name__}: {ex}")[:160]
+        print(f"[warn] 新闻归档打不开，本次运行不再尝试（不影响正常看新闻）: "
+              f"{type(ex).__name__}")
+        raise
+
+
+def _hist_prune(c):
+    """按保留期和行数上限清库。最多每 6 小时一次 —— 全表扫描不该每轮都做。"""
+    global _HIST_PRUNE_UNTIL
+    now = time.time()
+    if now < _HIST_PRUNE_UNTIL:
+        return
+    _HIST_PRUNE_UNTIL = now + 6 * 3600
+    cut = int(now) - HIST_KEEP_DAYS * 86400
+    c.execute("DELETE FROM news WHERE last_seen < ?", (cut,))
+    over = (c.execute("SELECT COUNT(*) FROM news").fetchone()[0] or 0) - HIST_MAX_ROWS
+    if over > 0:
+        c.execute("DELETE FROM news WHERE key IN ("
+                  "SELECT key FROM news ORDER BY last_seen ASC LIMIT ?)", (over,))
+    c.commit()
+
+
+def _hist_rows(region, items):
+    """条目字典 → 待写行。脏数据（没标题的）直接跳过，不因为一条坏数据让整轮写不进去。"""
+    now = int(time.time())
+    out = []
+    for it in items or []:
+        try:
+            title = (it.get("title") or "").strip()
+            if not title:
+                continue
+            link = (it.get("link") or "").strip()
+            key = (it.get("id") or "").strip() or \
+                hashlib.md5((link + title).encode("utf-8")).hexdigest()[:12]
+            pub = int(it.get("published") or 0)
+            out.append((
+                key[:40], region or "", (it.get("channel") or "")[:60],
+                (it.get("label") or "")[:60], (it.get("cls") or "")[:20],
+                title[:300], (it.get("desc") or "")[:600], link[:600],
+                (it.get("image") or "")[:900], pub, _hist_day(pub or now),
+                int(it.get("heat") or 0), 1 if it.get("translated") else 0,
+                1, now, now,
+            ))
+        except Exception:
+            continue
+    return out
+
+
+def _hist_record(region, items):
+    """把这一轮的完整池子落进归档。**绝不向外抛异常**：抓取与页面不能因为归档崩。"""
+    global _HIST_DISABLED_UNTIL, _HIST_CONN
+    if time.time() < _HIST_DISABLED_UNTIL:
+        return 0
+    rows = _hist_rows(region, items)
+    if not rows:
+        return 0
+    try:
+        with _HIST_LOCK:
+            c = _hist_conn()
+            c.executemany(_HIST_UPSERT, rows)
+            c.commit()
+            _HIST_STATS["written"] += len(rows)
+            _HIST_STATS["lastWrite"] = int(time.time())
+            _hist_prune(c)
+        return len(rows)
+    except Exception as ex:
+        with _HIST_LOCK:
+            _HIST_CONN = None            # 连接可能已经废了，下次重建
+            _HIST_DISABLED_UNTIL = time.time() + 300
+            _HIST_STATS["error"] = (f"{type(ex).__name__}: {ex}")[:160]
+        print(f"[warn] 新闻归档写入失败（不影响抓取，5 分钟内不再重试）: "
+              f"{type(ex).__name__}")
+        return 0
+
+
+def _hist_where(q, region, days):
+    """拼查询条件（时间窗口 + 分区 + 关键词）。返回 (where_sql, args, 起始日)。"""
+    start = (datetime.now(CST) - timedelta(days=max(1, days) - 1)).strftime("%Y-%m-%d")
+    where, args = ["day >= ?"], [start]
+    if region in ("cn", "intl", "hot"):
+        where.append("region = ?")
+        args.append(region)
+    kw = (q or "").strip().lower()
+    if kw:
+        # instr + lower：子串匹配，语义与前端搜索框完全一致（英文不区分大小写，
+        # 中文没有大小写问题）。**不用 LIKE** —— LIKE 把 % 和 _ 当通配符，
+        # 用户搜「50%」会连到一堆不相干的条目。
+        where.append("(instr(lower(title), ?) > 0 OR instr(lower(summary), ?) > 0)")
+        args += [kw, kw]
+    return " AND ".join(where), args, start
+
+
+def _hist_item(r):
+    """一行归档 → 前端那套条目字段（字段名与 /api/news 一致，卡片渲染直接复用）。"""
+    return {
+        "id": r[0], "region": r[1] or "", "channel": r[2] or "", "label": r[3] or "",
+        "cls": r[4] or "", "title": r[5] or "", "desc": r[6] or "", "link": r[7] or "",
+        "image": r[8] or "", "published": int(r[9] or 0), "heat": int(r[11] or 0),
+        "rank": 0, "translated": bool(r[12]), "day": r[10] or "",
+        "times": int(r[13] or 1),
+    }
+
+
+_HIST_SELECT = (",").join(_HIST_COLS)
+
+
+def _hist_query(q="", region="", days=30, limit=200):
+    """查归档（只读）。返回 (items, note)：note 非空 = 归档此刻不可用，前端要说清。"""
+    days = max(1, min(int(days or 30), HIST_KEEP_DAYS_MAX_QUERY))
+    limit = max(1, min(int(limit or 200), NEWS_LIMIT_MAX))
+    where, args, _start = _hist_where(q, region, days)
+    args.append(min(HIST_SCAN_MAX, limit * 8))   # 折叠重复之前多取一些，保证折叠后还够数
+    try:
+        with _HIST_LOCK:
+            c = _hist_conn()
+            rows = c.execute(
+                f"SELECT {_HIST_SELECT} FROM news WHERE {where} "
+                f"ORDER BY published DESC, last_seen DESC LIMIT ?", args).fetchall()
+    except Exception:
+        return [], "本机归档暂时读不到（不影响看当前新闻）"
+    items = [_hist_item(r) for r in rows]
+    # 同一篇稿子被连续几轮抓到、标题又被改写过，会留下多条几乎一样的归档。
+    # 这里只做**确定性折叠**（同链接 / 归一化标题一样 / 一方是另一方且只差几个字），
+    # 不跑"同一事件不同措辞"那一档 —— 用户明确在搜东西，别把别家的报道合掉。
+    items = _dedup_same_event(items, same_wording_only=True)
+    return items[:limit], ""
+
+
+def _hist_trend(q="", region="", days=30):
+    """按天统计归档条数，**缺失的日期补 0**（不补零的折线会把"没数据"画成"没人提")。"""
+    days = max(1, min(int(days or 30), HIST_KEEP_DAYS_MAX_QUERY))
+    where, args, _start = _hist_where(q, region, days)
+    try:
+        with _HIST_LOCK:
+            c = _hist_conn()
+            rows = c.execute(
+                f"SELECT day, COUNT(*) FROM news WHERE {where} GROUP BY day",
+                args).fetchall()
+    except Exception:
+        return [], 0, ""
+    by = {str(r[0]): int(r[1] or 0) for r in rows}
+    base = datetime.now(CST).date() - timedelta(days=days - 1)
+    series = []
+    for i in range(days):
+        d = (base + timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({"day": d, "count": by.get(d, 0)})
+    return series, sum(x["count"] for x in series), ""
+
+
+def _hist_stats():
+    """归档概况（条数 / 覆盖到哪一天 / 文件多大），只读，失败回空概况。
+
+    两个"最早"要分清，页面上说错了会误导用户：
+      · `oldestDay` = 库里**稿子本身**最早的那天（RSS 里挂个两年前的日期是常事，
+        这条稿子不在「近 30 天」窗口里，搜不到它）；
+      · `sinceDay` = 归档**从哪天开始攒**（按第一次被抓到的时间算），
+        这才是「近 30 天能搜到哪儿」的答案 —— 页面用的是这个。
+    """
+    info = {"rows": 0, "oldestDay": "", "newestDay": "", "sinceDay": "", "bytes": 0,
+            "keepDays": HIST_KEEP_DAYS, "maxRows": HIST_MAX_ROWS,
+            "lastWrite": _HIST_STATS["lastWrite"], "ready": False, "note": ""}
+    try:
+        with _HIST_LOCK:
+            c = _hist_conn()
+            r = c.execute("SELECT COUNT(*), MIN(day), MAX(day), MIN(first_seen) "
+                          "FROM news").fetchone()
+        info["rows"] = int(r[0] or 0)
+        info["oldestDay"] = str(r[1] or "")
+        info["newestDay"] = str(r[2] or "")
+        info["sinceDay"] = _hist_day(r[3]) if (r[3] or 0) else ""
+        info["ready"] = True
+        try:
+            info["bytes"] = int(os.path.getsize(_HIST_PATH))
+        except Exception:
+            pass
+    except Exception:
+        info["note"] = _HIST_STATS["error"] or "归档尚未就绪"
+    return info
+
+
+# ============ 归档的三个只读接口 ============
+
+
+@app.get("/api/history")
+def api_history():
+    """只读：本机归档概况。页面用它说明「近 30 天」实际覆盖到哪天。"""
+    s = _hist_stats()
+    return JSONResponse({"version": VERSION, **s},
+                        media_type="application/json; charset=utf-8")
+
+
+@app.get("/api/search")
+def api_search(q: str = Query(""), region: str = Query(""),
+               days: int = Query(30), limit: int = Query(100)):
+    """搜本机归档（跨天）。
+
+    与 /api/news 的分工：`/api/news?q=` 搜**今天内存里的池子**，这里搜**落盘的 30 天**。
+    参数越界一律夹取后正常返回（沿用 2026-10-09 那次「limit=300 回空数组」的教训，
+    不用 FastAPI 的 ge/le 校验去回 422）。
+    不带 q 时按天倒序回归档里最新的条目，给「翻历史」用。
+    """
+    items, note = _hist_query(q=q, region=region, days=days, limit=limit)
+    if items:
+        # 归档里的图同样是远程地址，走 /img 代理必须先登记域名，否则整屏 403
+        _note_item_hosts(items)
+    s = _hist_stats()
+    return JSONResponse({"version": VERSION, "count": len(items),
+                         "q": (q or "").strip(), "region": region or "",
+                         "days": max(1, min(int(days or 30), HIST_KEEP_DAYS_MAX_QUERY)),
+                         "items": items, "note": note,
+                         "archive": {"ready": s["ready"], "rows": s["rows"],
+                                     "oldestDay": s["oldestDay"],
+                                     "newestDay": s["newestDay"],
+                                     "sinceDay": s["sinceDay"]}},
+                        media_type="application/json; charset=utf-8")
+
+
+@app.get("/api/trend")
+def api_trend(q: str = Query(""), region: str = Query(""), days: int = Query(30)):
+    """只读：一个词（或整个分区）每天在归档里出现多少条 —— 前端画折线用。
+
+    说清楚这个数字是什么：它是**本机归档里那一天的条数**，不是全网热度指数。
+    抓取轮次、源站当天发稿量都会影响它，所以页面必须带上口径说明，不能假装是热度。
+    """
+    series, total, note = _hist_trend(q=q, region=region, days=days)
+    peak = max(series, key=lambda x: x["count"]) if series else None
+    return JSONResponse({"version": VERSION, "q": (q or "").strip(),
+                         "region": region or "",
+                         "days": max(1, min(int(days or 30), HIST_KEEP_DAYS_MAX_QUERY)),
+                         "total": total, "series": series, "note": note,
+                         "peak": peak if (peak or {}).get("count") else None},
+                        media_type="application/json; charset=utf-8")
 
 
 # ============ 本机令牌 + 同源校验（2026-10-09 新增，修 高-4）============
@@ -6459,6 +7430,40 @@ def _guard_mutating(request):
 # 所以上限就定 200；超出按 200 截断（不再因为 FastAPI 的 le 校验回 422 —— 见 api_news 的说明）。
 NEWS_LIMIT_MAX = 200
 
+# 【2026-10-25 待办 #62】内存池空了（断网 / 还在预热）时，首屏回落本机归档的窗口。
+ARCHIVE_BACKFILL_DAYS = 7      # 第一档：先找最近 7 天
+ARCHIVE_BACKFILL_MIN = 6       # 第一档少于这个数 → 放宽再查一次（不是"就放弃"）
+ARCHIVE_BACKFILL_SPAN = 30     # 第二档：放宽到保留期（归档最多留 HIST_KEEP_DAYS 天）
+
+
+def _news_from_archive(region, limit):
+    """**只读盘、不联网**：从本机归档捞一批垫首屏。返回 `(items, note)`。
+
+    为什么要它：`api_news` 原来在内存池为空时直接回 `items: []` + `loading: true`，
+    断网时后台抓多久都不会成，用户开页面看到的就是空屏 —— 而服务端首屏（`index()`）走的
+    是同一个 `api_news`，所以连 HTML 也是空的。可 history.db 里明明躺着最近几轮抓到的完整新闻，
+    `_hist_item` 的字段名与 /api/news 一致（卡片渲染直接复用），不用就浪费了。
+
+    三条边界：
+      · 只读归档、不改内存、不触发抓取 —— 抓到东西之后下一轮刷新自然回到实时池子，
+        缓存不会把页面锁死在旧闻上；
+      · 时间口径说实话：这批的 `published` 原样带着，页面顶栏那行「最新 …」就是它们的真实时间，
+        用户一眼看得出"这是缓存不是直播"，不靠额外文案自证；
+      · 7 天窗口凑不满 ARCHIVE_BACKFILL_MIN 条就放宽到保留期再查一次（断网几天的机器上，
+        归档里最近一批可能就是十来天前的，那也比空屏强）；两档都没货 → 回 `([], note)`，
+        调用方退回原来的"正在抓取"空响应。归档读不到时 note 非空，日志里能看出是哪种"没货"。
+    """
+    want = min(max(int(limit or 0) * 3, 60), NEWS_LIMIT_MAX)   # 后面还要过折叠，多取一点才够首屏
+    items, note = _hist_query(region=region, days=ARCHIVE_BACKFILL_DAYS, limit=want)
+    if len(items) < ARCHIVE_BACKFILL_MIN:
+        older, older_note = _hist_query(region=region, days=ARCHIVE_BACKFILL_SPAN, limit=want)
+        if len(older) > len(items):
+            items, note = older, older_note
+    if not items:
+        return [], note          # note 非空 = 归档此刻读不到；空 = 归档里确实没这一栏的货
+    newest_day = max([(it.get("day") or "") for it in items]) or "?"
+    return items, "本机归档 %s 的 %d 条" % (newest_day, len(items))
+
 
 @app.get("/api/news")
 def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Query(""), limit: int = Query(48, ge=1)):
@@ -6469,6 +7474,11 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     前端 `js.items || []` 拿到的是错误响应体 → 渲染成"什么都没有"。用户看到的就是"空数组"。
     修法（用户口径：「超上限就按上限截断并正常返回」）：去掉 `le`，在函数里夹取，
     并在响应里带上实际生效的 `limit`，调用方一眼能看出被截断过。
+
+    【2026-10-25 待办 #62】内存池为空（断网 / 还在预热）时不再直接回空数组：先读本机归档
+    垫这一屏（`_news_from_archive`），响应里 `cached: true` + `cached_note` 说清这批是缓存；
+    归档也没货才回 `loading: true` 的空响应。服务端首屏 `index()` 走的是同一个函数，
+    所以断网时打开页面看到的就是归档那批，不再是空屏干等。
     """
     if region not in SOURCES:
         return JSONResponse({"error": "unknown region"}, status_code=400)
@@ -6477,6 +7487,8 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     # 但程序叫「热点新闻检索」，搜索时必须能搜到更早的新闻。
     # 所以带关键词时改搜 PRELOAD_ALL（当天过滤之前的完整池子，含最近几天）。
     _kw = (q or "").strip()
+    from_archive = False           # 首屏这批是不是本机归档垫的（响应里要老实标出来）
+    backfill_note = ""
     if _kw and PRELOAD_ALL.get(region):
         all_items = PRELOAD_ALL[region]
     elif PRELOAD.get(region):
@@ -6484,10 +7496,17 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     else:
         # 没有预热数据 → **绝不在请求里同步抓取**，立刻返回并让后台去抓。
         _kick_collect(region)
-        return JSONResponse(
-            {"version": VERSION, "count": 0, "items": [], "loading": True,
-             "message": "正在抓取，请稍候…"},
-            media_type="application/json; charset=utf-8")
+        # 【2026-10-25 待办 #62】断网 / 还在预热时不再交白卷：先用本机归档垫这一屏，
+        # 后台照常重抓，抓成之后下一次刷新就回到实时池子。归档也没货才回原来的空响应。
+        backfill, backfill_note = _news_from_archive(region, limit)
+        if not backfill:
+            return JSONResponse(
+                {"version": VERSION, "count": 0, "items": [], "loading": True,
+                 "message": "正在抓取，请稍候…"},
+                media_type="application/json; charset=utf-8")
+        from_archive = True
+        all_items = backfill
+        print("[ok] %s: 内存池空，首屏回落本机归档（%s）" % (region, backfill_note))
     # 去重（同标题）
     seen, items = set(), []
     for it in all_items:
@@ -6500,8 +7519,10 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     # 「同一件事」（判据与标定见 _dedup_same_event 上面的注释）。
     # 搜索时**不做这层**：用户明确在找某条新闻，宁可多给几条，
     # 不能因为"别家也发过"就让某条搜不到。
+    # 【2026-10-25 新增】`with_also=True`：被合掉的兄弟稿挂到这条上（`also` / `also_n`），
+    # 页面上就是「同一件事，几家在报」那个可展开的标记 —— 合并照旧，但不再"悄悄地少了一条"。
     if not (q or "").strip():
-        items = _dedup_same_event(items)
+        items = _dedup_same_event(items, with_also=True)
     # 【2026-10-15 用户口径】国际栏出口再兜一道：
     # 收集那一刻 CGTN 这类英文源的标题**还是英文**，判据可能判不出"中国主体"；
     # 后台翻译把中文标题写回来之后才看得出来（真机实例：「习近平、博科出席北京合作文件签字仪式」
@@ -6535,8 +7556,84 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     # 响应里回带实际生效值，调用方能分辨"只有这么多条"和"被上限截断了"。
     return JSONResponse({"version": VERSION, "count": len(items[:limit]),
                          "limit": limit, "limit_max": NEWS_LIMIT_MAX,
+                         # 来源上色表（见 SRC_HUES）：跟着数据一起给，首屏一次画对，
+                         # 不用前端再拉一次接口、也不会"先灰一下再上色"。
+                         "src_hues": SRC_HUES,
+                         # 【待办 #62】这批是归档垫的还是内存池里的实时数据，响应里说实话；
+                         # 卡片时间戳本来就原样带着（页面顶栏显示的就是它们的时间），
+                         # 所以老版页面不改也能看出"这是缓存"，这两个字段是给调用方/日志用的。
+                         "cached": from_archive,
+                         "cached_note": backfill_note if from_archive else "",
                          "items": items[:limit]},
                         media_type="application/json; charset=utf-8")
+
+
+@app.get("/api/sources")
+def api_sources():
+    """**只读**：每个新闻源的健康度（最近一次抓到没有 / 抓了几条 / 连续失败几次）。
+
+    【2026-10-24 UI 整改】硬约束：打开/刷新这个面板**不得触发抓取**。
+    所以这里只做一件事 —— 读内存里的观测表 `_SRC_HEALTH`（由抓取链路顺手写入）：
+    不调 _kick_collect、不碰 _collect、不发任何网络请求、不读缓存文件。
+
+    返回（只增不减，老调用方不受影响）：
+      {version, updatedAt, intervalSec, lastCollect, totals:{total,ok,warn,fail,idle},
+       sources:[{id,label,region,cls,status,lastTs,lastCount,failStreak,okCount,failCount,error}]}
+    `status`：ok=本轮抓通且有条目 / warn=抓通但 0 条（疑似改版）/ fail=本轮失败 / idle=还没轮到。
+    """
+    with _SRC_HEALTH_LOCK:
+        snap = {k: dict(v) for k, v in _SRC_HEALTH.items()}
+    sources, seen_ids = [], set()
+    for meta in _all_sources_meta():
+        sid = meta.get("id")
+        if not sid or sid in seen_ids:
+            continue
+        seen_ids.add(sid)
+        ent = snap.get(sid) or {}
+        sources.append({
+            "id": sid,
+            "label": ent.get("label") or meta.get("label") or sid,
+            "region": ent.get("region") or meta.get("region") or "",
+            "cls": ent.get("cls") or meta.get("cls") or "",
+            "status": ent.get("status") or "idle",
+            "lastTs": int(ent.get("lastTs") or 0),
+            "lastCount": int(ent.get("lastCount") or 0),
+            "failStreak": int(ent.get("failStreak") or 0),
+            "okCount": int(ent.get("okCount") or 0),
+            "failCount": int(ent.get("failCount") or 0),
+            "error": ent.get("error") or "",
+        })
+    # 表里出现过但不在登记表里的（例如以后新增的热榜子源）也别丢
+    for sid, ent in snap.items():
+        if sid in seen_ids:
+            continue
+        sources.append({
+            "id": sid, "label": ent.get("label") or sid,
+            "region": ent.get("region") or "", "cls": ent.get("cls") or "",
+            "status": ent.get("status") or "idle",
+            "lastTs": int(ent.get("lastTs") or 0),
+            "lastCount": int(ent.get("lastCount") or 0),
+            "failStreak": int(ent.get("failStreak") or 0),
+            "okCount": int(ent.get("okCount") or 0),
+            "failCount": int(ent.get("failCount") or 0),
+            "error": ent.get("error") or "",
+        })
+    totals = {"total": len(sources), "ok": 0, "warn": 0, "fail": 0, "idle": 0}
+    for s in sources:
+        st = s.get("status")
+        if st in ("ok", "warn", "fail"):
+            totals[st] += 1
+        else:
+            totals["idle"] += 1
+    last_collect = max([s.get("lastTs") or 0 for s in sources] or [0])
+    return JSONResponse({
+        "version": VERSION,
+        "updatedAt": datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S"),
+        "intervalSec": 300,           # 与 refresh_loop 的 5 分钟一轮一致（2026-10-25 从 600 改）
+        "lastCollect": int(last_collect),
+        "totals": totals,
+        "sources": sources,
+    }, media_type="application/json; charset=utf-8")
 
 
 @app.get("/api/version")
@@ -6638,6 +7735,77 @@ async def api_autostart_set(request: Request, payload: dict = None):
     want = bool((payload or {}).get("enabled"))
     ok, msg = _autostart_set(want)
     return {"enabled": _autostart_enabled(), "ok": ok, "message": msg}
+
+@app.get("/api/digest")
+def api_digest(n: int = Query(DIGEST_COUNT, ge=1, le=30),
+               fmt: str = Query("json", enum=["json", "txt"])):
+    """「今日 60 秒」日报：本机当天池子里按栏目配额挑 n 条（默认 15）。
+
+    借鉴 vikiboss/60s 的「每天 60 秒读懂世界」，但**不请求任何外部接口**：
+    条目全部来自本机已经抓好的国内 / 热榜 / 国际三个板块，
+    与右下角气泡用的是同一个挑选器（`_pick_balloon_items`），口径不会分叉。
+    `fmt=txt` 直接给可粘贴的纯文本（页面「复制」按钮用的就是它）。
+    """
+    items = _daily_digest(n)
+    head, text = _digest_text(items)
+    if fmt == "txt":
+        return PlainTextResponse(head + "\n" + text,
+                                 media_type="text/plain; charset=utf-8")
+    return JSONResponse({"version": VERSION, "head": head, "count": len(items),
+                         "at": int(time.time()), "lines": _digest_lines(items),
+                         "text": text},
+                        media_type="application/json; charset=utf-8")
+
+
+@app.get("/api/notify")
+def api_notify_get(request: Request):
+    """读通知设置（夜间免打扰 / 每日速览），界面开关回显用。
+
+    【2026-10-25 待办 #65】多带一份 `balloon`：最近 12 条气泡投放决定（播了几条 / 为什么没播）。
+    只增不减，页面读的还是原来那几项；排查"气泡怎么不响了"时不用去翻 hotnews.log。
+    """
+    _deny = _guard_mutating(request)
+    if _deny is not None:
+        return _deny
+    return JSONResponse({**_notify_cfg(),
+                         "balloon": list(reversed(_BALLOON_TRACE))},
+                        media_type="application/json; charset=utf-8")
+
+
+@app.post("/api/notify")
+async def api_notify_set(request: Request, payload: dict = None):
+    """改通知设置，写本机私有配置 config.local.json 的 notify 段（不进版本库、不上传）。
+
+    每一项都有回退：时间格式不合法就不改这一项；把 quiet_on 关掉就回到"全天都弹"，
+    和改动前的行为完全一致。
+    """
+    _deny = _guard_mutating(request)
+    if _deny:
+        print("[warn] /api/notify 被拒绝：来源未通过本机校验")
+        return _deny
+    cur = _notify_cfg()
+    patch = {}
+    body = payload or {}
+    for k in ("quiet_on", "digest_on"):
+        if k in body:
+            patch[k] = bool(body[k])
+    for k in ("quiet_start", "quiet_end"):
+        if k in body:
+            v = str(body[k]).strip()
+            if _hm_to_min(v, -1) >= 0:
+                patch[k] = v
+    if "digest_times" in body:
+        raw = body["digest_times"]
+        parts = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+        ok = [str(x).strip() for x in parts if _hm_to_min(x, -1) >= 0]
+        if ok:
+            patch["digest_times"] = ",".join(ok)
+    if patch:
+        _save_notify_cfg(patch)
+        cur = _notify_cfg()
+        print("[ok] 通知设置已更新：%s" % json.dumps(patch, ensure_ascii=False))
+    return JSONResponse(cur, media_type="application/json; charset=utf-8")
+
 
 @app.post("/api/quit")
 def api_quit(request: Request):
@@ -6941,15 +8109,33 @@ https://gitcode.com/kele551/hotnews</p>
 def index(request: Request):
     v = _load_version()
     ssr = ""
-    tpl = _html_template("index.html")      # 【修 低-8】启动时读过一次就不再读盘
+    tpl = _html_template("index.html")      # 【修 低-8】读过一次就走缓存（文件改了会自动重读）
     if tpl:
+        # 【2026-10-24 修「关掉窗口再打开，又像重新加载了一遍」】
+        # 原来首屏塞的是 `PRELOAD["cn"][:60]` —— 那是**没去重、没合事件、没排序**的原始前 60 条；
+        # 而页面一起来，JS 立刻拉的是 `/api/news?region=cn&limit=200`（同标题去重 + 同一件事合并 +
+        # 热榜前置 + 按时间排）。两份必然不同 → 每次打开都要"先画一版、再推翻重画一版"，
+        # 用户看到的就是"又在重新加载"。
+        # 现在首屏直接调**同一个** api_news（FastAPI 的装饰器原样返回函数，可以当普通函数调），
+        # 数据与前端那次拉取逐条一致，前端 sig 判等后就不再重绘 —— 一次到位。
+        # 上限取 NEWS_LIMIT_MAX，与前端写死的 limit=200 同值；哪天改常量也不会再错开。
+        try:
+            _first = json.loads(api_news(region="cn", q="", limit=NEWS_LIMIT_MAX).body)
+            _items = _first.get("items") or []
+        except Exception as _e:
+            # 兜底：这条路径挂了也不能让首屏空着，退回原来的原始预热表
+            print("[warn] 首屏 SSR 复用 /api/news 失败，退回预热表前 %d 条: %s" % (60, _e))
+            _items = PRELOAD.get("cn", [])[:60]
         payload = {
             "version": VERSION,
             "region": "cn",
             # 【修 高-4】有副作用的接口（退出/更新/开机自启）要带这个令牌
             "token": TOKEN,
             # 把预热好的条目直接塞进首屏，打开页面立刻有内容，不用等 JS 再拉一次
-            "items": PRELOAD.get("cn", [])[:60],
+            "items": _items,
+            # 来源上色表：模块级常量，和 /api/news 回带的是同一份，
+            # 首屏那批卡片一次就染对颜色，不会"先灰一下再上色"
+            "src_hues": SRC_HUES,
         }
         # 【修 高-1】首屏这几条的图片域名也登记进 /img 白名单
         _note_item_hosts(payload["items"])
@@ -6965,28 +8151,40 @@ def index(request: Request):
 
 
 # 【2026-10-09 修 低-8】静态 HTML 模板缓存：`/` 与 `/world` 原来**每个请求都读一次盘**
-# （首页每次刷新都重新读 30KB 的 index.html）。模板是随程序分发的静态资源，
-# 启动时读一次就够；改了模板需要重启程序（对单文件 exe 而言本来也是这样）。
+# （首页每次刷新都重新读 90KB 的 index.html）。模板是随程序分发的静态资源，不必每请求解码一遍。
+# 【2026-10-25 改】缓存改成**认文件的 mtime+大小**：每次请求只做一次 os.stat（微秒级），
+#   文件没变直接用缓存，变了立刻重读。理由：
+#     · 维护者在源码态改 static/ 里的模板，原来要重启程序才看得见，改一次等一次；
+#     · 打包态的「手工补丁」通道（直接编辑 %LOCALAPPDATA%\hotnews\static-<版本>\ 里那份 html，
+#       不用重新打包）原来也必须重启才生效 —— 现在刷新页面就生效。
+#   仍然是"不重复解码同一个文件"，低-8 那次要省的部分没丢。
 _HTML_TPL = {}
 
 
 def _html_template(name):
-    """读并缓存 static/<name>；读不到返回空串（调用方各自兜底）。
+    """读 static/<name>（带缓存）；读不到返回空串（调用方各自兜底）。
 
     【2026-10-18 修】读失败**不再缓存空串**：原来一次读失败就把 "" 永久记住，
     即使文件后来回来了（或换了稳定目录）页面也一直是空的，只能重启程序。
     现在每次都重试，成功后才进缓存。
     """
-    if _HTML_TPL.get(name):
-        return _HTML_TPL[name]
     for d in (STATIC_DIR, os.path.join(BASE_DIR, "static")):
+        p = os.path.join(d, name)
         try:
-            with open(os.path.join(d, name), "r", encoding="utf-8") as f:
+            st = os.stat(p)
+        except Exception:
+            continue
+        mark = (d, st.st_mtime_ns, st.st_size)
+        old = _HTML_TPL.get(name)
+        if old and old[0] == mark:
+            return old[1]
+        try:
+            with open(p, "r", encoding="utf-8") as f:
                 tpl = f.read()
         except Exception:
             continue
         if tpl:
-            _HTML_TPL[name] = tpl
+            _HTML_TPL[name] = (mark, tpl)
             return tpl
     return ""
 

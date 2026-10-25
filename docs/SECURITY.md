@@ -1,6 +1,6 @@
 # 安全政策（SECURITY）
 
-作者：**海风（kele551）** · 仓库：https://gitee.com/kele551/hotnews
+作者：**海风（kele551）** · 仓库：https://gitcode.com/kele551/hotnews
 
 hotnews（热点新闻检索）是一个**只在本机运行**的新闻聚合器：默认只监听 `127.0.0.1`，
 处理的内容是各站公开的新闻标题、摘要与链接，不涉及用户账号与隐私数据。

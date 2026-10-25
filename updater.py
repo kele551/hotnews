@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
+# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
 """
 hotnews 自动更新模块
 --------------------------------------------------------------
 版本来源：Gitee 仓库的 version.json（国内下载稳定，GitHub 仅作镜像）
-  https://raw.giteeusercontent.com/kele551/hotnews/raw/master/version.json
+  https://gitcode.com/api/v5/repos/kele551/hotnews/raw/version.json?ref=main
 
 version.json 结构（含 launcher 字段才支持自动下载）：
   {
     "version": "1.2.0",
     "launcher": {
-      "url":    "https://gitee.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
+      "url":    "https://gitcode.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
       "sha256": "大写十六进制，64 位",
       "size":   14234524
     },
@@ -40,15 +40,12 @@ try:
 except ImportError:
     httpx = None
 
-# 国内下载源：Gitee（raw.giteeusercontent.com 是 Gitee raw 的实际存储域名，国内直连稳定）
-REMOTE_VERSION_URL = "https://raw.giteeusercontent.com/kele551/hotnews/raw/master/version.json"
-REMOTE_VERSION_URL_ALT = "https://gitee.com/kele551/hotnews/raw/master/version.json"
-# 【2026-10-17】主源切到 GitCode（国内、快、下载数可统计）；上面两个保留兜底。
+# 【2026-10-23】按用户要求去掉 Gitee 兜底；主源 GitCode，兜底 GitHub。
 # GitCode 没有 Gitee 那种 raw 直链，用它的 API raw：/raw/version.json?ref=main
 REMOTE_VERSION_URL_GC = "https://gitcode.com/api/v5/repos/kele551/hotnews/raw/version.json?ref=main"
-# 【2026-10-09 修 低-4】GitHub 侧作为**第三候选**兜底：Gitee 万一取不到
-# （网络不通 / 内容审查 451 / 仓库临时维护），还能落到 GitHub 的 raw。
-# 三个候选都拿到 **原始字节** 后统一走同一套 Ed25519 验签，验不过就换下一个 ——
+# 【2026-10-09 修 低-4】GitHub 侧作为**兜底候选**：GitCode 万一取不到（网络不通 /
+# 仓库临时维护），还能落到 GitHub 的 raw。
+# 候选都拿到 **原始字节** 后统一走同一套 Ed25519 验签，验不过就换下一个 ——
 # 所以加这个候选不会削弱升级安全（没有私钥照样签不出来）。
 # ⚠ GitHub 侧必须也放**完整版** version.json（带 launcher）+ 与之配套的 version.json.sig，
 #   否则验签必失败。现在 GitHub 仓库里那份是精简版（只有 version 字段），
@@ -172,7 +169,7 @@ def fetch_remote():
     _last_reason["why"] = ""
     # 【2026-10-09 修 低-4】三个候选按顺序试：Gitee 主地址 → Gitee 备用地址 → GitHub 兜底。
     # 每个都要求「HTTP 200 + Ed25519 验签通过」才采用，任一环节不过就换下一个。
-    for url in (REMOTE_VERSION_URL_GC, REMOTE_VERSION_URL, REMOTE_VERSION_URL_ALT, REMOTE_VERSION_URL_GH):
+    for url in (REMOTE_VERSION_URL_GC, REMOTE_VERSION_URL_GH):
         try:
             # trust_env=False：不走系统/环境代理，直连 Gitee 更快更稳（同 server._fetch）
             # verify=_updater_verify()：见上面注释 —— certifi 文件被清走时自动退到系统证书库。

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
+# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
 r"""
 hotnews 打包脚本 —— 产出两种包
   1) hotnews-vX.zip                    源码包（需系统 Python，手动 pip install）

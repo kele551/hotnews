@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitee.com/kele551/hotnews
+# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
 """生成 hotnews 图标：参考经典「NEWS 报纸」造型，做**镂空 + 立体感**版。
 
 用户要求：

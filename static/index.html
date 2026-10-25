@@ -1,544 +1,1124 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>热点新闻检索</title>
+<!--
+  【2026-10-24 UI 整改】三栏布局（栏目 / 列表 / 状态），石墨灰暗色为默认，可切亮色。
+  硬约束（见工作区《实施任务书》第 0 节）：
+    · 不引任何外部资源（无 CDN / 在线字体 / 图标字体），图标一律内联 SVG 或字符；
+    · CSS 用设计令牌（--bg / --card / --txt …），组件里不写死颜色；
+    · 服务端注入的首屏占位标记（SSR 数据）必须原样保留，写法见 <script> 第一行。
+-->
 <style>
+  /* ===== 设计令牌（四款软件共用一套，本程序只改 --accent） ===== */
   :root{
-    --primary:#1a4d8f;
-    --accent:#e8632f;
-    --bg:#f4f6fa;
-    --card:#ffffff;
-    --line:#e3e8f0;
-    --text:#1c2430;
-    --muted:#6b7789;
+    --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+    --bg:#171a20; --bg-1:#1c2027; --card:#20252d; --card-2:#262d37;
+    --line:#303844; --line-2:#3e4856;
+    --txt:#e7ebf1; --txt-2:#a3aebe; --txt-3:#76818f;
+    --ok:#3ecf8e; --warn:#f0b429; --danger:#f2555a; --info:#4f8cff;
+    --accent:#ef6a3a; --accent-ink:#2a0f05;
+    --fs-title:20px; --fs-h:14px; --fs-body:13px; --fs-meta:12px; --fs-micro:11px;
+    --r-card:10px; --r-btn:8px; --r-pill:999px;
+    --shadow-1:0 1px 0 rgba(0,0,0,.18); --shadow-2:0 14px 40px rgba(0,0,0,.45);
+    --sw-knob:#fff; --top-h:64px;
+    /* 来源标签配色（2026-10-25 加）：每家媒体一个固定色相，整页同色。
+       只存"这一家该多亮/多艳"，色相由 JS 按名字算出来塞进 --sh。
+       暗底要提亮、浅底要压暗，所以这几档深浅分开配，别拿一套值硬吃两个主题。 */
+    --src-s:50%; --src-l:70%; --src-b:36%; --src-bg:.12;
+    /* 浏览器自己画的那些东西（滚动条、表单控件、日期/下拉弹层）也一起跟主题；
+       不加这行就是"暗色页面 + 亮色滚动条"，看着像没做完。2026-10-24 四款一起补。 */
+    color-scheme:dark;
   }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{
-    font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;
-    background:var(--bg);color:var(--text);
-    font-size:19px;line-height:1.7;
-    -webkit-font-smoothing:antialiased;
-  }
-  header{
-    background:var(--card);border-bottom:1px solid var(--line);
-    padding:22px 32px;position:sticky;top:0;z-index:50;
-  }
-  .hd-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
-  h1{font-size:30px;font-weight:700;letter-spacing:1px}
-  h1 span{color:var(--accent)}
-  .badge{
-    background:#eaf0fa;color:var(--primary);border-radius:999px;
-    padding:4px 14px;font-size:15px;font-weight:600;
-  }
-  .spacer{flex:1}
-  .seg{display:flex;background:#eef1f6;border-radius:10px;padding:4px}
-  .seg button{
-    border:0;background:transparent;color:var(--muted);
-    font-size:17px;font-weight:600;padding:7px 20px;border-radius:8px;cursor:pointer;
-    font-family:inherit;transition:.15s;
-  }
-  .seg button.on{background:var(--card);color:var(--primary);box-shadow:0 1px 4px rgba(0,0,0,.08)}
-  .toolbar{
-    display:flex;gap:14px;align-items:center;flex-wrap:wrap;
-    margin-top:16px;
-  }
-  input[type=search],select{
-    font-family:inherit;font-size:17px;padding:9px 14px;
-    border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--text);
-    outline:none;
-  }
-  input[type=search]{min-width:300px;flex:0 1 360px}
-  input[type=search]:focus,select:focus{border-color:var(--primary)}
-  button.act{
-    font-family:inherit;font-size:17px;font-weight:600;cursor:pointer;
-    padding:9px 20px;border-radius:9px;border:1px solid var(--line);
-    background:var(--card);color:var(--text);transition:.15s;
-  }
-  button.act:hover{border-color:var(--primary);color:var(--primary)}
-  button.act.primary{background:var(--primary);color:#fff;border-color:var(--primary)}
-  button.act.primary:hover{background:#153f74}
-  button.act.quit{color:#9c5237;border-color:#eed6cc;padding:9px 16px;margin-left:auto}
-  button.act.quit:hover{background:#fdf2ee;border-color:var(--accent);color:var(--accent)}
-  .meta{color:var(--muted);font-size:15px}
-  main{padding:26px 32px 60px}
-  #grid{display:block}
-  .grid{
-    display:grid;gap:22px;
-    grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
-  }
-  /* 区块标题（实时热榜 / 更多新闻） */
-  .sech{font-size:22px;font-weight:700;color:var(--text);margin:4px 0 16px;
-    padding-left:11px;border-left:4px solid var(--accent)}
-  .sech:not(:first-child){margin-top:34px}
-  .card{
-    background:var(--card);border:1px solid var(--line);border-radius:14px;
-    overflow:hidden;display:flex;flex-direction:column;
-    transition:transform .16s ease, box-shadow .16s ease;
-    animation:cardin .32s ease both;
-  }
-  .card:hover{transform:translateY(-3px);box-shadow:0 10px 26px rgba(26,77,143,.16)}
-  @keyframes cardin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-  .thumb{display:block;height:190px;background:#eceff4;position:relative;overflow:hidden;text-decoration:none}
-  .thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s ease}
-  .card:hover .thumb img{transform:scale(1.045)}
-  /* 【2026-10-12 美化】图片经 /img 代理加载失败（断链/防盗链/线路抖动）时不留白块：
-     onerror 里把图撤掉、给外层 .thumb 补上品牌渐变色块与站名缩写（见 imgFail）。 */
-  .thumb img{animation:imgfade .35s ease both}
-  @keyframes imgfade{from{opacity:0}to{opacity:1}}
-  /* 无题图的条目：不摆「缺失」占位，改用品牌色块 + 分类字，视觉上仍是完整卡片 */
-  .thumb.ph{
-    height:104px;background:linear-gradient(118deg,#16406f 0%,#2b6bb0 58%,#3f83c9 100%);
-    display:flex;align-items:center;justify-content:center;
-  }
-  /* 【2026-10-12 美化】图片加载失败的兜底：同款渐变但**保持 190px 高度**，
-     不让单张坏图把整行卡片拉矮（.ph 是给「本来就无图」的紧凑块用的）。 */
-  .thumb.broken{
-    background:linear-gradient(118deg,#16406f 0%,#2b6bb0 58%,#3f83c9 100%);
-    display:flex;align-items:center;justify-content:center;
-  }
-  .thumb.ph i,.thumb.broken i{
-    font-style:normal;font-size:25px;font-weight:800;color:rgba(255,255,255,.94);
-    letter-spacing:9px;text-indent:9px;white-space:nowrap;
-  }
-  .thumb.ph::after{
-    content:"";position:absolute;left:16px;bottom:12px;width:26px;height:3px;
-    background:var(--accent);border-radius:2px;
-  }
-  .body{padding:16px 18px 18px;display:flex;flex-direction:column;gap:9px;flex:1}
-  .tags{display:flex;gap:8px;align-items:center;font-size:14px}
-  .tag{background:#eef1f6;color:var(--muted);border-radius:5px;padding:2px 9px}
-  .tag.cls{background:#fdeee5;color:var(--accent);font-weight:600}
-  /* 【2026-10-12 美化】标题最多 3 行、摘要最多 2 行，超出省略 —— 超长标题不再
-     把同一行卡片撑出参差高度，整屏网格对得齐，扫读节奏更稳。 */
-  .card h2{font-size:20px;font-weight:700;line-height:1.5;
-    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-  .card h2 a{color:inherit;text-decoration:none}
-  .card h2 a:hover{color:var(--primary)}
-  .desc{font-size:16px;color:var(--muted);line-height:1.6;flex:1;
-    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-  .time{font-size:14px;color:#9aa4b2}
-  .empty{padding:90px 0;text-align:center;color:var(--muted);font-size:19px}
-  /* 国际板块译文补齐进度提示：说明「为什么还有英文」并给出一键解决办法 */
-  .transbar{
-    background:#fff7f2;border:1px solid #f6d9c7;border-left:4px solid var(--accent);
-    border-radius:9px;padding:11px 16px;color:#8a4a24;font-size:15px;line-height:1.6;
-    margin-bottom:18px;
-  }
-  .transbar b{color:#6d3717}
-  #toast{
-    position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(20px);
-    background:#1c2430;color:#fff;padding:12px 24px;border-radius:10px;font-size:16px;
-    opacity:0;pointer-events:none;transition:.25s;z-index:99;
-  }
-  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-  .ft{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);
-    text-align:center;color:var(--muted);font-size:14px;line-height:1.9}
-  .ft a{color:var(--primary);text-decoration:none}
-  .ft a:hover{text-decoration:underline}
-  /* 实时热点：排名列表（文本榜，带热度），前 3 名用强调色 */
-  .hotlist{list-style:none;display:flex;flex-direction:column;gap:10px;max-width:900px}
-  .hotrow{display:flex;gap:18px;align-items:center;background:var(--card);
-    border:1px solid var(--line);border-radius:12px;padding:14px 20px;transition:transform .14s ease,box-shadow .14s ease}
-  .hotrow:hover{transform:translateX(3px);box-shadow:0 6px 18px rgba(26,77,143,.10)}
-  .rank{font-size:25px;font-weight:800;color:var(--muted);min-width:40px;text-align:center;
-    font-variant-numeric:tabular-nums}
-  .hotrow:nth-child(1) .rank{color:var(--accent)}
-  .hotrow:nth-child(2) .rank{color:#e8975a}
-  .hotrow:nth-child(3) .rank{color:#e8b95a}
-  .hmain{flex:1;display:flex;flex-direction:column;gap:7px;min-width:0}
-  .htitle{font-size:20px;font-weight:700;color:var(--text);text-decoration:none;line-height:1.5;
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .htitle:hover{color:var(--primary)}
-  .hmeta{display:flex;gap:10px;align-items:center;font-size:14px;color:var(--muted)}
-  .heat{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
-  /* 多平台热榜：按平台分组 + 平台标 */
-  .plat{margin-bottom:8px}
-  .sub{font-size:16px;font-weight:700;color:var(--text);margin:18px 0 12px;
-    display:flex;align-items:center;gap:8px;scroll-margin-top:150px}
-  .sub .cnt{font-size:13px;font-weight:600;color:var(--muted);background:var(--line);
-    border-radius:10px;padding:1px 9px}
-  .src{font-size:12px;font-weight:700;padding:1px 9px;border-radius:10px;color:#fff;white-space:nowrap}
-  .src-澎湃新闻{background:#d0021b}
-  .src-红星新闻{background:#c0392b}
-  .src-凤凰网{background:#b8860b}
-  .src-中新社·国际{background:#2b6cb0}
-  /* 【2026-10-09】热榜出处行：「来源：凤凰网热榜 · 第4名」 */
-  .srcline{font-size:14px;color:var(--muted);display:inline-flex;align-items:center;gap:2px}
-  /* 【2026-10-12 美化】栏目速航 chips：全部分类视图顶部一条，点击平滑滚到对应区块 */
-  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
-  .chip{
-    font-size:14px;font-weight:600;color:var(--muted);cursor:pointer;
-    background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 15px;
-    transition:.15s;font-family:inherit;
-  }
-  .chip:hover{color:var(--primary);border-color:var(--primary);transform:translateY(-1px)}
-  /* 【2026-10-12 美化】回顶部悬浮按钮：长列表滚下去后一键回来（滚动超过 600px 才浮现） */
-  #toTop{
-    position:fixed;right:26px;bottom:34px;z-index:60;width:44px;height:44px;border-radius:50%;
-    border:1px solid var(--line);background:var(--card);color:var(--primary);cursor:pointer;
-    font-size:20px;line-height:1;box-shadow:0 6px 18px rgba(26,77,143,.18);
-    opacity:0;pointer-events:none;transform:translateY(8px);transition:.22s;
-  }
-  #toTop.show{opacity:1;pointer-events:auto;transform:none}
-  #toTop:hover{background:var(--primary);color:#fff}
-  @media (max-width:640px){
-    header{padding:16px 18px}
-    h1{font-size:24px}
-    main{padding:18px}
-    .grid{grid-template-columns:1fr}
-    input[type=search]{min-width:0;width:100%}
+  [data-theme="light"]{
+    --bg:#f3f5f9; --bg-1:#e9edf4; --card:#ffffff; --card-2:#f7f9fc;
+    --line:#e2e7ef; --line-2:#d3dae5;
+    --txt:#17202b; --txt-2:#5b6675; --txt-3:#8a96a5;
+    --ok:#12a150; --warn:#a86f00; --danger:#d13438; --info:#1a5fd0;
+    --accent:#c94a1a; --accent-ink:#fff;
+    --shadow-1:0 1px 0 rgba(16,30,54,.04); --shadow-2:0 18px 40px rgba(20,34,60,.14);
+    --sw-knob:#fff;
+    --src-s:56%; --src-l:33%; --src-b:74%; --src-bg:.08;
+    color-scheme:light;
   }
 
-/* 退出程序的整页提示（用户反馈"点了退出没反应"，其实是后台退了但页面没反馈） */
-#quitMask{position:fixed;inset:0;background:rgba(248,250,252,.94);z-index:999;
-  display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)}
-#quitMask .qm-card{background:#fff;border:1px solid #e6eaf0;border-radius:16px;
-  padding:38px 46px;text-align:center;box-shadow:0 12px 40px rgba(20,30,50,.10);max-width:460px}
-#quitMask .qm-ico{width:56px;height:56px;border-radius:50%;background:#e8f6ee;color:#2f9e5f;
-  font-size:30px;line-height:56px;margin:0 auto 16px}
-#quitMask h3{margin:0 0 12px;font-size:20px;color:#1a202c}
-#quitMask p{margin:6px 0;color:#4a5568;font-size:14px;line-height:1.7}
-#quitMask .qm-sub{color:#8896ab;font-size:13px;margin-top:12px}
-#quitMask button{margin-top:20px;padding:10px 26px;border:1px solid #cfd8e3;background:#fff;
-  border-radius:9px;font-size:14px;color:#2b6cb0;cursor:pointer}
-#quitMask button:hover{background:#f2f7fd;border-color:#2b6cb0}
+  /* ===== 基础 ===== */
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:var(--fs-body)/1.5 var(--font);-webkit-font-smoothing:antialiased}
+  h1,h2,h3,p,ol,ul{margin:0;padding:0}
+  a{color:inherit}
+  button,select,input{font:inherit;color:inherit;font-family:inherit}
+  button{cursor:pointer;background:none;border:0}
+  input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+  ::selection{background:color-mix(in srgb,var(--accent) 35%,transparent)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:8px;border:2px solid var(--bg)}
+  ::-webkit-scrollbar-track{background:transparent}
+  .muted{color:var(--txt-3)}
+  .xs{font-size:var(--fs-micro)}
+  .up{letter-spacing:.04em;text-transform:uppercase}
+  .hide{display:none !important}
+  kbd{font:500 10px/1 var(--mono);color:var(--txt-3);border:1px solid var(--line-2);
+    border-radius:5px;padding:3px 5px;background:var(--card)}
+
+  /* ===== 顶栏 ===== */
+  .top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    padding:12px 20px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;z-index:20;min-height:var(--top-h);
+    background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(12px)}
+  .brand{display:flex;align-items:center;gap:11px;min-width:0}
+  .logo{width:34px;height:34px;flex:none;border-radius:var(--r-btn);background:var(--accent);
+    color:var(--accent-ink);display:grid;place-items:center;font-weight:700;font-size:16px}
+  .brand h1{font-size:var(--fs-title);font-weight:650;letter-spacing:.2px;white-space:nowrap}
+  .brand h1 span{color:var(--accent)}
+  .brand p{color:var(--txt-3);font-size:var(--fs-micro);margin-top:1px;white-space:nowrap}
+  .top-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+
+  /* ===== 线段控件 ===== */
+  .seg{display:inline-flex;background:var(--card-2);border:1px solid var(--line);
+    border-radius:var(--r-btn);padding:3px;gap:2px}
+  .seg button{border-radius:6px;padding:4px 13px;font-size:var(--fs-meta);font-weight:600;
+    color:var(--txt-2);transition:background .15s,color .15s}
+  .seg button:hover{color:var(--txt)}
+  .seg button.on{background:var(--card);color:var(--accent);box-shadow:var(--shadow-1)}
+  .seg.sm button{padding:3px 9px;font-size:var(--fs-micro)}
+
+  /* ===== 按钮 ===== */
+  .btn{height:30px;padding:0 12px;border-radius:var(--r-btn);border:1px solid var(--line);
+    background:var(--card-2);color:var(--txt);font-size:var(--fs-meta);
+    display:inline-flex;align-items:center;gap:6px;transition:background .15s,border-color .15s,color .15s}
+  .btn:hover{border-color:var(--line-2);background:var(--card)}
+  .btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-ink);font-weight:600}
+  .btn.primary:hover{filter:brightness(1.07)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--txt-2)}
+  .btn.ghost:hover{color:var(--txt);background:var(--card-2)}
+  .btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--line))}
+  .btn.danger:hover{background:color-mix(in srgb,var(--danger) 12%,transparent)}
+  .btn.sm{height:26px;padding:0 9px;font-size:var(--fs-micro)}
+  .btn.wide{width:100%;justify-content:center;margin-top:8px}
+  .btn:disabled{opacity:.55;cursor:default}
+
+  /* ===== 状态胶囊 ===== */
+  .pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;
+    border-radius:var(--r-pill);border:1px solid var(--line);font-size:var(--fs-micro);
+    color:var(--txt-2);white-space:nowrap;background:var(--card-2)}
+  .pill i{width:6px;height:6px;border-radius:50%;background:var(--txt-3);flex:none}
+  .pill.ok i{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 18%,transparent)}
+  .pill.warn i{background:var(--warn);box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 18%,transparent)}
+  .pill.bad i{background:var(--danger);box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 18%,transparent)}
+
+  /* ===== 卡片容器 ===== */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);
+    padding:14px;box-shadow:var(--shadow-1)}
+  .card-h{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .card-h h2{font-size:var(--fs-h);font-weight:600}
+  .card-h .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+  /* ===== 句子式设置行（整行可点） ===== */
+  .set{display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid var(--line);
+    width:100%;text-align:left;cursor:pointer;border-radius:0;color:inherit}
+  .set:first-of-type{border-top:0;padding-top:2px}
+  .set .txt{flex:1;min-width:0}
+  .set .txt b{display:block;font-size:var(--fs-body);font-weight:550}
+  .set .txt span{display:block;color:var(--txt-3);font-size:var(--fs-meta);margin-top:2px}
+  .set .ctl{align-self:center;flex:none;display:flex;align-items:center;gap:8px}
+  .set:hover .txt b{color:var(--txt)}
+  label.set{cursor:pointer}
+
+  /* ===== 开关 ===== */
+  /* 2026-10-25 删除：原来这里是一对胶囊开关（.sw）的样式，服务「只显示订阅命中」
+     和「气泡只在命中时弹」。两个开关随搜索/订阅功能一起取消；开机自启用的是原生 checkbox。 */
+
+  /* ===== 布局：三栏 ===== */
+  .wrap{display:grid;grid-template-columns:200px minmax(0,1fr) 280px;gap:14px;
+    padding:16px 20px 40px;width:100%;max-width:1720px;margin:0 auto;align-items:start}
+  .col{display:flex;flex-direction:column;gap:14px;min-width:0}
+  .col-left,.col-right{position:sticky;top:calc(var(--top-h) + 12px)}
+
+  /* ===== 左栏：栏目 / 数据源 ===== */
+  .side-list{display:flex;flex-direction:column;gap:2px}
+  .side-item{display:flex;align-items:center;gap:8px;height:30px;padding:0 9px;border-radius:7px;
+    color:var(--txt-2);font-size:var(--fs-meta);text-align:left;width:100%;
+    transition:background .15s,color .15s}
+  .side-item:hover{background:var(--card-2);color:var(--txt)}
+  .side-item.on{background:color-mix(in srgb,var(--accent) 12%,transparent);
+    color:var(--accent);font-weight:600}
+  .side-item .n{margin-left:auto;font-size:var(--fs-micro);color:var(--txt-2);
+    font-variant-numeric:tabular-nums}
+  .side-item.on .n{color:color-mix(in srgb,var(--accent) 75%,var(--txt))}
+
+  /* ===== 中栏：工具条（排序 / 刷新 / 快捷键） =====
+     2026-10-25 用户要求「用户是看新闻的，不是来搜索的」→ 搜索框和关键词订阅整块收掉，
+     这一行只剩排序下拉、刷新和问号，input 那套样式跟着一起没了。 */
+  .searchrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  select{
+    height:32px;padding:0 11px;border-radius:var(--r-btn);
+    border:1px solid var(--line);background:var(--card-2);color:var(--txt);outline:none;
+    transition:border-color .15s}
+  select:focus{border-color:var(--accent)}
+  select{cursor:pointer}
+  .searchmeta{display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap}
+
+  /* 2026-10-25：搜索框与「关键词订阅」整块收掉后，中栏第一张卡只剩一行工具条。
+     原来为「三栏第一张卡等高」写的 min-height:252px 会把这张卡撑成一片空白，
+     正好撞上用户说的「版面太大」，所以这条等高规则一并撤掉。 */
+  .hidden-sel{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px}
+
+  /* ===== 中栏：今日 60 秒（2026-10-25 新增，借鉴 GitHub 上的 vikiboss/60s） =====
+     用户 2026-10-25 的原话：「大部分用户，不会特意去翻新闻看」——
+     所以首屏给一份"一分钟看完当天"的编号清单，不用搜索、不用翻页、不用设置任何东西。
+     条目由本机挑（服务端 /api/digest 复用气泡那套配额与去重），不请求任何外部接口。 */
+  .dgcard .dgh{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .dgcard .dgh b{font-size:var(--fs-h);font-weight:650}
+  .dgcard .dgh .right{margin-left:auto;display:flex;gap:6px}
+  .dglist{margin:10px 0 0;padding-left:26px;display:flex;flex-direction:column;gap:7px;
+    font-size:var(--fs-body);line-height:1.55}
+  .dglist li::marker{color:var(--txt-3);font-variant-numeric:tabular-nums}
+  .dglist a{color:var(--txt);text-decoration:none}
+  .dglist a:hover{color:var(--accent)}
+  .dglist .cls{color:var(--accent);font-weight:600;margin-right:5px}
+  .dglist .src{color:var(--txt-3);font-size:var(--fs-micro);margin-left:6px}
+  .dgcard.fold .dglist{display:none}
+
+  /* 「全网热榜 ×N」：同一条新闻同时上了几家实时热榜（服务端 cross_hot，判据与去重同源）。
+     多家榜同上榜 = 读者用点击投出来的真热点，卡片上标出来，用户一眼分得清主次。 */
+  .tag.xh{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 38%,var(--line));
+    background:color-mix(in srgb,var(--accent) 10%,transparent);font-weight:600}
+
+  /* ===== 中栏：新闻卡 ===== */
+  #grid{display:flex;flex-direction:column;gap:10px}
+  .sech{font-size:var(--fs-h);font-weight:650;margin:6px 0 2px;display:flex;align-items:center;gap:8px;
+    padding-left:9px;border-left:3px solid var(--accent)}
+  .sech:not(:first-child){margin-top:10px}
+  .sub{font-size:var(--fs-body);font-weight:650;color:var(--txt-2);margin:12px 0 2px;
+    display:flex;align-items:center;gap:8px;scroll-margin-top:calc(var(--top-h) + 12px)}
+  .sub .cnt{font-size:var(--fs-micro);font-weight:600;color:var(--txt-2);background:var(--card-2);
+    border:1px solid var(--line);border-radius:var(--r-pill);padding:1px 8px}
+  .newslist{display:flex;flex-direction:column;gap:10px}
+
+  .news{display:flex;align-items:flex-start;gap:12px;padding:11px 13px;
+    border:1px solid var(--line);border-radius:9px;background:var(--card);
+    transition:border-color .15s,transform .15s}
+  .news:hover{border-color:var(--line-2);transform:translateX(2px)}
+  .news.sel{outline:2px solid var(--accent);outline-offset:1px}
+  .news .rank{width:22px;flex:none;text-align:center;font-size:15px;font-weight:700;
+    color:var(--txt-3);font-variant-numeric:tabular-nums;padding-top:1px}
+  .news.hot .rank{color:var(--accent)}
+  .news .body{flex:1;min-width:0}
+  .news h3{font-size:var(--fs-h);font-weight:600;line-height:1.45;letter-spacing:.1px;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .news h3 a{text-decoration:none}
+  .news h3 a:hover{color:var(--accent)}
+  .news .desc{font-size:var(--fs-meta);color:var(--txt-2);margin-top:4px;
+    display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+  .news .meta{display:flex;align-items:center;gap:7px;margin-top:7px;
+    font-size:var(--fs-micro);color:var(--txt-2);flex-wrap:wrap}
+  .news .thumb2{width:112px;flex:none;aspect-ratio:16/9;border-radius:6px;overflow:hidden;
+    background:linear-gradient(118deg,var(--card-2),var(--line));display:block}
+  .news .thumb2 img{width:100%;height:100%;object-fit:cover;display:block;
+    animation:imgfade .3s ease both}
+  @keyframes imgfade{from{opacity:0}to{opacity:1}}
+  .news .thumb2 i{display:flex;width:100%;height:100%;align-items:center;justify-content:center;
+    font-style:normal;font-size:var(--fs-micro);font-weight:700;color:var(--txt-2);letter-spacing:.5px}
+  .tag{display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:5px;
+    font-size:10px;background:var(--card-2);border:1px solid var(--line);color:var(--txt-2);
+    white-space:nowrap}
+  .tag.cls{color:var(--txt-2);border-color:var(--line-2)}
+  .tag.fresh{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,var(--line))}
+
+  /* ===== 「同一件事，几家在报」（2026-10-25 新增）=====
+     服务端把折叠掉的兄弟稿挂在条目上（also / also_n，判据与去重完全同一套），
+     这里只负责那颗标记 + 展开后那几行"别家是怎么写的"。 */
+  button.tag.also{cursor:pointer;font:inherit;height:19px;transition:border-color .15s,color .15s}
+  button.tag.also:hover{border-color:var(--accent);color:var(--accent)}
+  button.tag.also i{font-style:normal;margin-left:3px;transition:transform .15s;display:inline-block}
+  button.tag.also[aria-expanded="true"] i{transform:rotate(180deg)}
+  .alsolist{display:none;margin-top:7px;border-left:2px solid var(--line-2);padding-left:10px}
+  .alsolist.on{display:block}
+  .alsolist a{display:flex;gap:8px;align-items:baseline;padding:3px 0;
+    font-size:var(--fs-small,12px);color:var(--txt-2);text-decoration:none;line-height:1.5}
+  .alsolist a:hover{color:var(--accent)}
+  .alsolist .lbl{flex:none;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:var(--fs-micro,10px);color:var(--txt-3);
+    border:1px solid var(--line);border-radius:4px;padding:0 5px;line-height:16px}
+  .alsolist .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .alsolist .tm{flex:none;font-size:var(--fs-micro,10px);color:var(--txt-3)}
+
+  /* ===== 来源上色（2026-10-25 加，用户口径：一家一个固定色，全页统一）=====
+     一家媒体一个色相（服务端 SRC_HUES 按配置顺序发牌，JS 塞进 --sh）。卡片上的来源、
+     「同一件事」展开行里的别家名字、热榜那行的「来源：XX热榜」徽章，同一个名字同一个颜色 ——
+     顺着颜色就能把"谁写的"对上，不用再逐字读那三个小字。
+     中性灰只留给分类、热度这些不是来源的标签。深浅两档走 :root / [data-theme="light"]
+     的 --src-* 令牌，暗底提亮、浅底压暗。
+     类名用 srctag 而不是 src：热榜那行的 .src 只管形状（内边距/加粗），颜色归 srctag 管，
+     两边叠着用（<b class="src srctag">）；万一没拿到色相，--sh 缺省 0 就是原来的红字口径。
+     加粗和 .src 一个口径 —— 10-24 那次用户就要过「来源站点用红字」，重点是"要显眼"。 */
+  .tag.srctag,.alsolist .lbl.srctag,.src.srctag{
+    color:hsl(var(--sh,0) var(--src-s) var(--src-l));
+    border-color:hsl(var(--sh,0) var(--src-s) var(--src-b));
+    background:hsl(var(--sh,0) var(--src-s) var(--src-l) / var(--src-bg))}
+  .tag.srctag,.alsolist .lbl.srctag{font-weight:700}
+  .alsolist a:hover .lbl.srctag{border-color:hsl(var(--sh,0) var(--src-s) var(--src-l))}
+
+  /* ===== 中栏：热榜行 ===== */
+  .hotlist{list-style:none;display:flex;flex-direction:column;gap:8px}
+  .hotrow{display:flex;gap:12px;align-items:center;padding:10px 13px;background:var(--card);
+    border:1px solid var(--line);border-radius:9px;transition:border-color .15s,transform .15s}
+  .hotrow:hover{border-color:var(--line-2);transform:translateX(2px)}
+  .hotrow .rank{font-size:15px;font-weight:700;color:var(--txt-3);min-width:22px;text-align:center;
+    font-variant-numeric:tabular-nums}
+  .hotrow.hot .rank{color:var(--accent)}
+  .hotrow .hmain{flex:1;display:flex;flex-direction:column;gap:5px;min-width:0}
+  .hotrow .htitle{font-size:var(--fs-h);font-weight:600;text-decoration:none;line-height:1.45;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .hotrow .htitle:hover{color:var(--accent)}
+  .hotrow .hmeta{display:flex;gap:8px;align-items:center;font-size:var(--fs-micro);color:var(--txt-2);
+    flex-wrap:wrap}
+  .hotrow .heat{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
+  .srcline{display:inline-flex;align-items:center;gap:4px}
+  .src{font-size:10px;font-weight:700;padding:1px 7px;border-radius:5px;
+    background:color-mix(in srgb,var(--danger) 10%,transparent);
+    border:1px solid color-mix(in srgb,var(--danger) 32%,var(--line));
+    color:var(--danger);white-space:nowrap}   /* 2026-10-24 用户要求：来源站点用红字 */
+
+  /* ===== 三态：空 / 骨架 / 错 ===== */
+  .empty{padding:44px 16px;text-align:center;color:var(--txt-2);font-size:var(--fs-body);
+    border:1px dashed var(--line-2);border-radius:var(--r-card);background:var(--card-2)}
+  .empty b{display:block;color:var(--txt-2);font-size:var(--fs-h);font-weight:600;margin-bottom:6px}
+  .empty .btn{margin-top:12px}
+  .sk-row{display:flex;gap:12px;align-items:center;padding:11px 13px;border:1px solid var(--line);
+    border-radius:9px;background:var(--card)}
+  .sk{background:linear-gradient(90deg,var(--line) 25%,var(--line-2) 37%,var(--line) 63%);
+    background-size:400% 100%;animation:sk 1.4s infinite;border-radius:5px;height:10px}
+  @keyframes sk{0%{background-position:100% 0}100%{background-position:-100% 0}}
+
+  .transbar{background:color-mix(in srgb,var(--accent) 8%,var(--card));
+    border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));
+    border-left:3px solid var(--accent);border-radius:8px;padding:9px 13px;
+    color:var(--txt-2);font-size:var(--fs-meta);line-height:1.6}
+  .transbar b{color:var(--txt)}
+
+  /* ===== 右栏：源健康度 ===== */
+  .srclist{display:flex;flex-direction:column;max-height:320px;overflow:auto;margin-right:-4px}
+  .srcrow{padding:8px 0}
+  .srcrow .txt b{font-size:var(--fs-meta);font-weight:600;display:flex;align-items:center;gap:6px}
+  .srcrow .txt span{font-size:var(--fs-micro);color:var(--txt-2);margin-top:1px}
+  .srcrow .pill{height:20px;padding:0 8px;font-size:10px}
+  .keys{display:flex;flex-direction:column;gap:7px;font-size:var(--fs-meta);margin-top:8px}
+  .keys > div{display:flex;justify-content:space-between;align-items:center}
+
+  /* ===== 页脚 / 浮层 ===== */
+  .ft{padding:10px 2px 0;border-top:1px solid var(--line);text-align:center;
+    color:var(--txt-3);font-size:var(--fs-micro);line-height:1.9}
+  .ft a{color:var(--txt-2);text-decoration:none}
+  .ft a:hover{color:var(--accent);text-decoration:underline}
+  #toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);opacity:0;
+    pointer-events:none;background:var(--card);border:1px solid var(--line-2);
+    box-shadow:var(--shadow-2);border-radius:9px;padding:10px 16px;font-size:var(--fs-meta);
+    max-width:min(680px,86vw);transition:opacity .2s,transform .2s;z-index:60}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+  #toast b{color:var(--accent)}
+  #toTop{position:fixed;right:22px;bottom:26px;z-index:50;width:40px;height:40px;border-radius:50%;
+    border:1px solid var(--line);background:var(--card);color:var(--txt-2);font-size:17px;
+    line-height:1;box-shadow:var(--shadow-2);opacity:0;pointer-events:none;
+    transform:translateY(8px);transition:opacity .2s,transform .2s,color .15s}
+  #toTop.show{opacity:1;pointer-events:auto;transform:none}
+  #toTop:hover{color:var(--accent);border-color:var(--accent)}
+
+  /* 退出程序的整页提示（用户反馈"点了退出没反应"，其实是后台退了但页面没反馈） */
+  #quitMask{position:fixed;inset:0;background:color-mix(in srgb,var(--bg) 92%,transparent);
+    z-index:999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)}
+  #quitMask .qm-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);
+    padding:32px 40px;text-align:center;box-shadow:var(--shadow-2);max-width:460px}
+  #quitMask .qm-ico{width:52px;height:52px;border-radius:50%;
+    background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok);
+    font-size:26px;line-height:52px;margin:0 auto 14px}
+  #quitMask h3{margin:0 0 10px;font-size:var(--fs-title);color:var(--txt)}
+  #quitMask p{margin:5px 0;color:var(--txt-2);font-size:var(--fs-meta);line-height:1.7}
+  #quitMask .qm-sub{color:var(--txt-3);font-size:var(--fs-micro);margin-top:10px}
+  #quitMask button{margin-top:18px;padding:8px 22px;border:1px solid var(--line-2);
+    background:var(--card-2);border-radius:var(--r-btn);font-size:var(--fs-meta);color:var(--txt)}
+  #quitMask button:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* ===== 响应式：<1180 收右栏，<920 单栏 ===== */
+  @media (max-width:1180px){
+    .wrap{grid-template-columns:190px minmax(0,1fr)}
+    .col-right{display:none}
+  }
+  @media (max-width:920px){
+    .wrap{grid-template-columns:1fr;padding:12px 12px 32px}
+    .col-left,.col-right{position:static}
+    .col-left .side-list{flex-direction:row;flex-wrap:wrap}
+    .col-left .side-item{width:auto;height:28px}
+    .col-left .hr{margin:8px 0}
+    .top{padding:10px 12px}
+    .brand p{display:none}
+    .news .thumb2{width:88px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
 </style>
+<script>
+/* 首屏防闪（2026-10-24 体检加）：<html> 上写死的是 data-theme="dark"，真正的主题
+   要等 body 末尾那段脚本才赋值 —— 系统浅色时打开会先黑一下再变白。这段在 </head>
+   前只读不写，取值口径和下面的 themePref() 保持一致（新键 ui-theme-mode 优先、
+   回落 hn_theme、都按 system 跟系统；?theme= 只做本次显示）。页尾脚本仍是最终裁决：
+   回显分段控件、写记忆都归它。同口径的实现在 LIVE直播源 页尾那份 bootstrap 里已有。 */
+(function(){
+  try{
+    var pref = null;
+    try{ var a = localStorage.getItem("ui-theme-mode");
+         if(a === "light" || a === "dark") pref = a; else if(a === "auto" || a === "system") pref = "system";
+    }catch(e){}
+    if(pref === null) try{ var h = localStorage.getItem("hn_theme");
+         if(h === "light" || h === "dark" || h === "system") pref = h;
+    }catch(e){}
+    if(pref === null) pref = "system";
+    var d;
+    if(pref === "light" || pref === "dark") d = (pref === "dark");
+    else { try{ d = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); }catch(e){ d = true; } }
+    var t = null;
+    try{ var q = new URLSearchParams(location.search).get("theme");
+         if(q === "light" || q === "dark") t = q;
+    }catch(e){}
+    if(t) d = (t === "dark");
+    document.documentElement.setAttribute("data-theme", d ? "dark" : "light");
+  }catch(e){}
+})();
+</script>
 </head>
 <body>
-<header>
-  <div class="hd-top">
-    <h1>热点新闻<span>检索</span></h1>
-    <span class="badge" id="verBadge">v<span id="ver">-</span></span>
-    <div class="spacer"></div>
-    <div class="seg" id="regionSeg">
-      <button data-r="cn" class="on">国内</button>
-      <button data-r="intl">国际</button>
+<header class="top">
+  <div class="brand">
+    <div class="logo">热</div>
+    <div>
+      <h1>热点新闻<span> 检索</span></h1>
+      <p>境内权威媒体聚合 · 只聚合标题与链接</p>
     </div>
   </div>
-  <div class="toolbar">
-    <input type="search" id="q" placeholder="搜索标题或摘要关键词…" autocomplete="off">
-    <select id="cls"><option value="">全部分类</option></select>
-    <select id="sort">
-      <option value="new">最新优先</option>
-      <option value="old">最早优先</option>
-    </select>
-    <label class="autostart" title="开机后在后台自动启动，这样点「打开」时页面是现成的、秒开"><input type="checkbox" id="autostart">开机启动</label>
-  <button class="act primary" id="reload">刷新</button>
-    <button class="act" id="checkUpdate" title="检查是否有新版本">检查更新</button>
-    <span class="meta" id="meta"></span>
-    <button class="act quit" id="quit" title="停止后台服务并退出程序">退出程序</button>
+  <div class="top-r">
+    <div class="seg" id="regionSeg">
+      <button type="button" data-r="cn" class="on">国内</button>
+      <button type="button" data-r="intl">国际</button>
+    </div>
+    <span class="pill" title="当前版本"><i></i>v<span id="ver">-</span></span>
+    <button class="btn ghost" id="themeBtn" title="切换明暗：暗色 → 亮色 → 跟随系统">◐</button>
+    <button class="btn" id="checkUpdate" title="检查是否有新版本">检查更新</button>
+    <button class="btn danger" id="quit" title="停止后台服务并退出程序">退出程序</button>
   </div>
 </header>
-<main><div id="grid"></div></main>
-<footer class="ft">热点新闻检索 · v<span id="ftVer">-</span> · 作者 海风（kele551） · <a href="https://github.com/kele551/hotnews" target="_blank" rel="noopener">github.com/kele551/hotnews</a></footer>
+
+<main class="wrap">
+  <!-- ============ 左栏：栏目（带计数） + 数据源状态 ============ -->
+  <aside class="col col-left">
+    <div class="card">
+      <div class="card-h"><h2>栏目</h2><span class="right muted xs" id="leftTotal">0 条</span></div>
+      <div class="side-list" id="clsList"></div>
+      <!-- 2026-10-25：「订阅命中」入口随关键词订阅一起取消（用户：看新闻的人不会去搜） -->
+      <!-- 分类下拉仍留在 DOM 里：render() 与既有逻辑都读它的值，左栏点击时同步它 -->
+      <select id="cls" class="hidden-sel" tabindex="-1" aria-hidden="true">
+        <option value="">全部分类</option>
+      </select>
+    </div>
+
+    <div class="card">
+      <div class="muted xs up">数据源</div>
+      <div style="margin-top:8px"><span class="pill" id="srcPill"><i></i>等待首轮抓取</span></div>
+      <p class="muted xs" id="srcWhen" style="margin-top:8px">—</p>
+    </div>
+  </aside>
+
+  <!-- ============ 中栏：工具条 + 卡片列表 ============
+       2026-10-25 用户定稿：「这个搜索栏要么精简，要么取消，用户是看新闻的，不是来搜索的」
+       → 搜索框、搜索范围（近 7/30 天归档）、关键词订阅卡整块收掉，这一张卡只剩排序 + 刷新。
+       服务端归档与 /api/search 保留（数据继续攒，将来要恢复入口是纯界面改动）。 -->
+  <section class="col col-mid">
+    <div class="card">
+      <div class="searchrow">
+        <select id="sort" title="排序方式">
+          <option value="new">最新优先</option>
+          <option value="old">最早优先</option>
+        </select>
+        <button class="btn primary" id="reload">刷新</button>
+        <button class="btn sm" id="helpBtn" title="也可以在页面任意位置按 ? 键">快捷键</button>
+      </div>
+      <div class="searchmeta">
+        <span class="muted xs" id="meta">—</span>
+      </div>
+    </div>
+
+    <!-- 今日 60 秒：本机当天要闻 15 条，一分钟看完（数据来自 /api/digest，不请求外部接口）。
+         没数据时整张卡隐藏，不会留一个空壳在首屏。 -->
+    <div class="card dgcard" id="dgCard" hidden>
+      <div class="dgh">
+        <b id="dgHead">今日 60 秒</b>
+        <span class="muted xs" id="dgSub">一分钟看完当天要闻 · 本机生成</span>
+        <span class="right">
+          <button type="button" class="btn sm ghost" id="dgCopy" title="复制纯文本，可直接粘贴到微信/备忘录">复制</button>
+          <button type="button" class="btn sm ghost" id="dgTog" title="收起只看标题">收起</button>
+        </span>
+      </div>
+      <ol class="dglist" id="dgList"></ol>
+    </div>
+
+    <div id="grid"></div>
+
+    <footer class="ft">热点新闻 · 作者 海风（kele551）　·　<a href="https://gitcode.com/kele551/hotnews" target="_blank" rel="noopener">gitcode.com/kele551/hotnews</a>　·　所有请求只在本机；本页没有任何外部资源</footer>
+  </section>
+
+  <!-- ============ 右栏：视图开关 + 源健康度 + 快捷键 ============ -->
+  <aside class="col col-right">
+    <div class="card">
+      <div class="card-h"><h2>程序设置</h2><span class="right pill"><i></i>本机</span></div>
+
+      <!-- 2026-10-25：「只显示订阅命中」「气泡只在命中时弹」两个开关随订阅功能一起取消。
+           气泡现在按栏目配额直投（头条 / 国内热榜 / 国际 / 科技 / 财经 / 娱乐），
+           不再有"命中"这个概念。 -->
+
+      <label class="set">
+        <div class="txt"><b>开机自启</b><span>开机后后台启动，点「打开」秒开</span></div>
+        <span class="ctl"><input type="checkbox" id="autostart"></span>
+      </label>
+
+      <!-- 2026-10-25 新增两项通知设置（借鉴 GitHub 上 sansan0/TrendRadar 的时段调度）。
+           都存在本机 config.local.json 的 notify 段，不进版本库、不上传；
+           关掉即回到改动前"全天照弹"的行为，随时可逆。 -->
+      <label class="set">
+        <div class="txt"><b>每日速览播报</b><span>早 8 点、晚 8 点各弹一次「今日 60 秒」</span></div>
+        <span class="ctl"><input type="checkbox" id="setDigest"></span>
+      </label>
+      <label class="set">
+        <div class="txt"><b>夜间免打扰</b><span>22:30–07:30 不弹气泡，新闻仍在页面里</span></div>
+        <span class="ctl"><input type="checkbox" id="setQuiet"></span>
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h2>源健康度</h2><span class="right muted xs">只读</span></div>
+      <div class="srclist" id="srcList"></div>
+      <button type="button" class="btn sm ghost wide" id="srcRefresh">刷新状态</button>
+    </div>
+
+    <div class="card">
+      <div class="muted xs up">快捷键</div>
+      <div class="keys">
+        <div><span class="muted">上一条 / 下一条</span><span><kbd>j</kbd> <kbd>k</kbd></span></div>
+        <div><span class="muted">打开选中</span><kbd>Enter</kbd></div>
+        <div><span class="muted">全部快捷键</span><kbd>?</kbd></div>
+      </div>
+    </div>
+  </aside>
+</main>
+
 <div id="toast"></div>
 <button id="toTop" title="回到顶部">↑</button>
 
 <script>
 const SSR = __SSR_DATA__;
-// 【2026-10-09 修 高-4】退出 / 更新安装 / 开机自启这三个有副作用的接口，
+// 【2026-10-09 修 高-4】退出 / 更新安装 / 开机自启 / 关键词订阅这几个有副作用的接口，
 // 服务端要求带上本机访问令牌（window.__SSR_DATA__.token，仅本机页面拿得到）。
 // 不带的话服务端一律 403 —— 这是防「随便一个网页用 <form> 就把程序关掉」的本地 CSRF。
 const POST_HEADERS = SSR.token ? {"X-HN-Token": SSR.token} : {};
-let state = { region: SSR.region || "cn", items: SSR.items || [], timer: null };
+let state = { region: SSR.region || "cn", items: SSR.items || [], newIds: new Set() };
+// 来源上色表（服务端 SRC_HUES：按"配置里第几家"发色相，见 server.py 的注释）。
+// 首屏那份随 SSR 一起到，之后每次 /api/news 回带时再对一遍；表里没有的名字退回按名字散列。
+let SRC_HUES = (SSR && SSR.src_hues) || {};
 
+function $(id){ return document.getElementById(id); }
+// 【2026-10-24 修「关掉再打开，首屏空十几秒」】
+// 页脚那个版本号元素在 UI 整改时被删掉了，但 JS 里还有两处硬写 $("ftVer").textContent。
+// 取不到元素就抛 TypeError，而这两处一次在 boot() 里、一次在 load() 里：
+//   boot() 被打断 → 首屏不画、不抓数据、右栏数据源一直「等待首轮抓取」；
+//   load() 被打断 → 点刷新显示「抓取失败」，列表要等 15 秒的静默刷新才出来。
+// 写文案这类只读展示统一走这里：元素不存在就当没事发生，别把整条启动链路带崩。
+function setTxt(id, txt){ const el = document.getElementById(id); if(el) el.textContent = txt; return el; }
+
+/* ================= 主题：暗色（默认石墨灰）/ 亮色 / 跟随系统 ================= */
+/* 【2026-10-24 修 主题两个键打架】右下角「外观」面板存的是 ui-theme-mode（auto|light|dark），
+   右栏「外观」分段控件存的是 hn_theme（system|light|dark）。原来两边各写各的：
+   分段控件点了"暗色"，刷新后面板那套按 ui-theme-mode=auto 又给判回亮色，
+   而分段控件回显的还是"暗色" —— 界面在说谎。现在统一：读的时候新键优先，
+   写的时候两个键一起写（system↔auto 互为别名），只有一个事实来源。 */
+const THEME_KEY = "hn_theme";
+const AP_KEY = "ui-theme-mode";
+const THEME_ORDER = ["dark", "light", "system"];
+function themePref(){
+  try{
+    const a = localStorage.getItem(AP_KEY);
+    if(a === "auto") return "system";
+    if(a === "light" || a === "dark") return a;
+  }catch(e){}
+  try{ const v = localStorage.getItem(THEME_KEY); if(v && THEME_ORDER.indexOf(v) >= 0) return v; }catch(e){}
+  // 默认跟随系统（原来默认 dark：既不跟系统、每次打开还会把 dark 回写进 localStorage）
+  return "system";
+}
+function sysDark(){
+  try{ return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); }
+  catch(e){ return true; }
+}
+function applyTheme(pref, remember){
+  if(remember !== false){
+    try{
+      localStorage.setItem(THEME_KEY, pref);
+      localStorage.setItem(AP_KEY, pref === "system" ? "auto" : pref);
+    }catch(e){}
+  }
+  const eff = pref === "system" ? (sysDark() ? "dark" : "light") : pref;
+  document.documentElement.setAttribute("data-theme", eff === "light" ? "light" : "dark");
+  // 两处入口同步回显：顶栏图标 + 右栏「外观」分段控件
+  const seg = $("themeSeg");
+  if(seg){
+    seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.t === pref));
+  }
+  const btn = $("themeBtn");
+  if(btn){
+    btn.textContent = pref === "light" ? "☀" : (pref === "system" ? "◐" : "☾");
+    btn.title = "当前：" + (pref === "light" ? "亮色" : (pref === "system" ? "跟随系统" : "暗色"))
+              + "（点一下换下一种）";
+  }
+}
+function cycleTheme(){
+  const cur = themePref();
+  applyTheme(THEME_ORDER[(THEME_ORDER.indexOf(cur) + 1) % THEME_ORDER.length]);
+}
+// ?theme=light|dark|system —— 便于截图与排查（也方便深链分享观感）
+(function initTheme(){
+  let pref = themePref();
+  let fromUrl = false;
+  try{
+    const q = new URLSearchParams(location.search).get("theme");
+    if(q && THEME_ORDER.indexOf(q) >= 0){ pref = q; fromUrl = true; }
+  }catch(e){}
+  // 【2026-10-24 三修】带 ?theme= 打开时**只当本次预览**, 不写回偏好。
+  // 原来这里 applyTheme(pref) 会把 URL 上那个值存进 hn_theme 和共享键 ui-theme-mode：
+  // 别人转发一条 ?theme=light 的链接、或者拿它截个图, 用户原来的"跟随系统"就被
+  // 静默钉成固定亮色, 而且下次打开还是亮色(intl.html 用的是 applyTheme(pref,false), 两页口径相反)。
+  applyTheme(pref, !fromUrl);
+  if(window.matchMedia){
+    try{ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      if(themePref() === "system") applyTheme("system", false);
+    }); }catch(e){}
+  }
+  const btn = $("themeBtn");
+  if(btn) btn.onclick = cycleTheme;
+  const seg = $("themeSeg");
+  if(seg) seg.addEventListener("click", e => {
+    const b = e.target.closest("button"); if(!b) return;
+    applyTheme(b.dataset.t);
+  });
+})();
+
+/* ================= 新增标记：和上次看到的条目 id 比 ================= */
+const LS_SEEN = "hn_seen_ids";
+// 首次进页面只记基线、不标「新增」：SSR 那批和紧接着的一次 /api/news 其实是同一批新闻，
+// 全都标上「新增」等于没意义。从第一次刷新之后新冒出来的条目才标（这才是「本次新增」）。
+let NEW_TAGGING = false;
+function noteNew(items){
+  const fresh = new Set();
+  let seen = new Set();
+  try{ seen = new Set(JSON.parse(localStorage.getItem(LS_SEEN) || "[]")); }catch(e){ seen = new Set(); }
+  const firstRun = seen.size === 0;      // 第一次打开不整屏标「新增」，否则满屏都是 🆕
+  if(!firstRun){
+    (items || []).forEach(it => { if(it && it.id && !seen.has(it.id)) fresh.add(it.id); });
+  }
+  (items || []).forEach(it => { if(it && it.id) seen.add(it.id); });
+  try{
+    const keep = [...seen].slice(-1200);
+    localStorage.setItem(LS_SEEN, JSON.stringify(keep));
+  }catch(e){}
+  return fresh;
+}
+
+/* ================= 小工具（沿用原有实现） ================= */
 function fmt(ts){
   // 【2026-10-09 修 中-1】源站没给发布时间时 published=0 → 明确写「时间未知」，
   // 不再显示成空白（空白容易让人误以为是"刚刚"或被渲染坏了）。
-  // 服务端也不再用"当前时刻"顶替（README 承诺：绝不伪造时间）。
   if(!ts) return "时间未知";
-  const d = new Date(ts*1000);
-  const diff = (Date.now() - ts*1000) / 1000;
+  const d = new Date(ts * 1000);
+  const diff = (Date.now() - ts * 1000) / 1000;
   let rel;
-  if(diff < 3600) rel = Math.max(1, Math.round(diff/60)) + " 分钟前";
-  else if(diff < 86400) rel = Math.round(diff/3600) + " 小时前";
-  else rel = Math.round(diff/86400) + " 天前";
-  return rel + " · " + d.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+  if(diff < 3600) rel = Math.max(1, Math.round(diff / 60)) + " 分钟前";
+  else if(diff < 86400) rel = Math.round(diff / 3600) + " 小时前";
+  else rel = Math.round(diff / 86400) + " 天前";
+  return rel + " · " + d.toLocaleString("zh-CN", {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"});
 }
 function fmtHeat(n){
   n = Number(n) || 0;
-  if(n >= 1e8) return (n/1e8).toFixed(1).replace(/\.0$/,"") + "亿";
-  if(n >= 1e4) return (n/1e4).toFixed(1).replace(/\.0$/,"") + "万";
+  if(n >= 1e8) return (n / 1e8).toFixed(1).replace(/\.0$/, "") + "亿";
+  if(n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, "") + "万";
   return String(n);
-}
-const EXCLUDED_CLS = new Set(["热榜","数码"]);  // 热榜置顶单独展示不入筛选；数码源已移除
-// 【2026-10-09 栏目定稿】国内 = 头条 / 科技 / 财经 / 娱乐 / 软件 / 热榜；
-// 国际 = 要闻 / 科技 / 财经 / 娱乐 / 体育 / 热榜（体育只有国际频道有）。
-// 这个数组只决定**下拉与分块标题的排序**，不是栏目白名单（栏目是跟着数据走的）；
-// 但它必须跟着定稿走：国内那一类民生栏目已整栏下线、国内也不再设体育栏目（国际频道照旧保留
-// 「要闻 / 体育」，本数组里的这两项只为国际栏排序），所以别把国内已经取消的栏目再列出来。
-//   头条：界面新闻 + 澎湃新闻 + 红星/凤凰实时热点并入（2026-10-09 按用户口径定名「头条」）
-//   财经：华尔街见闻 + 中新网·财经（＋标题命中财经特征词、被 _fix_finance_cls 改判过来的条目）
-//   娱乐：国内=凤凰娱乐+新浪娱乐+国际在线娱乐；国际=境内媒体报的国际娱乐 + CGTN文化
-//   要闻 / 体育：**只属于国际频道**（国内两者都没有），所以这里保留它们只为国际栏排序。
-const CLS_ORDER = ["头条","要闻","科技","软件","财经","娱乐","体育","国内","国际"];
-function buildClsOptions(){
-  const sel = document.getElementById("cls");
-  const cur = sel.value;
-  const set = [...new Set(state.items.map(i=>i.cls))].filter(Boolean).filter(c=>!EXCLUDED_CLS.has(c));
-  set.sort((a,b)=>{
-    const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
-    return (ia<0?99:ia) - (ib<0?99:ib);
-  });
-  sel.innerHTML = '<option value="">全部分类</option>' + set.map(c=>`<option>${esc(c)}</option>`).join("");
-  sel.value = set.includes(cur) ? cur : "";
 }
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 // 【2026-10-09 修 低-1】源站给的 link 只允许 http/https。
 // 原来只做 HTML 转义（esc），被篡改的 RSS 可以塞 javascript: 或 data: 链接，
 // 用户一点就在本程序页面的同源上下文里执行脚本。其余协议一律置 "#"。
-// 思路与后端 _norm_url 一致（那边用于图片地址，这里是跳转链接）。
 function safeLink(u){
   const s = String(u==null?"":u).trim();
   return /^https?:\/\//i.test(s) ? s : "#";
 }
 function toast(msg){
-  const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show");
-  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2200);
+  const t = $("toast"); if(!t) return;
+  t.innerHTML = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2600);
 }
-
 function shortLabel(s){
   s = String(s==null?"":s).trim();
   if(!s) return "·";
   if(/^[A-Za-z0-9 .\-_/]+$/.test(s)){
     const parts = s.split(/[\s\-_/]+/).filter(Boolean);
-    return (parts.length>1 ? parts.slice(0,2).map(p=>p[0]).join("") : s.slice(0,2)).toUpperCase();
+    return (parts.length > 1 ? parts.slice(0,2).map(p => p[0]).join("") : s.slice(0,2)).toUpperCase();
   }
   return s.slice(0,3);
 }
-// 【2026-10-12 美化】缩略图经 /img 代理加载失败时的兜底：撤掉坏图，外层换成
-// 品牌渐变色块 + 站名缩写（.thumb.broken，与「本来无图」同款观感、保持 190px 高度）。
+// 【2026-10-25 加】来源上色：站名 → 一个固定色相（0~359，空名回 -1 表示不上色）。
+// 首选服务端那张表（SRC_HUES，按配置顺序发牌，33 家在 360° 上近似均匀，见 server.py 的说明）；
+// 表里没有的名字（以后新上的热榜媒体、归档里的老源）退回按名字散列 —— 也永远同一个颜色，
+// 只是不保证和别家挨多远。散列用 FNV-1a 乘黄金角，名字本身决定，刷新/换设备都不变。
+function srcHue(s){
+  const k = String(s==null?"":s).trim();
+  if(!k) return -1;
+  const v = SRC_HUES[k];
+  if(typeof v === "number" && v >= 0 && v < 360) return v;
+  let h = 2166136261;
+  for(let i=0;i<k.length;i++){ h ^= k.charCodeAt(i); h = (h * 16777619) >>> 0; }
+  return Math.round(((h % 256) * 137.508) % 360);
+}
+// 拼出可直接塞进标签的 class 尾巴 + style；没名字时返回空串，保持原来的中性灰。
+function srcMark(label){
+  const v = srcHue(label);
+  return v < 0 ? {cls:"", sty:""} : {cls:" srctag", sty:` style="--sh:${v}"`};
+}
+// 【2026-10-12 美化】缩略图经 /img 代理加载失败时的兜底：撤掉坏图，
+// 换成站名缩写色块（固定比例不跳动）。
 function imgFail(im){
-  const th = im && im.closest ? im.closest(".thumb") : null;
+  const th = im && im.closest ? im.closest(".thumb2") : null;
   if(!th) return;
+  const lbl = im.dataset ? (im.dataset.l || "·") : "·";
   im.remove();
-  th.classList.remove("ph"); th.classList.add("broken");
-  if(!th.querySelector("i")) th.insertAdjacentHTML("afterbegin", `<i>${esc(im.dataset.l||"·")}</i>`);
+  if(!th.querySelector("i")) th.insertAdjacentHTML("afterbegin", `<i>${esc(lbl)}</i>`);
 }
 // 热度文案：不同平台的口径不一样，显示时要说清是什么数字，别含糊地丢一个整数给用户。
 //   澎湃新闻 → 站方页面上的真实互动数（能在原文页核对）
 //   红星新闻 / 凤凰网 / 中新社·国际 → 只给名次不给热度值，后端置 0，这里不显示
-// 【2026-10-09 换源】原来这里还有一条 Hacker News 的「▲点数 · N 评」分支，
-// HN（境外接口）已按合规要求删除，这个分支随之删掉，不再留死代码。
 function heatText(it){
   const h = Number(it.heat) || 0;
   if(!h) return "";
   return fmtHeat(h);
 }
+const EXCLUDED_CLS = new Set(["热榜","数码"]);  // 热榜置顶单独展示不入筛选；数码源已移除
+// 【2026-10-25 用户：「热榜和头条的新闻条数太多，版面太大」+「大部分用户不翻页，
+//  都是气泡精准投放」】首屏只留能一眼扫完的量：热榜 20 条、头条 8 条。
+// 上限只作用于「全部」视图；点左栏具体分类仍然是完整列表，服务端池子也一条没少。
+const HOT_SHOW = 20;
+const SEC_SHOW = {头条: 8};
+// 【2026-10-09 栏目定稿】国内 = 头条 / 科技 / 财经 / 娱乐 / 软件 / 热榜；
+// 国际 = 要闻 / 科技 / 财经 / 娱乐 / 体育 / 热榜（体育只有国际频道有）。
+// 这个数组只决定**左栏与分块标题的排序**，不是栏目白名单（栏目是跟着数据走的）。
+const CLS_ORDER = ["头条","要闻","科技","软件","财经","娱乐","体育","国内","国际"];
+function clsRank(c){
+  const i = CLS_ORDER.indexOf(c);
+  return i < 0 ? 99 : i;
+}
+function buildClsOptions(){
+  const sel = $("cls");
+  if(!sel) return;
+  const cur = sel.value;
+  const set = [...new Set(state.items.map(i => i.cls))].filter(Boolean).filter(c => !EXCLUDED_CLS.has(c));
+  set.sort((a, b) => clsRank(a) - clsRank(b));
+  sel.innerHTML = '<option value="">全部分类</option>' + set.map(c => `<option>${esc(c)}</option>`).join("");
+  sel.value = set.includes(cur) ? cur : "";
+}
 
-// 多平台热榜：按平台分组 + 平台标 + 名次
-// （后端已按「平台内归一化百分位」跨平台混排，这里只负责渲染）
+/* ================= 左栏：栏目计数（用现有数据算，不新增抓取） ================= */
+function renderLeft(){
+  const box = $("clsList");
+  if(!box) return;
+  const cur = $("cls") ? $("cls").value : "";
+  const cnt = new Map();
+  (state.items || []).forEach(it => {
+    const k = it.cls || "其他";
+    cnt.set(k, (cnt.get(k) || 0) + 1);
+  });
+  const keys = [...cnt.keys()].filter(k => !EXCLUDED_CLS.has(k)).sort((a, b) => clsRank(a) - clsRank(b));
+  let html = `<button type="button" class="side-item ${cur === "" ? "on" : ""}" data-cls="">
+      全部<span class="n">${(state.items || []).length}</span></button>`;
+  html += keys.map(k => `<button type="button" class="side-item ${cur === k ? "on" : ""}" data-cls="${esc(k)}">
+      ${esc(k)}<span class="n">${cnt.get(k)}</span></button>`).join("");
+  box.innerHTML = html;
+  const total = $("leftTotal");
+  if(total) total.textContent = (state.items || []).length + " 条";
+}
+
+/* ================= 渲染：卡片 / 热榜 / 空态 ================= */
 function hotlistHTML(rows){
+  // 多平台热榜：来源 + 名次都在后端归一化好了（_hot_source_of），这里只负责渲染。
   return `<ol class="hotlist">` + rows.map((it, i) => {
     const hs = heatText(it);
-    // 【2026-10-09 用户点名「热榜必须有来源出处」】统一渲染成「来源：凤凰网热榜 · 第4名」。
-    // source 由后端热榜聚合统一给出（_hot_source_of），取不到时退回 label。
     const src = it.source || it.label || it.channel || "";
+    // 上色按"哪家媒体"取，不是按显示文案取：热榜的 source 写成「红星新闻热榜」，
+    // 色相要跟卡片里那条「红星新闻」对上，所以优先用 label / channel。
+    const _hm = srcMark(it.label || it.channel || src);
     const rk = Number(it.rank) || 0;
     return `
-      <li class="hotrow">
+      <li class="hotrow ${i < 2 ? "hot" : ""}">
         <span class="rank">${i + 1}</span>
         <div class="hmain">
           <a class="htitle" href="${esc(safeLink(it.link))}" target="_blank" rel="noopener"
-             title="${esc(it.title_en||it.title)}">${esc(it.title)}</a>
-          <div class="hmeta"><span class="srcline">来源：<b class="src src-${esc(it.label||"")}">${esc(src)}</b>${
-            rk?` · 第${rk}名`:""}</span>${hs?`<span class="heat">${esc(hs)}</span>`:""}</div>
+             title="${esc(it.title_en || it.title)}">${esc(it.title)}</a>
+          <div class="hmeta">
+            <span class="srcline">来源：<b class="src${_hm.cls}"${_hm.sty}>${esc(src)}</b>${rk ? ` · 第${rk}名` : ""}</span>
+            ${Number(it.cross_hot) >= 2 ? `<span class="tag xh" title="同一件事同时上了 ${it.cross_hot} 家实时热榜">全网热榜 ×${it.cross_hot}</span>` : ""}
+            ${hs ? `<span class="heat">${esc(hs)}</span>` : ""}
+          </div>
         </div>
       </li>`;
   }).join("") + `</ol>`;
 }
-
-function cardHTML(it, showCls){
-  // 缩略图也做成可点：新闻图库的自然预期是「点哪儿都能进原文」，
-  // 原来只有标题是链接，点图片没反应（2026-10-07 按用户反馈改）。
-  // 【2026-10-12 美化】经 /img 代理加载失败时（断链/防盗链/线路抖动）不再留白：
-  // onerror 撤掉图片、把外层换成品牌渐变色块 + 站名缩写，与「无题图」卡片同款观感。
-  const inner = it.image
-    ? `<img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt="" data-l="${esc(shortLabel(it.label||it.channel))}" onerror="imgFail(this)">`
-    : `<i>${esc(shortLabel(it.label||it.channel))}</i>`;
-  const cls = `thumb${it.image ? "" : " ph"}`;
-  const link = safeLink(it.link);   // 【修 低-1】非 http/https 一律当"没有链接"
-  const thumb = link !== "#"
-    ? `<a class="${cls}" href="${esc(link)}" target="_blank" rel="noopener" title="打开原文">${inner}</a>`
-    : `<div class="${cls}">${inner}</div>`;
-  return `<article class="card">
-    ${thumb}
+function cardHTML(it, showCls, rank){
+  const link = safeLink(it.link);          // 【修 低-1】非 http/https 一律当"没有链接"
+  const isNew = state.newIds && state.newIds.has(it.id);
+  const thumb = it.image
+    ? `<a class="thumb2" href="${esc(link)}" target="_blank" rel="noopener" title="打开原文">
+         <img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt=""
+              data-l="${esc(shortLabel(it.label || it.channel))}" onerror="imgFail(this)"></a>`
+    : "";
+  const desc = (it.desc || "").trim();
+  // 「同一件事，几家在报」：服务端把被折叠掉的兄弟稿挂在这条上（判据与去重同一套，
+  // 见 server._dedup_same_event 的 with_also）。只有**不同来源**才算"几家"，
+  // 同一家媒体自己的副本不会挂上来。展开看到的是各家把同一件事写成了什么样 ——
+  // 这才是这个功能的价值：不是"少了几条重复"，而是"同一件事的不同说法"。
+  const also = (it.also_n >= 2 && Array.isArray(it.also) && it.also.length) ? it.also : null;
+  const _sm = srcMark(it.label || it.channel);          // 来源标签的颜色（2026-10-25 上色）
+  const alsoHTML = also ? `<div class="alsolist" id="also-${esc(it.id)}">`
+    + also.map(s => {
+        const sl = safeLink(s.link);
+        const _am = srcMark(s.label);                   // 别家的名字用同一套色，和卡片上的对上
+        return `<a href="${esc(sl)}" target="_blank" rel="noopener">`
+             + `<span class="lbl${_am.cls}"${_am.sty}>${esc(s.label || "")}</span>`
+             + `<span class="t" title="${esc(s.title || "")}">${esc(s.title || "")}</span>`
+             + `<span class="tm">${fmt(s.published || 0)}</span></a>`;
+      }).join("")
+    + `</div>` : "";
+  return `<article class="news ${rank <= 2 ? "hot" : ""}" data-id="${esc(it.id)}">
+    <div class="rank">${rank}</div>
     <div class="body">
-      <div class="tags">${showCls?`<span class="tag cls">${esc(it.cls)}</span>`:""}<span class="tag">${esc(it.label||it.channel)}</span>${it.heat?`<span class="tag hot">${fmtHeat(it.heat)}</span>`:""}</div>
-      <h2><a href="${esc(link)}" target="_blank" rel="noopener" title="${esc(it.title_en||it.desc_en||"")}">${esc(it.title)}</a></h2>
-      <p class="desc">${esc(it.desc||"")}</p>
-      <span class="time">${fmt(it.published)}</span>
-    </div></article>`;
+      <h3><a href="${esc(link)}" target="_blank" rel="noopener"
+             title="${esc(it.title_en || it.desc_en || it.title)}">${esc(it.title)}</a></h3>
+      ${desc ? `<p class="desc">${esc(desc)}</p>` : ""}
+      <div class="meta">
+        ${showCls && it.cls ? `<span class="tag cls">${esc(it.cls)}</span>` : ""}
+        <span class="tag${_sm.cls}"${_sm.sty}>${esc(it.label || it.channel || "")}</span>
+        ${isNew ? '<span class="tag fresh">新增</span>' : ""}
+        ${it.heat ? `<span class="tag" title="源站显示的热度/互动数">${fmtHeat(it.heat)}</span>` : ""}
+        ${also ? `<button type="button" class="tag also" data-act="also" data-for="${esc(it.id)}"
+                   aria-expanded="false" title="同一件事还有 ${also.length} 家在报，点开看看各家怎么写的">
+                   同一件事 · ${it.also_n} 家在报 <i>▾</i></button>` : ""}
+        ${Number(it.cross_hot) >= 2 ? `<span class="tag xh" title="这条同时上了 ${it.cross_hot} 家实时热榜——读者用点击投出来的真热点">全网热榜 ×${it.cross_hot}</span>` : ""}
+        <span>${fmt(it.published)}</span>
+      </div>
+      ${alsoHTML}
+    </div>
+    ${thumb}
+  </article>`;
 }
-
-// 【2026-10-07 新增】统一的「数据时间」文案。
-// 用户几次反馈"热榜还有两天前的新闻"，实测根因是后端把红星新闻解析不出时间的条目
-// 伪造成了"刚刚"（已修）。同时这个显示能让人一眼判断是"数据旧"还是"页面旧"。
+function skeletonHTML(){
+  let h = "";
+  for(let i = 0; i < 4; i++){
+    h += `<div class="sk-row">
+      <div class="sk" style="width:14px;height:14px"></div>
+      <div style="flex:1">
+        <div class="sk" style="width:78%;height:13px"></div>
+        <div class="sk" style="width:42%;height:10px;margin-top:8px"></div>
+      </div>
+      <div class="sk" style="width:88px;aspect-ratio:16/9;height:auto;border-radius:6px"></div>
+    </div>`;
+  }
+  return h;
+}
+function emptyHTML(title, sub, actionLabel){
+  return `<div class="empty"><b>${title}</b>${sub || ""}${
+    actionLabel ? `<div><button type="button" class="btn sm" data-act="clear">${actionLabel}</button></div>` : ""}</div>`;
+}
+// 【2026-10-07 新增】统一的「数据时间」文案：能让人一眼判断是"数据旧"还是"页面旧"。
 function metaText(shown){
-  const newest = (state.items||[]).reduce((a,b)=>Math.max(a, b.published||0), 0);
+  const newest = (state.items || []).reduce((a, b) => Math.max(a, b.published || 0), 0);
   const nt = newest
-    ? new Date(newest*1000).toLocaleString("zh-CN",
+    ? new Date(newest * 1000).toLocaleString("zh-CN",
         {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
     : "-";
   const st = new Date().toLocaleTimeString("zh-CN", {hour12:false});
-  return `共 ${shown} 条 / 源 ${state.items.length} 条 · 最新 ${nt} · 页面更新于 ${st}`;
+  return `已显示 ${shown} 条 · 已加载 ${state.items.length} 条 · 最新 ${nt} · 页面更新于 ${st}`;
 }
 
 function render(){
-  const kw = (document.getElementById("q").value||"").trim().toLowerCase();
-  const cls = document.getElementById("cls").value;
-  const sort = document.getElementById("sort").value;
-  const grid = document.getElementById("grid");
+  // 2026-10-25：搜索框 / 关键词订阅 / 归档视图全部收掉，这里只剩「当天这一池」的画法，
+  // 不再需要 pass() 逐条判词。
+  const clsEl = $("cls"), sortEl = $("sort"), grid = $("grid");
+  const cls = clsEl.value;
+  const sort = sortEl.value;
+  const isCn = state.region === "cn";
 
-  // 国内：实时热榜置顶（排名列表，无冗余「热榜」标签）+ 其余卡片网格
-  if(state.region === "cn"){
-    // 仅在「全部分类」且无搜索时，把热榜作为首屏置顶展示
-    const hotItems = (cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
-    let cards = state.items.filter(it=>{
+  let hotItems = [], cards = [];
+  if(isCn){
+    // 国内：仅在「全部分类」时，把热榜作为首屏置顶展示
+    if(cls === "") hotItems = state.items.filter(it => it.cls === "热榜");
+    cards = state.items.filter(it => {
       if(it.cls === "热榜") return false;          // 热榜已置顶，卡片区不再重复
-      if(EXCLUDED_CLS.has(it.cls)) return false;   // 只排除「热榜」(已置顶单独展示) 和「数码」(源已移除)；科技照常展示
+      if(EXCLUDED_CLS.has(it.cls)) return false;   // 只排除「热榜」(已置顶) 和「数码」(源已移除)
       if(cls && it.cls !== cls) return false;
-      if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
       return true;
     });
-    cards.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
-    if(!hotItems.length && !cards.length){
-      grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
-      document.getElementById("meta").textContent = "共 0 条";
-      return;
-    }
-    let html = "";
-    if(hotItems.length){
-      // 跨平台混合排序由后端完成（各平台热度已归一化成 score）。
-      // 没有给出可信热度数值的平台（凤凰网/红星新闻只有名次），后端会把 heat 置 0 且不显示数字，
-      // 避免拿名次冒充阅读量误导人。
-      const merged = hotItems.slice(0, 60);
-      html += `<h2 class="sech">实时热榜 · 多平台聚合</h2>` + hotlistHTML(merged);
-    }
-    if(cards.length){
-      if(hotItems.length) html += `<h2 class="sech">更多新闻</h2>`;
-      if(cls){
-        // 已选定某分类：分类名在下拉里已知，卡片不再重复标
-        html += `<div class="grid">` + cards.map(it=>cardHTML(it,false)).join("") + `</div>`;
-      }else{
-        // 全部分类：按分类分块，分类名只作为区块标题出现一次（避免满屏重复同一词）
-        const byCls = {};
-        cards.forEach(it=>{ const k = it.cls || "其他"; (byCls[k] = byCls[k] || []).push(it); });
-        const keys = Object.keys(byCls).sort((a,b)=>{
-          const ia = CLS_ORDER.indexOf(a), ib = CLS_ORDER.indexOf(b);
-          return (ia<0?99:ia) - (ib<0?99:ib);
-        });
-        // 【2026-10-12 美化】顶部门栏 chips：一键平滑滚到对应区块（区块标题带锚点 id）
-        html += `<div class="chips">` + keys.map(k=>
-          `<button class="chip" data-jump="${esc(k)}">${esc(k)} · ${byCls[k].length}</button>`
-        ).join("") + `</div>`;
-        html += keys.map(k=>
-          `<h3 class="sub" id="sec-${esc(k)}">${esc(k)} <span class="cnt">${byCls[k].length}</span></h3>` +
-          `<div class="grid">` + byCls[k].map(it=>cardHTML(it,false)).join("") + `</div>`
-        ).join("");
+  }else{
+    hotItems = (cls === "") ? state.items.filter(it => it.cls === "热榜") : [];
+    cards = state.items.filter(it => {
+      if(hotItems.length && it.cls === "热榜") return false;   // 热榜已置顶，卡片区不再重复
+      if(cls && it.cls !== cls) return false;
+      return true;
+    });
+  }
+  cards.sort((a, b) => sort === "new" ? (b.published || 0) - (a.published || 0)
+                                      : (a.published || 0) - (b.published || 0));
+
+  // —— 两态：还没有数据（骨架） / 池子被清空（罕见，给一句说明） ——
+  if(!state.items.length){
+    grid.innerHTML = skeletonHTML();
+    const m = $("meta");
+    if(m && !m.textContent.trim()) m.textContent = "正在抓取 RSS，请稍候…";
+    return;
+  }
+  if(!hotItems.length && !cards.length){
+    grid.innerHTML = emptyHTML("这一栏暂时没有内容", "稍等一轮刷新，或点左栏「全部」看看。", "");
+    const m = $("meta");
+    if(m) m.textContent = metaText(0);
+    return;
+  }
+
+  let html = "", rank = 0;
+  // 【2026-10-25 用户：「热榜和头条的新闻条数太多，版面太大，常看常新」】
+  // 首屏两个块各砍一刀：热榜 60 → 20 条，头条在「全部」视图里 15 → 8 条。
+  // 砍掉的不是删掉：点左栏「头条」等分类仍是完整列表，服务端池子也没变。
+  if(hotItems.length){
+    html += `<h2 class="sech">${isCn ? "实时热榜 · 多平台聚合" : "国际实时热榜"}</h2>`;
+    html += hotlistHTML(hotItems.slice(0, HOT_SHOW));
+  }
+  let shown = Math.min(hotItems.length, HOT_SHOW);
+  if(cards.length){
+    if(hotItems.length) html += `<h2 class="sech">${isCn ? "更多新闻" : "更多国际新闻"}</h2>`;
+    if(!isCn && !cls){
+      // 抓取不等翻译（否则国际板块要多等 1~2 分钟），译文由后台线程渐进补齐。
+      const done = cards.filter(it => it.translated).length;
+      if(done < cards.length){
+        html += `<div class="transbar">中文译文后台补齐中（<b>${done}/${cards.length}</b>），稍等片刻会自动刷新成中文。</div>`;
       }
     }
-    grid.innerHTML = html;
-    document.getElementById("meta").textContent = metaText(hotItems.length+cards.length);
-    return;
+    if(cls){
+      // 已选定某分类：分类名在左栏里已知，卡片不再重复标
+      html += `<div class="newslist">` + cards.map(it => cardHTML(it, false, ++rank)).join("") + `</div>`;
+      shown += cards.length;
+    }else{
+      // 全部分类：按分类分块，分类名只作为区块标题出现一次（避免满屏重复同一词）
+      const byCls = {};
+      cards.forEach(it => { const k = it.cls || "其他"; (byCls[k] = byCls[k] || []).push(it); });
+      const keys = Object.keys(byCls).sort((a, b) => clsRank(a) - clsRank(b));
+      html += keys.map(k => {
+        const all = byCls[k];
+        const cap = SEC_SHOW[k] || 0;               // 只有配了上限的栏目会被截
+        const cut = cap && all.length > cap ? all.slice(0, cap) : all;
+        shown += cut.length;
+        // 计数写「8 / 15」而不是只写 8：让人知道这一栏还有多少没显示，点左栏能看全
+        const cnt = cap && all.length > cut.length ? (cut.length + " / " + all.length) : all.length;
+        return `<h3 class="sub" id="sec-${esc(k)}">${esc(k)} <span class="cnt">${cnt}</span></h3>` +
+               `<div class="newslist">` + cut.map(it => cardHTML(it, isCn ? false : true, ++rank)).join("") + `</div>`;
+      }).join("");
+    }
   }
-
-  // 国际：实时热榜置顶 + 其余卡片网格
-  // 【2026-10-09 换源】热榜来源已从 Hacker News 换成境内媒体（中新社·国际 + 凤凰/澎湃/红星），
-  // 小标题跟着改，别再挂着已经删掉的那家名字误导人。
-  const isWorld = state.region === "intl";
-  // 【2026-10-07】原来这里会按国际/国内切换「浏览器翻译」按钮的显示；
-  // 按钮已移除，这行必须一起删 —— 否则 getElementById 返回 null，抛错会让整个 render 挂掉。
-  const hotItems = (isWorld && cls === "" && !kw) ? state.items.filter(it=>it.cls==="热榜") : [];
-  let list = state.items.filter(it=>{
-    if(hotItems.length && it.cls === "热榜") return false;   // 热榜已置顶，卡片区不再显示
-    if(cls && it.cls !== cls) return false;
-    if(kw && !(it.title.toLowerCase().includes(kw) || (it.desc||"").toLowerCase().includes(kw))) return false;
-    return true;
-  });
-  list.sort((a,b)=> sort==="new" ? (b.published||0)-(a.published||0) : (a.published||0)-(b.published||0));
-  if(!hotItems.length && !list.length){
-    grid.innerHTML = `<div class="empty">${state.items.length? "没有匹配的条目" : "正在抓取 RSS，请稍候…"}</div>`;
-    document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
-    return;
-  }
-  // 小标题只写栏目名：热榜的来源是**每轮按实际抓到的条目**动态变的
-  //（中新社·国际 / 凤凰网 / 澎湃新闻 / 红星新闻…），把站名写死在这里迟早会与事实不符。
-  // 每行的来源标签本来就显示在标题下面。
-  let html2 = hotItems.length ? `<h2 class="sech">国际实时热榜</h2>` + hotlistHTML(hotItems) : "";
-  if(!list.length){
-    grid.innerHTML = html2;
-  } else {
-    const done = list.filter(it=>it.translated).length;
-    // 抓取不等翻译（否则国际板块要多等 1~2 分钟），译文由后台线程渐进补齐。
-    // 【2026-10-07 用户要求】国际板块现在已经自动全中文了，
-    // 原来的「浏览器翻译」按钮（跳 /world 纯英文页让 Edge/Chrome 整页翻译）
-    // 已经没有意义，已从工具栏移除。这里只保留「补齐中」的进度说明，不再引导点按钮。
-    const tipBar = (isWorld && !cls && done < list.length)
-      ? `<div class="transbar">中文译文后台补齐中（${done}/${list.length}），稍等片刻会自动刷新成中文。</div>`
-      : "";
-    if(hotItems.length) html2 += `<h2 class="sech">更多国际新闻</h2>`;
-    grid.innerHTML = html2 + tipBar + `<div class="grid">` + list.map(it=>cardHTML(it, !cls)).join("") + `</div>`;
-  }
-  // 【2026-10-07 新增】把「最新一条新闻的时间」和「本次拉取时间」显示出来。
-  // 用户几次反馈"热榜还有两天前的新闻"，**实测根因是后端把红星新闻解析不出时间的
-  // 条目伪造成了"刚刚"**（已修）。这个显示能让人一眼判断是"数据旧"还是"页面旧"。
-  document.getElementById("meta").textContent = metaText(hotItems.length+list.length);
+  html += `<p class="muted xs" style="text-align:center;padding-top:4px">已显示 ${shown} / ${state.items.length} 条</p>`;
+  grid.innerHTML = html;
+  const m = $("meta");
+  if(m) m.textContent = metaText(shown);
 }
 
+/* ================= 左栏交互 & 工具条 ================= */
+document.addEventListener("click", e => {
+  // 左栏栏目 → 写回隐藏的下拉，沿用既有筛选逻辑
+  const side = e.target.closest ? e.target.closest(".side-item[data-cls]") : null;
+  if(side){
+    const el = $("cls");
+    el.value = side.dataset.cls || "";
+    renderLeft(); render();
+    const g = $("grid");
+    if(g) window.scrollTo({top: Math.max(0, g.getBoundingClientRect().top + window.scrollY - 90), behavior:"smooth"});
+    return;
+  }
+  // 「同一件事，几家在报」展开/收起（2026-10-25）
+  const ab = e.target.closest ? e.target.closest("[data-act='also']") : null;
+  if(ab){
+    const box = document.getElementById("also-" + (ab.dataset.for || ""));
+    if(!box) return;
+    const on = box.classList.toggle("on");
+    ab.setAttribute("aria-expanded", on ? "true" : "false");
+    return;
+  }
+  // 2026-10-25：「清除筛选」按钮、订阅 chips、「只显示命中」「气泡只在命中时弹」
+  // 两个开关随搜索/订阅功能一起取消，这里不再拦这几种点击。
+});
+$("cls").onchange = () => { renderLeft(); render(); };
+$("sort").onchange = render;
+$("helpBtn").onclick = showHelp;
+function showHelp(){
+  toast("<b>快捷键</b>　j / k 上下选择　·　Enter 打开选中　·　Esc 取消选中");
+}
+
+/* ================= 键盘快捷键 ================= */
+let selIdx = -1;
+function cardsList(){ return [...document.querySelectorAll("#grid .news")]; }
+function clearSel(){
+  document.querySelectorAll("#grid .news.sel").forEach(el => el.classList.remove("sel"));
+  selIdx = -1;
+}
+function moveSel(step){
+  const list = cardsList();
+  if(!list.length) return;
+  selIdx = Math.max(0, Math.min(list.length - 1, selIdx + step));
+  list.forEach((el, i) => el.classList.toggle("sel", i === selIdx));
+  const el = list[selIdx];
+  if(el) el.scrollIntoView({block:"nearest"});
+}
+document.addEventListener("keydown", e => {
+  const tag = (e.target && e.target.tagName || "").toLowerCase();
+  const typing = tag === "input" || tag === "select" || tag === "textarea";
+  if(e.key === "Escape"){
+    // 2026-10-25：搜索框没了，Esc 从「清空搜索」改成「取消选中」。
+    if(typing){ e.target.blur(); return; }
+    clearSel();
+    return;
+  }
+  if(typing) return;
+  // 2026-10-25：原来 `/` 是聚焦搜索框，搜索框已取消，这个键位一并撤掉。
+  if(e.key === "?"){ e.preventDefault(); showHelp(); return; }
+  if(e.key === "j"){ e.preventDefault(); moveSel(1); return; }
+  if(e.key === "k"){ e.preventDefault(); moveSel(-1); return; }
+  if(e.key === "Enter"){
+    const el = cardsList()[selIdx];
+    if(el){
+      const a = el.querySelector("h3 a");
+      if(a && a.getAttribute("href") && a.getAttribute("href") !== "#") window.open(a.href, "_blank", "noopener");
+    }
+  }
+});
+
+/* ================= 数据加载 ================= */
 // 【2026-10-07】请求序号：切换分区时可能有两个请求在飞，
-// 网络慢的那个后回来会把新分区的数据覆盖掉（表现为"点了没换"/"换回去又变回来"）。
+// 网络慢的那个后回来会把新分区的数据覆盖掉（表现为"点了没换"）。
 // 每次 load 领一个号，回来时号不是最新的就丢弃。
 let LOAD_SEQ = 0;
+let EMPTY_RETRY = 0;          // 预热期拿到空数据时的自动重试次数（2026-10-24）
+/* AUTO_TIMER：预热期"过会儿自己再试一次"的全局唯一排队槽位（2026-10-24 体检加）。
+   原来空数据重试(2.5s)和首屏守护 bootWatch(1.5s)各自 setTimeout，两条链会同时挂着
+   两个待触发定时器 → 服务端预热这一分钟里 /api/news 被成倍打。现在共用一个槽位，
+   后排队的那个顶掉前一个，同一时刻最多只有一个自动重试在等。 */
+let AUTO_TIMER = 0;
+function scheduleAuto(fn, ms){ clearTimeout(AUTO_TIMER); AUTO_TIMER = setTimeout(fn, ms); }
+let LAST_SIG = "";            // 屏幕上这一批的指纹（2026-10-24：静默刷新靠它判"要不要重绘"）
+function applyItems(items){
+  state.items = items || [];
+  state.newIds = NEW_TAGGING ? noteNew(state.items) : new Set();
+  if(!NEW_TAGGING) noteNew(state.items);          // 首次只记基线，不标「新增」
+  LAST_SIG = sig(state.items);                    // 画出去的就代表"屏幕上是这一批"
+  buildClsOptions();
+  renderLeft();
+  render();
+}
 async function load(showToast){
   const mySeq = ++LOAD_SEQ;
-  document.getElementById("meta").textContent = "抓取中…";
+  // 【2026-10-24 修「关掉窗口再打开，又像重新加载了一遍」】
+  // 原来这里无条件把顶栏改成"抓取中…"，几十毫秒后再被 render() 改回"更新于 …" ——
+  // 屏幕上那次来回就是用户说的"又在重新加载"。首屏已经有内容时不再动这行字，
+  // 只有真的什么都没有（骨架态）才提示在抓。
+  if(!state.items.length) $("meta").textContent = "抓取中…";
   try{
     const r = await fetch(`/api/news?region=${state.region}&limit=200`);
     const js = await r.json();
     if(mySeq !== LOAD_SEQ) return;                 // 已经切到别的分区，丢弃这次旧响应
-    state.items = js.items || [];
-    LAST_SIG = sig(state.items);
-    document.getElementById("ver").textContent = js.version || SSR.version;
-    document.getElementById("ftVer").textContent = js.version || SSR.version;
-    buildClsOptions();
-    render();
-    if(js.loading){
-      // 后端还没预热好（国际板块首次要几十秒），后端已转后台抓取，前端轮询接手
-      document.getElementById("meta").textContent = js.message || "正在抓取，请稍候…";
-    } else if(showToast){
-      toast(`已刷新 ${state.items.length} 条`);
+    if(js.src_hues) SRC_HUES = js.src_hues;        // 上色表跟着数据走，画卡片前先在手上
+    $("ver").textContent = js.version || SSR.version;
+    setTxt("ftVer", js.version || SSR.version);   // 页脚元素可能不在这套版式里，别因为它抛异常
+    const items = js.items || [];
+    if(items.length){
+      // 服务端首屏(SSR)现在走的是和这里同一个 api_news（见 server.py 的 index()），
+      // 所以正常打开页面时这两批必然逐条一致 —— 一致就别重绘，别把用户看到的位置顶掉。
+      const same = sig(items) === LAST_SIG;
+      if(!same) applyItems(items);
+      NEW_TAGGING = true;        // 首屏这批已经当基线记过了，之后新增的才标「新增」
+      EMPTY_RETRY = 0;
     }
+    if(js.loading || !items.length){
+      // 2026-10-24 修：预热期接口先回空时，原来会把 SSR 已有的内容清空 → 页面空白干等。
+      // 现在空数据不清屏，并每 2.5 秒自己重试一次（最多 24 次 ≈ 1 分钟）。
+      $("meta").textContent = js.message || "正在抓取，请稍候…";
+      if(!items.length && EMPTY_RETRY < 24){
+        EMPTY_RETRY++;
+        scheduleAuto(() => load(false), 2500);
+      }
+    } else if(showToast){
+      // 手动点「刷新」时给个准话：内容真没变就说没变，别每次都演一遍"已刷新"
+      toast(sig(items) === LAST_SIG ? `没有新内容（${state.items.length} 条，与上次一致）`
+                                    : `已刷新 ${state.items.length} 条`);
+    }
+    loadSources();                                  // 刷新时顺带更新右栏健康度（只读）
   }catch(e){
     if(mySeq !== LOAD_SEQ) return;
-    document.getElementById("meta").textContent = "抓取失败：" + e.message;
+    $("meta").textContent = "抓取失败：" + e.message;
   }
 }
-
 // 国际板块的中文译文由后台线程渐进补齐（抓取不等翻译，否则国际板块要慢 90 秒以上）。
 // 这里定期静默重拉：只有内容真的变了才重绘，避免闪烁，也把补上的译文刷出来。
-let LAST_SIG = "";
+// 【2026-10-24】判"变没变"的指纹从 `id|translated` 加严到 `id|rank|heat|translated`：
+// 只认 id 的话，热榜重新排名（同一批条目、名次变了）会被当成"没变"而漏掉不重绘。
+// 【2026-10-24 三修·heat 又从指纹里拿掉了】加严的当天就发现另一半：`heat` 是源站的
+// 实时读数，15 秒一次的静默刷新几乎每轮都跟上一轮不一样 —— 于是整块 `grid.innerHTML`
+// 每 15 秒重建一次，读着读着页面跳回顶部、图片重新加载，正是要消掉的"像重新加载"。
+// 现在分开治：**名次/条目/译文**变了才重绘（那才需要动 DOM 结构），
+// **只有热度数字**变了就就地改那一个 <span>（paintHeat），一次重建都不做。
 function sig(items){
-  return (items||[]).map(x=>`${x.id}|${x.translated?1:0}`).join(",");
+  return (items || []).map(x => `${x.id}|${x.rank}|${x.translated ? 1 : 0}`).join(",");
+}
+const HEAT_SEL = '.tag[title="源站显示的热度/互动数"]';
+function paintHeat(items){
+  const by = {};
+  (items || []).forEach(x => { by[x.id] = x; });
+  document.querySelectorAll("article.news[data-id]").forEach(el => {
+    const it = by[el.dataset.id];
+    if(!it) return;
+    const sp = el.querySelector(HEAT_SEL);
+    if(!it.heat){ return; }                      // 这轮没给热度：留着上一个数, 别抹成空
+    const txt = fmtHeat(it.heat);
+    if(sp){ if(sp.textContent !== txt) sp.textContent = txt; return; }
+    const meta = el.querySelector(".meta");      // 原来没数、现在有了 → 补一个, 插在日期前面
+    if(meta){
+      const s = document.createElement("span");
+      s.className = "tag"; s.title = "源站显示的热度/互动数"; s.textContent = txt;
+      meta.insertBefore(s, meta.lastElementChild);
+    }
+  });
 }
 async function silentRefresh(){
-  if(document.getElementById("q").value.trim()) return;      // 正在搜索，别打扰
-  if(document.getElementById("cls").value) return;           // 正在看某个分类
+  if($("cls").value) return;                   // 正在看某个分类
   try{
     const r = await fetch(`/api/news?region=${state.region}&limit=200`);
     const js = await r.json();
     const s = sig(js.items || []);
-    if(s === LAST_SIG) return;                               // 没变化就不重绘
+    if(s === LAST_SIG){ paintHeat(js.items || []); return; }   // 只是数字在跳 → 就地改, 不重建
     LAST_SIG = s;
-    state.items = js.items || [];
-    buildClsOptions();
-    render();
+    applyItems(js.items || []);
   }catch(e){}
 }
-setInterval(()=>silentRefresh(), 15000);
-
+setInterval(() => silentRefresh(), 15000);
 async function checkVersion(){
   try{
     const r = await fetch("/api/version");
@@ -548,29 +1128,110 @@ async function checkVersion(){
     }
   }catch(e){}
 }
+setInterval(() => checkVersion(), 60000);
 
-document.getElementById("reload").onclick = ()=>load(true);
-// 【2026-10-07 已移除】原「浏览器翻译」按钮的处理函数（跳 /world 纯英文页，
-// 交给 Edge/Chrome 整页翻译）。国际板块现在由后台自动译成中文，这个入口不需要了。
-document.getElementById("checkUpdate").onclick = async ()=>{
-  const btn = document.getElementById("checkUpdate");
+/* ================= 源健康度（只读接口，绝不在打开面板时触发抓取） ================= */
+let SRC = null, SRC_AT = 0;
+function hhmm(ts){
+  if(!ts) return "—";
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString("zh-CN", {hour12:false, hour:"2-digit", minute:"2-digit"});
+}
+function srcPillClass(status){
+  return status === "ok" ? "ok" : (status === "fail" ? "bad" : (status === "warn" ? "warn" : ""));
+}
+function srcPillText(status, failStreak){
+  if(status === "ok") return "正常";
+  if(status === "fail") return "失败";
+  if(status === "warn") return "降级";
+  return "未抓";
+}
+async function loadSources(){
+  try{
+    const r = await fetch("/api/sources");
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    SRC = await r.json();
+    SRC_AT = Date.now();
+    renderSources();
+  }catch(e){
+    const box = $("srcList");
+    if(box) box.innerHTML = `<p class="muted xs">健康度暂不可用（${esc(e.message || "读取失败")}）</p>`;
+  }
+}
+function renderSources(){
+  const box = $("srcList");
+  if(!box) return;
+  if(!SRC){ box.innerHTML = `<div class="sk" style="height:60px"></div>`; return; }
+  const list = (SRC.sources || []).slice();
+  // 2026-10-25 用户：「源的健康度，排列应该按照读取的量排列」
+  // 原来是"异常置顶"（fail → warn → ok → idle，再看累计成功次数），
+  // 结果 0 条的几个降级源常年霸占最上面几行，真正在大量供稿的 IT之家(50 条)、
+  // 澎湃(32 条) 反而被挤到看不见的地方 —— 一屏看下来全是坏消息，也看不出谁在干活。
+  // 现在按**本轮实际读到的条数**从多到少排（就是每行后面那个「N 条」）；
+  // 条数相同才比状态（失败 > 降级 > 正常 > 还没轮到），再相同按名字，保证顺序稳定不跳。
+  // 异常并没有被藏起来：每行的彩色胶囊照旧，卡片顶上「N 个源异常 / x / y 正常」也照旧。
+  const sev = s => s.status === "fail" ? 0 : (s.status === "warn" ? 1 : (s.status === "idle" ? 3 : 2));
+  const cnt = s => Number(s && s.lastCount) || 0;      // 本轮实际读到的条数
+  list.sort((a, b) => (cnt(b) - cnt(a))
+                   || (sev(a) - sev(b))
+                   || String(a.label || a.id || "").localeCompare(String(b.label || b.id || ""), "zh"));
+  if(!list.length){
+    box.innerHTML = `<p class="muted xs">还没有抓取记录，等第一轮抓完就会出现。</p>`;
+  }else{
+    box.innerHTML = list.map(s => {
+      const detail = s.status === "idle"
+        ? "本轮还没轮到"
+        : `${s.lastTs ? hhmm(s.lastTs) : "—"} · ${s.lastCount || 0} 条`
+          + (s.failStreak ? ` · 连续失败 ${s.failStreak} 次` : "")
+          + (s.error && s.status === "fail" ? ` · ${esc(s.error)}` : "");
+      return `<div class="set srcrow">
+        <div class="txt"><b>${esc(s.label || s.id)}</b><span>${detail}</span></div>
+        <span class="ctl"><span class="pill ${srcPillClass(s.status)}"><i></i>${srcPillText(s.status, s.failStreak)}</span></span>
+      </div>`;
+    }).join("");
+  }
+  // 左栏摘要
+  const t = SRC.totals || {};
+  const pill = $("srcPill");
+  if(pill){
+    const ok = t.ok || 0, total = t.total || 0, bad = (t.fail || 0);
+    pill.className = "pill " + (bad ? "bad" : (ok ? "ok" : ""));
+    pill.innerHTML = `<i></i>${bad ? `${bad} 个源异常 / ` : ""}${ok} / ${total} 正常`;
+  }
+  const when = $("srcWhen");
+  if(when){
+    const last = SRC.lastCollect || 0;
+    // 2026-10-25：抓取周期从 10 分钟压到 5 分钟（用户「常看常新」），文案跟着改。
+    when.textContent = last
+      ? `上次抓取 ${hhmm(last)} · 约每 5 分钟一轮`
+      : "还没有完成一轮抓取";
+  }
+}
+$("srcRefresh").onclick = () => { loadSources(); toast("已重新读取源健康度（只是读状态，不会触发抓取）"); };
+
+/* ================= 刷新 / 检查更新 / 退出 ================= */
+$("reload").onclick = () => { load(true); };
+// 【2026-10-07 已移除】原「浏览器翻译」按钮（跳 /world 纯英文页）。
+// 国际板块现在由后台自动译成中文，这个入口不需要了。
+$("checkUpdate").onclick = async () => {
+  const btn = $("checkUpdate");
   btn.disabled = true; const old = btn.textContent; btn.textContent = "检查中…";
   const ctrl = new AbortController();
-  const timer = setTimeout(()=>ctrl.abort(), 15000);  // 15 秒超时，避免卡死
+  const timer = setTimeout(() => ctrl.abort(), 15000);   // 15 秒超时，避免卡死
   try{
-    // 2026-10-10: 这个接口在服务端补了本机令牌闸门（它会触发后台下载升级包，
-    // 属于有副作用的接口），这里同步带上令牌头，否则会拿到 403、界面显示"检查失败"。
+    // 2026-10-10: 这个接口在服务端补了本机令牌闸门（它会触发后台下载升级包），
+    // 这里同步带上令牌头，否则会拿到 403、界面显示"检查失败"。
     const r = await fetch("/api/update/check", {signal: ctrl.signal, headers: POST_HEADERS});
     const js = await r.json();
     if(js.status === "update"){
-      const notes = js.notes ? "　更新内容：" + String(js.notes).replace(/\s+/g," ").slice(0, 60) : "";
+      const notes = js.notes ? "　更新内容：" + String(js.notes).replace(/\s+/g, " ").slice(0, 60) : "";
       toast(`发现新版本 v${js.remote}，正在下载并自动安装…${notes}`);
-      setTimeout(()=>promptInstall(js.remote), 3000);
-    } else if(js.status === "latest"){
+      setTimeout(() => promptInstall(js.remote), 3000);
+    }else if(js.status === "latest"){
       toast(`已是最新版本 v${js.current}`);
-    } else if(js.status === "checking"){
+    }else if(js.status === "checking"){
       toast("正在检查，请稍候…");
-    } else {
+    }else{
       toast(js.message || "检查失败，请稍后重试");
     }
   }catch(e){
@@ -580,101 +1241,57 @@ document.getElementById("checkUpdate").onclick = async ()=>{
     btn.disabled = false; btn.textContent = old;
   }
 };
-
 // 【2026-10-09 升级体验口径】手动升级也**不再弹确认框**：
 // 用户已经点了「检查更新」，再拦一道"是否立即更新并重启？"就是多余的确认。
-// 自动升级那条路（启动 5 秒后静默检查）压根不会走到这里，全程无提示。
 async function promptInstall(remote){
   try{
     const r = await fetch("/api/update/install", {method:"POST", headers:POST_HEADERS});
     const js = await r.json();
     if(js.ok){
-      document.getElementById("grid").innerHTML =
-        '<div class="empty">正在更新并重启，请稍候…<br>页面会在新版起来后自动恢复。</div>';
-    } else {
+      $("grid").innerHTML = emptyHTML("正在更新并重启，请稍候…", "页面会在新版起来后自动恢复。");
+    }else{
       // （失败才提示：说清原因，旧版本继续可用）
       toast(js.message || "更新失败，已继续使用当前版本");
     }
   }catch(e){}
 }
-
-document.getElementById("quit").onclick = async ()=>{
+$("quit").onclick = async () => {
   if(!confirm("停止服务并退出程序？退出后此页面将无法继续访问。\n（若已有下载好的新版本，退出时会自动完成升级）")) return;
-  const btn = document.getElementById("quit");
+  const btn = $("quit");
   btn.disabled = true; btn.textContent = "正在退出…";
   try{ await fetch("/api/quit", {method:"POST", headers:POST_HEADERS}); }catch(e){}
-  document.getElementById("grid").innerHTML =
-    '<div class="empty">服务已停止。<br>可以关闭此页面，或重新双击程序启动。</div>';
-  document.getElementById("meta").textContent = "";
-  document.getElementById("q").disabled = true;
-  document.getElementById("reload").disabled = true;
+  $("grid").innerHTML = emptyHTML("服务已停止。", "可以关闭此页面，或重新双击程序启动。");
+  $("meta").textContent = "";
+  $("sort").disabled = true;
+  $("reload").disabled = true;
 };
-document.getElementById("q").addEventListener("input", ()=>{
-  clearTimeout(window._deb); window._deb = setTimeout(render, 260);
-});
-document.getElementById("cls").onchange = render;
-document.getElementById("sort").onchange = render;
-// 【2026-10-12 美化】① 栏目 chips 点击 → 平滑滚到对应区块（区块标题 id=sec-<栏目名>）；
-// ② 回顶部按钮：滚动超过 600px 才浮现，点击回顶部。两者都挂在 document 级，
-// 不依赖 render() 重绘时机（静默刷新会重写 grid.innerHTML，委托才不会失效）。
-document.addEventListener("click", e=>{
-  const c = e.target.closest ? e.target.closest(".chip") : null;
-  if(!c) return;
-  const el = document.getElementById("sec-" + c.dataset.jump);
-  if(el) el.scrollIntoView({behavior:"smooth", block:"start"});
-});
-const _topBtn = document.getElementById("toTop");
-window.addEventListener("scroll", ()=>{
-  _topBtn.classList.toggle("show", window.scrollY > 600);
-}, {passive:true});
-_topBtn.onclick = ()=>window.scrollTo({top:0, behavior:"smooth"});
-document.getElementById("regionSeg").addEventListener("click", e=>{
+
+/* ================= 分区切换 ================= */
+$("regionSeg").addEventListener("click", e => {
   const b = e.target.closest("button"); if(!b) return;
   if(b.dataset.r === state.region) return;          // 点的是当前分区，不用重来
-  document.querySelectorAll("#regionSeg button").forEach(x=>x.classList.remove("on"));
+  document.querySelectorAll("#regionSeg button").forEach(x => x.classList.remove("on"));
   b.classList.add("on");
   state.region = b.dataset.r;
   // 【2026-10-07 修「国内和国际切换的时候，栏目没有切换」】
-  // 原来切换分区时保留了「分类」下拉里选中的值（比如国内的「科技」），
-  // 而国际板块根本没有这个分类 → 列表空空如也，看着就像栏目没换。
-  // 所以切换分区必须同时清掉分类筛选和搜索词，并立刻清屏给出加载反馈
+  // 切换分区必须同时清掉分类筛选（国际板块没有国内的栏目），并立刻清屏给出加载反馈
   // （国际首次抓取要几十秒，不能让人对着旧内容发呆）。
-  document.getElementById("cls").value = "";
-  document.getElementById("q").value = "";
+  // 2026-10-25：搜索词与归档范围随搜索功能一起没了，这里只剩清分类一件事。
+  $("cls").value = "";
   state.items = [];
-  document.getElementById("grid").innerHTML =
-    `<div class="empty">正在抓取${state.region === "intl" ? "国际" : "国内"}新闻，请稍候…</div>`;
-  document.getElementById("meta").textContent = "抓取中…";
+  $("grid").innerHTML = skeletonHTML();
+  $("meta").textContent = "抓取中…";
+  renderLeft();
   window.scrollTo(0, 0);   // 切分区也回到顶部（热榜位置）
   load(false);
 });
-document.getElementById("ver").textContent = SSR.version;
-document.getElementById("ftVer").textContent = SSR.version;
-if(state.items.length) buildClsOptions();
-render();
-load(false);
-setInterval(()=>checkVersion(), 60000);
 
-// 【2026-10-07 用户要求「网页打开必须定位在热榜」】
-// 浏览器默认会恢复上次的滚动位置和表单状态，结果打开时可能停在页面中间，
-// 甚至因为上次选中了某个分类（比如"科技"）而把热榜整块藏起来
-//（热榜只在「全部分类 + 无搜索」时才显示）。
-// 所以每次打开都强制：清掉分类与搜索 → 关掉滚动恢复 → 锚定到热榜标题。
-function anchorToHotList(){
-  try{ if("scrollRestoration" in history) history.scrollRestoration = "manual"; }catch(e){}
-  const sel = document.getElementById("cls");
-  const q = document.getElementById("q");
-  if(sel) sel.value = "";
-  if(q) q.value = "";
-  window.scrollTo(0, 0);                     // 先回到顶部（热榜就在首屏最上面）
-  const sech = document.querySelector("main .sech");
-  if(sech && (sech.textContent||"").indexOf("热榜") >= 0){
-    try{ sech.scrollIntoView({block:"start"}); }catch(e){ window.scrollTo(0,0); }
-  }
-}
-anchorToHotList();
-window.addEventListener("load", anchorToHotList);
-// 分区切换后同样回到热榜（新分区的内容还没到，先别停在旧位置）
+/* ================= 回顶部 ================= */
+const _topBtn = $("toTop");
+window.addEventListener("scroll", () => {
+  _topBtn.classList.toggle("show", window.scrollY > 600);
+}, {passive:true});
+_topBtn.onclick = () => window.scrollTo({top:0, behavior:"smooth"});
 
 /* ================= 开机自启开关（用户要求"第一次使用时给个开关让用户选"） ================= */
 async function refreshAutoStart(){
@@ -683,19 +1300,19 @@ async function refreshAutoStart(){
     // 这里同步带上令牌头，否则开关会一直回显成"关"。
     const r = await fetch("/api/autostart", {headers: POST_HEADERS});
     const j = await r.json();
-    const cb = document.getElementById("autostart");
+    const cb = $("autostart");
     if(cb) cb.checked = !!j.enabled;
   }catch(e){}
 }
-document.addEventListener("DOMContentLoaded", ()=>{
-  const cb = document.getElementById("autostart");
+document.addEventListener("DOMContentLoaded", () => {
+  const cb = $("autostart");
   if(!cb) return;
   refreshAutoStart();
-  cb.onchange = async ()=>{
+  cb.onchange = async () => {
     cb.disabled = true;
     try{
       const r = await fetch("/api/autostart", {method:"POST",
-        headers:{...POST_HEADERS, "Content-Type":"application/json"},
+        headers: Object.assign({}, POST_HEADERS, {"Content-Type":"application/json"}),
         body: JSON.stringify({enabled: cb.checked})});
       const j = await r.json();
       cb.checked = !!j.enabled;
@@ -705,21 +1322,235 @@ document.addEventListener("DOMContentLoaded", ()=>{
   };
 });
 
+/* ================= 通知设置：每日速览 / 夜间免打扰（2026-10-25 新增） =================
+   存在本机 %LOCALAPPDATA%\hotnews\config.local.json 的 notify 段（服务端 _save_notify_cfg），
+   不进版本库、不上传。关掉就是改动前的行为（全天照弹 / 不再播日报），随时可逆。 */
+async function refreshNotify(){
+  try{
+    const r = await fetch("/api/notify", {headers: POST_HEADERS});
+    const j = await r.json();
+    const a = $("setDigest"), b = $("setQuiet");
+    if(a) a.checked = !!j.digest_on;
+    if(b) b.checked = !!j.quiet_on;
+    if(b) b.title = "免打扰时段 " + (j.quiet_start || "22:30") + "–" + (j.quiet_end || "07:30");
+  }catch(e){}
+}
+async function saveNotify(patch){
+  try{
+    const r = await fetch("/api/notify", {method:"POST",
+      headers: Object.assign({}, POST_HEADERS, {"Content-Type":"application/json"}),
+      body: JSON.stringify(patch)});
+    const j = await r.json();
+    const a = $("setDigest"), b = $("setQuiet");
+    if(a) a.checked = !!j.digest_on;
+    if(b) b.checked = !!j.quiet_on;
+  }catch(e){}
+}
+document.addEventListener("DOMContentLoaded", () => {
+  refreshNotify();
+  const a = $("setDigest"), b = $("setQuiet");
+  if(a) a.onchange = () => { a.disabled = true; saveNotify({digest_on: a.checked}).finally(()=>a.disabled=false); };
+  if(b) b.onchange = () => { b.disabled = true; saveNotify({quiet_on: b.checked}).finally(()=>b.disabled=false); };
+});
+
+/* ================= 今日 60 秒（2026-10-25 新增） =================
+   借鉴 GitHub 上的 vikiboss/60s「每天 60 秒读懂世界」：一屏编号清单看完当天要闻。
+   差别在于**条目全部由本机挑**（/api/digest 复用气泡那套栏目配额 + 同一件事判重），
+   不请求任何第三方日报接口，页面也不因此多出任何外部资源。 */
+let _dgText = "";
+async function digestLoad(){
+  const card = $("dgCard");
+  if(!card) return;
+  try{
+    const r = await fetch("/api/digest?n=15");
+    const j = await r.json();
+    const lines = Array.isArray(j.lines) ? j.lines : [];
+    if(!lines.length){ card.hidden = true; return; }
+    _dgText = (j.head || "今日 60 秒") + "\n" + (j.text || "");
+    $("dgHead").textContent = j.head || "今日 60 秒";
+    $("dgSub").textContent = "一分钟看完 · 本机生成 · 共 " + lines.length + " 条";
+    $("dgList").innerHTML = lines.map(x => {
+      const lk = safeLink(x.link);
+      const hot = Number(x.cross_hot) >= 2 ? `<span class="src">· 全网热榜×${x.cross_hot}</span>` : "";
+      return `<li><a href="${esc(lk)}" target="_blank" rel="noopener">`
+           + `<span class="cls">【${esc(x.cls)}】</span>${esc(x.title)}`
+           + `<span class="src">（${esc(x.source || "")}）</span>${hot}</a>`;
+    }).join("");
+    card.hidden = false;
+  }catch(e){
+    if(card) card.hidden = true;          // 拿不到就整张卡不出现，不留空壳
+  }
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const c = $("dgCopy"), t = $("dgTog"), card = $("dgCard");
+  if(c) c.onclick = async () => {
+    const old = c.textContent;
+    let ok = false;
+    try{ await navigator.clipboard.writeText(_dgText); ok = true; }catch(e){}
+    if(!ok){                                  // 非安全上下文兜底：临时 textarea + execCommand
+      const ta = document.createElement("textarea");
+      ta.value = _dgText; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try{ ok = document.execCommand("copy"); }catch(e){}
+      ta.remove();
+    }
+    c.textContent = ok ? "已复制" : "复制失败";
+    setTimeout(() => { c.textContent = old; }, 1600);
+  };
+  if(t) t.onclick = () => {
+    if(!card) return;
+    card.classList.toggle("fold");
+    t.textContent = card.classList.contains("fold") ? "展开" : "收起";
+  };
+});
+
 /* ================= 首屏加载提示（用户反馈"打开页面什么都没有"） ================= */
 let _bootTry = 0;
 function bootWatch(){
   try{
-    if((state.items.length || hotItems.length) || _bootTry > 40) return;
+    if(state.items.length || _bootTry > 40) return;
     _bootTry++;
-    const g = document.getElementById("grid");
-    if(g && !g.querySelector(".card")){
-      g.innerHTML = '<div class="empty">正在加载今天的新闻…<br>' +
-        '<span style="color:#8896ab;font-size:13px">首次启动约需 10 秒，稍等一下就好</span></div>';
+    const g = $("grid");
+    if(g && !g.querySelector(".news")){
+      g.innerHTML = skeletonHTML();
+      const m = $("meta");
+      if(m) m.textContent = "正在加载今天的新闻… 首次启动约需 10 秒";
     }
-    setTimeout(async ()=>{ try{ await load(false); }catch(e){} bootWatch(); }, 1500);
+    scheduleAuto(async () => { try{ await load(false); }catch(e){} bootWatch(); }, 1500);
   }catch(e){}
 }
-bootWatch();
+
+/* ================= 页面级 JS 错误可见化（排查用；正常时应为空） ================= */
+window.addEventListener("error", e => {
+  try{
+    document.documentElement.setAttribute("data-jserr",
+      (e && e.message ? e.message : "error").slice(0, 120));
+  }catch(_){}
+});
+window.addEventListener("unhandledrejection", () => {
+  try{ document.documentElement.setAttribute("data-jserr", "unhandledrejection"); }catch(_){}
+});
+
+/* ================= 启动 ================= */
+// 【2026-10-07 用户要求「网页打开必须定位在热榜」】
+// 浏览器默认会恢复上次的滚动位置和表单状态，结果打开时可能停在页面中间，
+// 甚至因为上次选中了某个分类而把热榜整块藏起来（热榜只在「全部分类」时才显示）。
+// 【2026-10-24 UI 整改】热榜就在第一张卡下面，首屏第一眼必须是它，所以这里只做
+// 「清掉恢复出来的分类选择 + 回到页面顶部」。
+// 2026-10-25：搜索框取消后不再有"?q= 深链接要保护"这回事，DEEP_Q 一并删除。
+function anchorToHotList(){
+  try{ if("scrollRestoration" in history) history.scrollRestoration = "manual"; }catch(e){}
+  const sel = $("cls");
+  if(sel) sel.value = "";
+  window.scrollTo(0, 0);
+}
+
+(async function boot(){
+  $("ver").textContent = SSR.version;
+  setTxt("ftVer", SSR.version);                   // 同上：元素不在就跳过，保证后面首屏照画
+  if(state.items.length) applyItems(state.items);
+  else renderLeft();
+  anchorToHotList();
+  window.addEventListener("load", anchorToHotList);
+  load(false);
+  loadSources();
+  digestLoad();                              // 今日 60 秒（本机 /api/digest，不碰外部）
+  setInterval(() => loadSources(), 60000);   // 只读轮询：不触发任何抓取
+  setInterval(() => digestLoad(), 10 * 60 * 1000);   // 日报跟着数据一起换新
+  bootWatch();
+})();
+</script>
+<!-- ===== 外观：主题三档 + 主色（2026-10-24 四款统一组件） ===== -->
+<style>
+#apFab{z-index:70;width:30px;height:30px;border-radius:50%;flex:none;margin-left:6px;border:1px solid var(--line);background:transparent;color:var(--txt-2);display:grid;place-items:center;cursor:pointer;font-size:13px;padding:0}
+#apFab:hover{color:var(--accent);border-color:var(--accent)}
+#apPop{position:fixed;z-index:71;width:250px;background:var(--card);border:1px solid var(--line-2);
+  border-radius:12px;box-shadow:var(--shadow-2);padding:12px;display:none}
+#apPop.on{display:block}
+.ap-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.ap-lab{font-size:11px;color:var(--txt-3);width:30px;flex:none}
+.ap-seg{display:flex;gap:4px;flex:1}
+.ap-seg button{flex:1;height:26px;border-radius:7px;border:1px solid var(--line);background:transparent;
+  color:var(--txt-2);font-size:11px;cursor:pointer;padding:0}
+.ap-seg button.on{background:color-mix(in srgb,var(--accent) 15%,transparent);border-color:var(--accent);color:var(--accent);font-weight:600}
+.ap-sw{display:flex;gap:8px;flex:1}
+.ap-sw button{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;flex:none}
+.ap-sw button.on{border-color:var(--txt)}
+.ap-hint{font-size:10px;color:var(--txt-3);line-height:1.5;margin-top:9px}
+#btnTheme,#themeBtn{display:none!important}
+html[data-accent="blue"]{--accent:#4f8cff;--accent-ink:#04122e}
+html[data-accent="green"]{--accent:#3ecf8e;--accent-ink:#062016}
+html[data-accent="violet"]{--accent:#a78bfa;--accent-ink:#1a1030}
+html[data-accent="amber"]{--accent:#f0b429;--accent-ink:#221603}
+html[data-theme="light"][data-accent="blue"]{--accent:#1a5fd0;--accent-ink:#fff}
+html[data-theme="light"][data-accent="green"]{--accent:#0f9d58;--accent-ink:#fff}
+html[data-theme="light"][data-accent="violet"]{--accent:#6d28d9;--accent-ink:#fff}
+html[data-theme="light"][data-accent="amber"]{--accent:#a86f00;--accent-ink:#fff}
+html[data-accent]{--accent-soft:color-mix(in srgb,var(--accent) 14%,transparent);--accent-line:color-mix(in srgb,var(--accent) 45%,transparent)}
+</style>
+<button id="apFab" title="外观：主题与主色" aria-label="外观">◐</button>
+<div id="apPop" role="dialog" aria-label="外观设置">
+  <div class="ap-row"><span class="ap-lab">主题</span><div class="ap-seg" id="apMode">
+    <button type="button" data-m="auto">跟随系统</button><button type="button" data-m="light">亮色</button><button type="button" data-m="dark">暗色</button>
+  </div></div>
+  <div class="ap-row"><span class="ap-lab">主色</span><div class="ap-sw" id="apAcc">
+    <button type="button" data-a="default" title="品牌色"></button><button type="button" data-a="blue" title="蓝" style="background:#4f8cff"></button><button type="button" data-a="green" title="绿" style="background:#3ecf8e"></button><button type="button" data-a="violet" title="紫" style="background:#a78bfa"></button><button type="button" data-a="amber" title="琥珀" style="background:#f0b429"></button>
+  </div></div>
+  <div class="ap-hint">「跟随系统」随 Windows 亮/暗模式自动切换；选择记在本机，重开仍在。</div>
+</div>
+<script>
+(function(){
+  var R=document.documentElement, K='ui-theme-mode', A='ui-accent';
+  var media=window.matchMedia?window.matchMedia('(prefers-color-scheme: light)'):null;
+  var brand=(getComputedStyle(R).getPropertyValue('--accent')||'').trim()||'#888';
+  function mode(){ try{return localStorage.getItem(K)||'auto'}catch(e){return 'auto'} }
+  function acc(){ try{return localStorage.getItem(A)||'default'}catch(e){return 'default'} }
+  function apply(){
+    var m=mode();
+    var dark = m==='dark' || (m==='auto' && !(media&&media.matches));
+    R.setAttribute('data-theme', dark?'dark':'light');
+    var a=acc();
+    if(a==='default'){ R.removeAttribute('data-accent'); } else { R.setAttribute('data-accent',a); }
+    sync(m,a);
+  }
+  function sync(m,a){
+    var mb=document.querySelectorAll('#apMode button');
+    for(var i=0;i<mb.length;i++) mb[i].classList.toggle('on', mb[i].getAttribute('data-m')===m);
+    var ab=document.querySelectorAll('#apAcc button');
+    for(var j=0;j<ab.length;j++) ab[j].classList.toggle('on', ab[j].getAttribute('data-a')===a);
+    var fab=document.getElementById('apFab');
+    if(fab) fab.textContent = R.getAttribute('data-theme')==='dark' ? '◐' : '◑';
+  }
+  function setMode(m){ try{localStorage.setItem(K,m)}catch(e){} apply(); }
+  function setAcc(a){ try{localStorage.setItem(A,a)}catch(e){} apply(); }
+  var fab=document.getElementById('apFab'), pop=document.getElementById('apPop');
+  var holder=document.querySelector('.top-r')||document.querySelector('.hbar')||document.querySelector('header');
+  if(holder && fab){ holder.appendChild(fab); if(holder.tagName==='HEADER'){ fab.style.position='fixed'; fab.style.top='10px'; fab.style.right='12px'; } }
+  if(fab) fab.addEventListener('click',function(e){ e.stopPropagation();
+    if(!pop.classList.contains('on')){ var r=fab.getBoundingClientRect();
+      pop.style.right='12px'; pop.style.left='auto'; pop.style.top=(r.bottom+8)+'px'; }
+    pop.classList.toggle('on'); });
+  document.addEventListener('click',function(e){ if(pop && !pop.contains(e.target) && e.target!==fab) pop.classList.remove('on'); });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'){ pop && pop.classList.remove('on'); }
+    if((e.key==='t'||e.key==='T') && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||''))){
+      e.stopImmediatePropagation(); e.preventDefault();
+      setMode(R.getAttribute('data-theme')==='dark'?'light':'dark');
+    }
+  }, true);
+  document.getElementById('apMode').addEventListener('click',function(e){
+    var b=e.target.closest?e.target.closest('button'):null; if(!b) return; setMode(b.getAttribute('data-m'));
+  });
+  document.getElementById('apAcc').addEventListener('click',function(e){
+    var b=e.target.closest?e.target.closest('button'):null; if(!b) return; setAcc(b.getAttribute('data-a'));
+  });
+  var d=document.querySelector('#apAcc button[data-a="default"]'); if(d) d.style.background=brand;
+  if(media && media.addEventListener) media.addEventListener('change',function(){ if(mode()==='auto') apply(); });
+  else if(media && media.addListener) media.addListener(function(){ if(mode()==='auto') apply(); });
+  var forced=null; try{ forced=new URLSearchParams(location.search).get('theme'); }catch(e){}
+  if(forced==='light'||forced==='dark'){ R.setAttribute('data-theme',forced); sync(mode(),acc()); } else { apply(); }
+  window.__uiTheme={mode:mode,accent:acc,setMode:setMode,setAccent:setAcc};
+})();
 </script>
 </body>
 </html>

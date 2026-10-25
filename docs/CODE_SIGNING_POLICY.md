@@ -1,6 +1,6 @@
 # 代码签名与产物验证政策（CODE SIGNING POLICY）
 
-作者：**海风（kele551）** · 仓库：https://gitee.com/kele551/hotnews
+作者：**海风（kele551）** · 仓库：https://gitcode.com/kele551/hotnews
 
 适用范围：本项目在 Gitee / GitHub 发行版（Release）里分发的 Windows 产物
 （`热点新闻.exe` 等），以及在线升级用的 `version.json` 与 `version.json.sig`。
@@ -79,7 +79,7 @@ Get-FileHash -Algorithm SHA256 .\热点新闻.exe | Format-List
    注意两份构建如果 PyInstaller / Python 版本不同，字节会不同、SHA256 也就不同；
    这时以「自己构建的包能正常跑、行为一致」为准，并欢迎把差异反馈给我们。
 2. **远端 `version.json` 里的 `launcher.sha256`**：这就是升级流程用的期望值。
-   更新源：`https://raw.giteeusercontent.com/kele551/hotnews/raw/master/version.json`
+   更新源：`https://gitcode.com/api/v5/repos/kele551/hotnews/raw/version.json?ref=main`
    （字段为 64 位十六进制）。程序自己升级时**强制校验**它，不符就拒绝替换。
 3. **CI 打印的 SHA256**：`.github/workflows/build.yml` 每次运行都会把产物的 SHA256
    写进日志，并写进 artifact 里的 `SHA256SUMS.txt`。

@@ -1,7 +1,7 @@
 # 合规声明（COMPLIANCE）
 
 > 本文件的合规口径与《合规守法》条款一致（维护者工作区章程 §9）。  
-> 作者：海风（kele551） · 仓库：https://gitee.com/kele551/hotnews  
+> 作者：海风（kele551） · 仓库：https://gitcode.com/kele551/hotnews  
 > 最近更新：2026-10-09
 
 **一句话**：本工具是**个人学习用的新闻标题聚合器** —— 只把各新闻网站**公开的标题、摘要与原文链接**
@@ -180,7 +180,7 @@ annotated-types（MIT）、certifi（MPL-2.0）、sgmllib3k（BSD）、soupsieve
   文章页补图有单轮条数上限（国内 96 条、国际 48 条），
   且**按来源轮流分配**，不会对单一站点连续打点；
 - 请求头自报身份：浏览器 UA **追加**项目标识
-  `HotnewsAggregator/1.5 (+https://gitee.com/kele551/hotnews)`（`server.py` 的 `BOT_ID`）。
+  `HotnewsAggregator/1.5 (+https://gitcode.com/kele551/hotnews)`（`server.py` 的 `BOT_ID`）。
   用「追加」而不是整个替换 UA，是因为实测部分源（如 mefcl）会按 UA 判断
   是否为普通浏览器访问，纯 bot UA 会被挡在门外 —— 那样等于把源打挂；
   追加式标识同样让站方在日志里认得出我们、找得到仓库、提得出移除要求；
@@ -199,7 +199,7 @@ python tools/preflight_release.py --e2e    # 追加端到端抓取（真联网�
 
 全绿（允许 `[SKIP]`）才允许发布；出现 `[FAIL]` 一律先修改，再发布。
 
-作者：海风（kele551）　https://gitee.com/kele551/hotnews
+作者：海风（kele551）　https://gitcode.com/kele551/hotnews
 
 ## 9. 开发方式与责任
 
