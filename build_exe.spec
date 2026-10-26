@@ -20,7 +20,7 @@ BASE = SPECPATH
 APP_AUTHOR = "海风（kele551）"
 APP_COMPANY = "HaiFeng (kele551)"
 APP_COPYRIGHT = "Copyright (C) 2026 HaiFeng (kele551)"
-APP_REPO = "gitee.com/kele551/hotnews"
+APP_REPO = "github.com/kele551/hotnews"
 APP_DESC = "热点新闻检索"
 APP_NAME = "热点新闻检索"
 

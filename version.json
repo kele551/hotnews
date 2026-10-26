@@ -1,9 +1,9 @@
 {
-  "version": "1.5.7",
+  "version": "1.5.8",
   "launcher": {
-    "url": "https://gitcode.com/kele551/hotnews/releases/download/v1.5.7/hotnews-v1.5.7.exe",
-    "sha256": "AC0D871885219CE806BC48DE34C1010E4536C9717E1E6F8928BFD65B9AAD19B2",
-    "size": 14308517
+    "url": "https://gitcode.com/kele551/hotnews/releases/download/v1.5.8/hotnews-v1.5.8.exe",
+    "sha256": "CC2D2BB2C5A7D0E19EF51CDEF8DF7E51E170DC1793ADD9469E41085AAE12B272",
+    "size": 15249859
   },
-  "notes": "更新内容\n· 页面页脚的仓库地址换成 GitHub（可点）\n· 只改显示，抓取与国内/国际划分逻辑未动"
+  "notes": "更新内容\n· 事件卡：同一件事的多家报道合成一张卡，点开看各家怎么报\n· 跨天归档与历史检索：刷新不再丢旧稿；断网时首屏回落到归档内容\n· 桌面气泡投放重排：同一件事跨轮只提醒一次，夜间免打扰\n· 源健康度按实际可读条数排序，哪家源在超时或掉线一眼看出来\n· 修个别垂类源整栏消失：时效窗口只留一处判据（源声明 > 栏目豁免 > 分区默认）\n· 首页与国际页版式继续打磨，主题跟随系统深浅色"
 }
