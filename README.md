@@ -3,7 +3,8 @@
 
 <h1>hotnews · 热点新闻检索</h1>
 
-<a href="https://gitcode.com/kele551/hotnews/releases" title="下载请走 GitCode 主源；实时计数端点在境内连不通，所以这里不放动态徽章"><img alt="Downloads" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E9%87%8F-%E8%A7%81%E5%8F%91%E8%A1%8C%E9%A1%B5-brightgreen?style=flat-square" height="30"></a>
+<a href="https://gitcode.com/kele551/hotnews/releases" title="下载量 · GitHub + GitCode 合计 · 实时"><img alt="Downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Ddownloads&style=flat-square" height="30"></a>
+<a href="https://gitcode.com/kele551/hotnews" title="浏览量 · Gitee + GitCode 合计 · 实时"><img alt="浏览量" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Dviews&style=flat-square" height="30"></a>
 <img alt="形态" src="https://img.shields.io/badge/%E5%BD%A2%E6%80%81-%E5%8D%95%E6%96%87%E4%BB%B6%20exe-blue?style=flat-square" height="30">
 
 <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
@@ -57,7 +58,7 @@
 - 页面右上角「检查更新」手动触发
 - 右下角气泡提醒（见下文），点气泡可直接打开对应新闻
 
-> **国内用户请从 GitCode 下载（速度快）**；**三个平台代码一致**：[GitCode](https://gitcode.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· Gitee 老仓库（历史入口，2026-10-17 起停更，只留最后一版，不再放新包，故不附链接）。
+> **国内用户请从 GitCode 下载（速度快）**；**三个平台代码一致**：[GitCode](https://gitcode.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· [AtomGit](https://atomgit.com/kele551/hotnews)（自动镜像 GitHub，含发行版附件）。老仓库已于 2026-10-17 起停更，只留最后一版、不再放新包，故不附链接。
 > 境外仓库国内近期时常连不通，所以下载、提 Issue、看协议这三件日常事**都走 GitCode**；GitHub 只在 GitCode 也取不到时当后备。
 > **二进制发行包请从 GitCode（主）或 GitHub（镜像）下载**；三个平台都收 Issue / PR。
 
@@ -303,8 +304,8 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 { "update": { "enabled": true, "auto_update": true } }
 ```
 
-> **升级的安全底线与维护者须知**（fail-closed 的六条底线、`version.json` 与 `version.json.sig` 为什么不是一对、
-> GitHub 兜底怎么保持有效、发布新版本踩过的六个坑、Gitee `master` 为什么不能强推以及两种推法）见
+> **升级的安全底线与维护者须知**（fail-closed 的六条底线、`version.json` 完整版的字节口径与签名、
+> 发布新版本踩过的坑、为什么禁止强推、以及发完怎么一条命令复核线上 `tools/verify_release.py`）见
 > [CONTRIBUTING.md](docs/CONTRIBUTING.md) 第 5.1 ～ 5.3 节。
 
 </details>
