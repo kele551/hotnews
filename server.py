@@ -187,6 +187,23 @@ CLS_MAX_AGE_HOURS = {
 FRESH_MIN_PER_CLS = 6
 FRESH_MIN_SITES = 3
 
+
+def _max_age_hours(src):
+    """时效窗口只此一处口径：源自己声明 > 栏目级豁免表 > 分区默认。
+
+    【2026-10-26 修】三个 HTML 解析器（mefcl / 凤凰娱乐 / 凤凰资讯）各自写成
+    `MAX_AGE_HOURS.get("cn", 72)`，而 "cn" 这个键**一直都在**（值 24）—— 那个 72
+    从没生效过。后果是「软件」「娱乐」这类按 CLS_MAX_AGE_HOURS 放宽到 120/168 小时的
+    垂类源，在解析阶段就按 24 小时砍光：2026-10-26 实测 mefcl 首页 20 条**全部**因
+    「昨天 00:00 早于 now-24h」被丢，栏目里整个消失，右栏标成 warn。
+    （站方只给日期不给时刻，解析器按当天 00:00 计，见 _parse_mefcl 里 2026-10-07 那段注释。）
+    解析阶段用这个函数，与抓取主路径（见 RSS 分支的 max_age）同一口径；
+    "当天优先" 的下限仍在 _select_fresh 那里把关，不会因为窗口放宽就把旧稿顶到前面。
+    """
+    return (src.get("max_age_hours")
+            or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
+            or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+
 # ---------------- 数据源 ----------------
 # 2026-10-06 全量实测后重构：人民网 / 新浪 / 网易 / 央视 / 环球网 / 澎湃 的 RSS
 # 均已停更（人民网停在 2025-06-05，新浪停在 2025-09-23），仍返 200 但内容陈旧，
@@ -1373,9 +1390,7 @@ def _parse_one_raw(src):
         print(f"[ok] {src['id']}: XML 声明编码与实际不符，已按 gb18030 回退重解")
         doc = _fixed
     items = []
-    max_age = (src.get("max_age_hours")
-               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
-               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    max_age = _max_age_hours(src)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     dropped = 0
     # 【2026-10-11】原来写死只取前 24 条。RSS 是按时间倒序的，取 24 条对「一天几十条」
@@ -1766,7 +1781,10 @@ def _hot_ifeng():
         print("[warn] 凤凰资讯抓取失败")
         return []
     page = raw.decode("utf-8", "ignore")
-    cutoff = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get("cn", 72) * 3600
+    # 【2026-10-26 更正注释】这里原来写 `MAX_AGE_HOURS.get("cn", 72)`，但 "cn" 键一直是 24，
+    # 所以实际生效的一直是 24 小时 —— 对本源(热榜)反而是**对的**（热榜不豁免，见 CLS_MAX_AGE_HOURS），
+    # 只是写法骗人。改成明说：热榜按热榜的窗口。
+    cutoff = datetime.now(CST).timestamp() - CLS_MAX_AGE_HOURS.get("热榜", 24) * 3600
     out, seen = [], set()
     pat = r'"id":"(\d+)","title":"([^"]*)","url":"(https?://[^"]*ifeng\.com/c/[^"]+)"'
     for m in re.finditer(pat, page):
@@ -1880,6 +1898,8 @@ def _parse_mefcl(src):
          题图取 <img data-src>（src 只是占位 thumbnail.png），摘要取 <p class="note">。
 
     /feed/ 仍返回 403，故改抓首页 HTML。解析失败 / 拿不到内容时返回 []，不影响其它源。"""
+    global _MEFCL_LAST          # 2026-10-26 修: 下面要写这个模块级台账, 少了 global
+    # 就会让 :1894 :1906 :1917 :1920 :1926 五条「回退上次结果」全抛 UnboundLocalError
     import time as _t
     now = _t.time()
     # 先直接抓首页：站方若已不再返回校验页，正文（含 article.excerpt）直接返回，
@@ -1925,7 +1945,11 @@ def _parse_mefcl(src):
             print("[warn] mefcl 仍返回校验页，cookie 失效需重试（回退上次结果）")
             return _MEFCL_LAST
     items = []
-    cutoff = datetime.now(CST).timestamp() - MAX_AGE_HOURS.get("cn", 72) * 3600
+    # 【2026-10-26 修】原来写 `MAX_AGE_HOURS.get("cn", 72)` = 24 小时，把「软件」栏目
+    # 本该按 CLS_MAX_AGE_HOURS["软件"]=120 小时的窗口砍到一天；站方又只给日期(按当天 00:00 计)，
+    # 于是"昨天发的"整批落在 now-24h 之前 —— 实测 2026-10-26 首页 20 条**全丢**，mefcl 在列表里消失。
+    # 改走 _max_age_hours(src) 这一处口径，与抓取主路径一致。
+    cutoff = datetime.now(CST).timestamp() - _max_age_hours(src) * 3600
     for m in re.finditer(r'<article\s+class="excerpt[^"]*">(.*?)</article>', html, re.S):
         blk = m.group(1)
         # 链接：优先 <a class="focus" href>（文章主链接）；回落 <h2><a href>
@@ -2049,7 +2073,8 @@ def _parse_ifeng(src):
     """凤凰娱乐首页（娱乐栏目：明星/绯闻/八卦）。
     首页内嵌 JSON 数组，每条含：newsTime(YYYY-MM-DD HH:MM:SS) / thumbnails.image[0].url
     / title / url(ent.ifeng.com/c/xxx)。首页会混入少量旧推广稿，故按 newsTime 做时效过滤
-    （cn-ent 放宽到 720h=30 天）。抓取失败返回 []，不影响其它源。"""
+    （窗口按 _max_age_hours：cn-ent 属「娱乐」= CLS_MAX_AGE_HOURS 168 小时；2026-10-26 之前
+    这里写着"720h"但代码走的是 24h，两个数都没按声明生效过）。抓取失败返回 []，不影响其它源。"""
     raw = _fetch(src["url"])
     if isinstance(raw, tuple):
         raw = raw[0]
@@ -2059,7 +2084,10 @@ def _parse_ifeng(src):
     html = raw.decode("utf-8", "ignore")
     items, seen = [], set()
     no_ts = 0            # 【2026-10-09】源站没给时间的条数（只用于日志，不伪造时间）
-    max_age = src.get("max_age_hours") or MAX_AGE_HOURS.get("cn", 24)
+    # 【2026-10-26 修】同 mefcl：原来 `MAX_AGE_HOURS.get("cn", 24)` 让「娱乐」这个
+    # 按栏目放宽到 168 小时的垂类源，在解析阶段就按 24 小时收口（docstring 里写的
+    # "cn-ent 放宽到 720h" 更是从没生效过）。统一走 _max_age_hours(src)。
+    max_age = _max_age_hours(src)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     for m in re.finditer(r'"type":"article","url":"(https://ent\.ifeng\.com/c/[^"]+)"', html):
         url = m.group(1)
@@ -5915,9 +5943,7 @@ def _parse_cri_ent(src):
         print("[warn] 国际在线娱乐抓取失败")
         return []
     page = _decode_feed_bytes(raw)      # 中文站：按声明 → utf-8 → gb18030 依次回退解码
-    max_age = (src.get("max_age_hours")
-               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
-               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    max_age = _max_age_hours(src)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     out, seen, dropped = [], set(), 0
     for m in _CRI_CARD_RE.finditer(page):
@@ -5988,9 +6014,7 @@ def _parse_cri_world(src):
         print("[warn] 国际在线·国际抓取失败")
         return []
     page = _decode_feed_bytes(raw)
-    max_age = (src.get("max_age_hours")
-               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
-               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    max_age = _max_age_hours(src)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     out, seen, dropped = [], set(), 0
     for m in _CRI_LIST_CARD_RE.finditer(page):
@@ -6051,9 +6075,7 @@ def _parse_xinhua_coxe(src):
         print("[warn] 新华网·体育（国际频道）抓取失败")
         return []
     page = _decode_feed_bytes(raw)
-    max_age = (src.get("max_age_hours")
-               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
-               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    max_age = _max_age_hours(src)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     out, seen, dropped, natl = [], set(), 0, 0
     for m in _XH_COXE_CARD_RE.finditer(page):
@@ -6122,9 +6144,7 @@ def _parse_people_list(src):
         print("[warn] 人民网列表抓取失败")
         return []
     page = _decode_feed_bytes(raw)
-    max_age = (src.get("max_age_hours")
-               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
-               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    max_age = _max_age_hours(src)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     out, seen, dropped = [], set(), 0
     for m in _PEOPLE_CARD_RE.finditer(page):
@@ -6184,9 +6204,7 @@ def _parse_gmw_list(src):
         print("[warn] 光明网国际抓取失败")
         return []
     page = _decode_feed_bytes(raw)
-    max_age = (src.get("max_age_hours")
-               or CLS_MAX_AGE_HOURS.get(src.get("cls", ""))
-               or MAX_AGE_HOURS.get(src.get("region", "cn"), 24))
+    max_age = _max_age_hours(src)
     cutoff = datetime.now(CST).timestamp() - max_age * 3600
     out, seen, dropped = [], set(), 0
     for m in _GMW_CARD_RE.finditer(page):
