@@ -105,7 +105,20 @@ jobs:
             throw "exe 文件版本（$fileVer）与 version.json（$v）不一致 —— version.json 与打包产物对不上"
           }
           if ($company -ne "HaiFeng (kele551)") { throw "CompanyName 署名不对：$company" }
-          if ($comments -ne "gitcode.com/kele551/hotnews") { throw "Comments（仓库地址）不对：$comments" }
+
+          # 仓库地址以 build_exe.spec 的 APP_REPO 为唯一口径：以前这里写死仓库名，
+          # spec 从 gitee 改到 github 时闸门没跟着改，连红三次（2026-10-26~27）。
+          # 现在只校验「exe 属性 == spec 声明」，并卡住仓库归属和已停更的 gitee。
+          $specRepo = (Select-String -Path build_exe.spec -Pattern '^APP_REPO\s*=\s*"([^"]+)"' |
+                       Select-Object -First 1).Matches[0].Groups[1].Value
+          if (-not $specRepo) { throw "build_exe.spec 里找不到 APP_REPO" }
+          if ($specRepo -notmatch '^(gitcode|github|atomgit)\.com/kele551/hotnews$') {
+            throw "build_exe.spec 的 APP_REPO 不对（应为 kele551/hotnews 的 GitCode/GitHub/AtomGit 地址）：$specRepo"
+          }
+          Write-Host "spec APP_REPO     = $specRepo"
+          if ($comments -ne $specRepo) {
+            throw "exe 注释里的仓库地址（$comments）与 build_exe.spec 的 APP_REPO（$specRepo）不一致"
+          }
 
           # version.json 不能带 BOM：带了会让本机打包当场 JSONDecodeError（spec 里已用 utf-8-sig 容忍，
           # 但线上升级源必须是干净的无 BOM 版本，这里一并卡住）
