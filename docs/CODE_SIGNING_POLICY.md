@@ -2,7 +2,7 @@
 
 作者：**海风（kele551）** · 仓库：https://gitcode.com/kele551/hotnews
 
-适用范围：本项目在 Gitee / GitHub 发行版（Release）里分发的 Windows 产物
+适用范围：本项目在 GitCode / GitHub 发行版（Release）里分发的 Windows 产物
 （`热点新闻.exe` 等），以及在线升级用的 `version.json` 与 `version.json.sig`。
 
 ---

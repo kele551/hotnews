@@ -917,9 +917,9 @@ else:
             if _st >= 400:
                 _info.append('%s -> HTTP %s（限流/需登录，不算死链）' % (_u, _st))
             say('     · HTTP %s  %s' % (_st, _u))
-        # 平台限速：Gitee 侧间隔拉到 3 秒（2026-10-08 密集抓 Gitee 自己抓出过 451）
+        # 平台限速：GitCode 侧间隔拉到 3 秒（2026-10-08 密集抓老平台自己抓出过 451）
         if _i < len(_urls) - 1:
-            time.sleep(3.0 if 'gitee.com' in _u else 0.5)
+            time.sleep(3.0 if 'gitcode.com' in _u else 0.5)
     check('README 里 %d 条链接都不存在 404/410（这些才是死链）' % len(_urls), not _dead,
           '；'.join(_dead[:3]))
     check_warn('README 里的链接主机都连得上（有没有 DNS/连接层面的失效）', not _netfail,
@@ -954,11 +954,13 @@ else:
         check_warn('GitHub main 的 version.json 版本 == 本地 v%s' % VER,
                    str(_ghv).lstrip('v') == VER,
                    '线上=%s 本地=%s（发布前"仓库更新"属正常）' % (_ghv, VER))
-    time.sleep(3.0)   # Gitee 限速：任何两次请求之间 ≥3 秒
-    _gtv = _remote_ver('Gitee(master)',
-                       'https://gitee.com/api/v5/repos/kele551/hotnews/contents/version.json?ref=master')
+    time.sleep(3.0)   # GitCode 限速：任何两次请求之间 ≥3 秒
+    # 主源已从 gitee 迁到 gitcode（2026-10-26）：gitcode 的 contents 接口与老平台同形
+    # （返回 {content: base64}），分支名是 main 不是 master。
+    _gtv = _remote_ver('GitCode(main)',
+                       'https://gitcode.com/api/v5/repos/kele551/hotnews/contents/version.json?ref=main')
     if _gtv:
-        check_warn('Gitee master 的 version.json 版本 == 本地 v%s' % VER,
+        check_warn('GitCode main 的 version.json 版本 == 本地 v%s' % VER,
                    str(_gtv).lstrip('v') == VER, '线上=%s 本地=%s' % (_gtv, VER))
 
 # ══════════════════════════════════════════════════════════════════════════

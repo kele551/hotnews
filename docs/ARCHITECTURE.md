@@ -16,7 +16,7 @@
    ├─ 已有实例在跑 → 直接开浏览器；否则选端口（8000 起）→ uvicorn 起 server:app → 开浏览器
    ├─ server.py：抓取来源 → 去重合并 → 国内/国际分流 → 翻译（带磁盘缓存）→ 图片代理 → api_news()
    ├─ static/index.html、static/intl.html：国内页 / 国际页（含右下角气泡提醒）
-   └─ updater.py：读 Gitee version.json → 校验 sha256 + Ed25519 签名 → 下载 → 退出时替换并重启
+   └─ updater.py：读 GitCode version.json（兜底 GitHub）→ 校验 sha256 + Ed25519 签名 → 下载 → 退出时替换并重启
 ```
 
 **合规底线**：只聚合**公开的标题与链接**，不存储、不转载正文，每条保留原文跳转；
@@ -46,11 +46,12 @@
 运行日志 `hotnews.log` 在 exe 同级（超过 1MB 自动滚动）。
 
 > ⚠ **两条最容易踩的坑**（改这条链路前务必先读 `docs/CONTRIBUTING.md` 5.2 节）：
-> 1. 本地 `version.json` **必须保持精简版**（只写 `version`）—— 写成完整版会掉进
+> 1. `launcher.url/sha256/size` **只能在 exe 打包定型之后补写** —— `build_exe.spec` 会把
+>    `version.json` 打进 exe，先写自己的哈希就掉进
 >    「改 version.json → exe 变 → sha256 变 → 又要改 version.json」的自引用死循环；
-> 2. 往 Gitee 推代码**不能用强推**：远端 `master` 比本地多两个提交（完整版 `version.json` + 签名），
->    那是**所有已装用户的升级数据**。用 CONTRIBUTING 里的「做法二」：以远端为基开临时分支、
->    只重放本次改动、快进推送，**全程不碰 `version.json`**。
+> 2. **任何远端都不能强推**。线上 `main` 那份完整版 `version.json` + `.sig` 就是
+>    **所有已装用户的升级数据**，冲掉等于当场断掉在线升级；发布顺序固定为
+>    「提交 → 只推 tag → 建发行版传附件 → 回读验真 → 最后推 main → `tools/verify_release.py`」。
 
 ---
 

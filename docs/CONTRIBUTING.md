@@ -59,7 +59,7 @@ hotnews（热点新闻检索）是一个人维护的小项目：Windows 单文�
 5. 不要提交构建产物：`dist/`、`build/`、`runtime/`、`*.exe`、`*.zip`、`*.log` 都在 `.gitignore` 里，
    请保持这样。附件请用 Issue 传，别进仓库。
 
-> `master` 分支只由维护者合并。维护者推 Gitee 时会同步 GitHub 镜像。
+> `main` 分支只由维护者合并。维护者推 GitCode（主源）时会同步 GitHub 与 AtomGit 镜像。
 
 ---
 
@@ -292,88 +292,69 @@ python build.py --list
 - **发版前必须跑 `python tools/preflight_release.py`（脚本随仓库提供，克隆下来就能跑），
   不全绿不许发布**；红项（`[FAIL]`）先修再发，跳过项（`[SKIP]`，本机没装依赖或没联网）
   不算失败，但要在发布记录里写明原因。
-- **发布流程**（维护者执行）：由维护者工作区里的 `tools/publish.py <版本号>` 完成
-  —— 改版本号 → 打包 → 生成升级源 `version.json`（并用离线私钥做 Ed25519 签名）→
-  推 Gitee → 建 Release 传附件 → 同步 GitHub → 两端回下载核对 SHA256。
-  发布脚本与签名私钥**不在本仓库内**，也不应该被复制进来。
+- **发布流程**（维护者执行，顺序见 5.2 第 4 条）：改版本号 → 打包 → 生成升级源 `version.json`
+  （并用离线私钥做 Ed25519 签名）→ 推 tag → 建 GitCode / GitHub 发行版并上传附件 →
+  回下载核对 SHA256 → 最后推 main → 跑 `python tools/verify_release.py` 复核线上。
+  **发布与签名用的私钥不在本仓库内，也不应该被复制进来**；本项目一键发布脚本暂存于维护者本机
+  （狐径 / 桌面壁纸那两座仓库已有随库的 `tools/publish.py`，这里补齐是下一件事），
+  但**只读验真 `tools/verify_release.py` 随仓库提供，克隆下来就能跑**。
 - 发布相关的产物来源、签名计划与 SHA256 核验方法，见
   [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。
 
-### 5.1 升级源与 `version.json`（自 README 迁入，2026-10-15）
+### 5.1 升级源与 `version.json`（2026-10-26 随主源迁到 GitCode 重写）
 
-> ✅ **GitHub 那条兜底已生效**（2026-10-10 同步）：GitHub `main` 上的 `version.json` 已换成与 Gitee `master`
-> **逐字节一致**的**完整版**（1004 B，带 `launcher.url/sha256/size` 与 `notes`），配套的 `version.json.sig`
-> 也一并同步；客户端用内置公钥对 GitHub 拉回来的原始字节**验签通过**，下面三条升级源地址现在都能用。
+> ✅ **只有一份口径**：`version.json` 在任何地方都是**完整版** —— `version` +
+> `launcher.url/sha256/size` + `notes`，仓库里、GitCode `main`、GitHub `main` 三处
+> **逐字节一致**；配套的 `version.json.sig` 是 128 个十六进制字符（一个 64 字节 Ed25519
+> 签名的十六进制），签的就是那份原始字节，UTF-8 无 BOM、LF、末尾不加换行。
+> 客户端（`updater.py`）先用内置公钥对**拉回来的原始字节**验签，再比 sha256/size；
+> 所以任何时候改了 `version.json` 都必须**重签**，否则用户端一律拒绝升级（fail-closed）。
 >
-> ⚠️ **维护者注意**：仓库内那份 `version.json` 必须**继续是精简版（只有 `version`）**，
-> 而且**往 GitHub 推代码时不要把它一起推上去** —— 那会把 `main` 上的完整版覆盖回精简版，
-> GitHub 兜底会再次失效（推完请回读确认 `main` 上的 `version.json` 仍是 1004 B 的完整版）。
+> 早先是"仓库里放精简版、远端多两个提交放完整版"的两份口径 —— 那是老仓库（gitee）
+> `master` 分支的历史包袱，主源换到 GitCode 之后已经并成一份，别再按旧说明操作。
+>
+> 字节数不永恒不变（`notes` 写长一点就变了，v1.5.8 是 806 B）。**不要拿文档里的数字对线上**，
+> 用下面这条命令对：
 
-**⚠ 仓库里的 `version.json` 与 `version.json.sig` 不是一对（重要）**
+```powershell
+python tools/verify_release.py --from <用户已装的版本号>
+```
 
-- 仓库内 `version.json` 是**精简版（24 字节，只有 `version` 字段）**，是给源码运行读版本号用的；
-- 仓库内 `version.json.sig` 签的是**远端发布用的完整版**（含 `launcher.url/sha256/size` 与 `notes`，
-  1004 字节），Gitee `master` 与 GitHub `main` 上放的都是这一份；
-- 所以**拿本地这两个文件做验签自检一定失败**，这不是 bug、也不用"修"。
-- **验签必须针对「远端完整版 version.json 的原始字节」**：
-  先把远端 `version.json` 用 HTTP 取回（`r.content`，**不要**重新 `json.dumps` 再序列化），
-  再连同远端 `version.json.sig` 交给 `_ed25519.checkvalid`。自己把两部分拼起来"对一下"没有意义。
-- 本地跑真实验签的姿势：临时 `curl` 远端 `version.json` + `version.json.sig` 到临时目录再验，
-  不要用仓库里这份精简版当输入。
-
-> 📏 **本节数字要跟着文件结构一起校**：上面这两个字节数不是永恒不变的 —— 完整版后来加了 `notes`
-> 等内容，就从 852 B 长到了 1004 B。**这份文件的结构以后再变，改完记得顺手把本节里的字节数与结构示例
-> 一起校正**，否则读者会拿旧数字去对，越对越怀疑整段说明。（2026-10-16 实测：本地 24 B / 远端完整版 1004 B。）
+它按客户端同样的判据把整条链路走一遍（取清单 → 验签 → 与仓库这份比字节 → 真下载附件比
+sha256/size → GitHub 镜像同一个附件再比一遍 → 版本比较），全绿才叫"用户能升上来"。
 
 ### 5.2 发布新版本的注意事项（自 README 迁入，2026-10-15）
 
 **发布新版本的注意事项**（都是踩过的坑）：
 
-1. `version.json` 的 `notes` 字段会过 Gitee 的内容审查 —— 写了具体事件/地区名，
-   整个文件会被拦，raw 地址返回 **451**。所以说明必须写得中性简短。
+1. `version.json` 的 `notes` 字段**不要写具体事件/地区/机构名** —— 老仓库（gitee）的内容审查
+   会整份文件拦下（raw 地址返回 **451** "The content may contain violation information"），
+   升级源当场变哑弹。GitCode / GitHub 目前没这条限制，但写成中性、简短的功能说明本来就更稳：
+   这份文本会被客户端直接显示给用户。
 2. 重新发布同一版本时**必须替换附件**：本地重新构建后 sha256 变了，
    线上留旧文件会让 `version.json` 里的 sha 与实际不符，用户升级校验失败装不上。
-   Gitee 的 release 附件对象没有 id，只能**连 release 一起删掉重建**。
+   平台侧的坑各不同：老仓库的 release 附件对象没有 id，只能**连 release 一起删掉重建**；
+   GitCode 的附件对象在 API 里也**没有可靠的删除口**（`attach_files` 那套端点 404/405），
+   所以同名附件只能"取上传地址 → PUT 原始字节"覆盖，大小不一致时必须**人工到网页删掉旧的**
+   —— 宁可停下来，也不能让线上留两份不同字节的同名包。
 3. 替换脚本 `hotnews_update.vbs` 必须写成 **UTF-16**。
    写成 `utf-8-sig`（带 BOM）会让 Windows Script Host 报
    「无效字符 (1,1) 800A0408」，脚本不执行、还弹错误框，**在线升级会整个失效**。
-4. ⚠ **往 Gitee 推代码之前，必须先合并远端的 `gitee/master`** —— 本地 `main` 与远端
-   `master` 是**故意分叉**的：远端比本地多两个提交（`vX.Y.Z version.json 写完整版（带 launcher）`
-   与 `vX.Y.Z version.json 的 Ed25519 签名`），那是**在线升级要读的数据**；
-   本地那份必须保持精简版（只写 `version`），否则打包会掉进
-   「改 `version.json` → exe 变 → sha256 变 → 又要改 `version.json`」的自引用死循环。
-
-   所以**直接 `git push gitee main:master` 会被拒**（报 `non-fast-forward`）。
-   **千万不要用 `-f` 强推**：一强推就把上面那两个提交冲掉，
-   **所有已装用户的「检查更新」当场失效**。
-
-   **做法一（本仓库历史上一直这么走）**：先把远端并进来，让 push 能快进；
-   合并后本地 `version.json` 会变成完整版，要再提交一次把它改回精简版：
+4. ⚠ **发布顺序是固定的，搞错一次就等于把升级源指向一个还不存在的附件**：
 
    ```
-   git fetch gitee
-   git merge gitee/master           # 并进远端那两个提交，push 才能快进
-   # 此时本地 version.json 成了完整版 —— 提交一次「本地 version.json 精简」改回：
-   #   {"version": "X.Y.Z"}        （只留 version 一个字段）
-   git push gitee main:master
-   python tools/publish.py <版本号>  # 推完必须立刻把完整版写回远端，否则在线升级失效
+   ① 打包（此时 version.json 里的 launcher 段还是上一版的 —— 没关系，打包只读 version 字段）
+   ② 算出这个 exe 的真实 sha256/size，补写完整版 version.json 并用离线私钥重签 .sig
+   ③ 提交并**只推 tag**（发行版要挂在 tag 上）
+   ④ 建 GitCode / GitHub 发行版、上传附件（附件名必须与清单 url 里那一段一字不差）
+   ⑤ 回下载核对 sha256/size —— 不过就停在这里，**别推 main**
+   ⑥ 最后才推 main：这一刻线上升级源才从上一版切到新版
+   ⑦ `python tools/verify_release.py` 复核整条链路
    ```
 
-   **做法二（2026-10-10 实测，更省事也更稳 —— 推荐）**：以远端为基础开一个临时分支，
-   只把要推的改动重放上去，**全程不碰 `version.json`**，也就不需要事后回写：
-
-   ```
-   git fetch gitee
-   git checkout -b tmp gitee/master
-   git cherry-pick <要推的提交>       # 或者 git checkout main -- <改动的文件> 再提交
-   git push gitee tmp:master         # 快进推送，version.json 不会被碰
-   git checkout main ; git branch -D tmp
-   ```
-
-   **两种做法推完都要回读一次确认没坏**：`git show gitee/master:version.json`
-   应当仍能看到 `launcher` 段（`url` / `sha256` / `size`）与 `notes`。
-
-   （GitHub 同理：要让 GitHub 兜底可用，push 之后也要把完整版同步过去。）
+   main 先推 = 用户立刻看到新清单，但附件还没上去（或上传被截断），下载 404 / 校验失败。
+   反过来，tag 后推 = 建发行版时找不到目标提交。**永远不要 `git push -f`**：
+   线上 `main` 的完整版 `version.json` + `.sig` 就是所有已装用户的升级数据。
 5. 升级包必须**原子下载**：先下到 `.part`、校验 sha256、再改名；
    替换前再校验一次尺寸与 sha。曾经因为重复「检查更新」用 `"wb"` 截断了已下好的包，
    把一个 14MB 的程序覆盖成 1.2MB 的残缺文件，**程序当场报废**。
@@ -382,8 +363,8 @@ python build.py --list
    都会写一份回执到 `%TEMP%\hotnews_update.result`，并在失败时**把原版本重新拉起来**
    （下次启动时日志里会打印这份回执）。
 
-发布脚本：`tools/publish.py <版本号>`（同时发 Gitee 与 GitHub，替换附件、
-写远端完整版 `version.json`，并回下载核对 sha256）。
+发完必须跑一遍：`python tools/verify_release.py --from <用户已装的版本号>`
+（只读；两平台各取一次清单、验签、把附件真下载回来比字节 —— 全绿才叫用户能升级）。
 
 ### 5.3 自动升级的安全底线（自 README 迁入，2026-10-15）
 

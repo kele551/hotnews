@@ -25,11 +25,13 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 
 ## 禁区（先看这里，再改）
 
-1. **本地 `version.json` 必须保持精简版（只写 `version`）**。写成完整版会掉进
-   「改 version.json → exe 变 → sha256 变 → 又要改 version.json」的自引用死循环。
-2. **绝对不要强推（`git push -f`）Gitee 的 `master`**。远端 `master` 比本地多两个提交
-   （完整版 `version.json` + 它的签名），那是**所有已装用户的升级数据**，冲掉 = 在线升级当场失效。
-   往 Gitee 推改动一律用 CONTRIBUTING 5.2 的**做法二**（以远端为基开临时分支、只重放本次改动、快进推送）。
+1. **`version.json` 的 `launcher` 段只能在 exe 定型之后写**。`build_exe.spec` 会把这份文件
+   打进 exe，而打包只读它的 `version` 字段；如果打包前先写 `launcher.sha256`，那个值就是
+   "本 exe 的哈希"，一改文件 exe 又变 —— 自引用死循环。所以发版顺序是「打包 → 算真实
+   sha256/size → 补写完整版 `version.json` → 重签 → 提交」，不是「先写好清单再打包」。
+2. **绝对不要强推（`git push -f`）任何远端任何分支**。线上 `main` 的完整版 `version.json`
+   与它的 `.sig` 就是**所有已装用户的升级数据**，冲掉 = 在线升级当场失效（历史教训来自
+   老仓库 `master`：它比本地多两个提交，正是这两份文件）。发布顺序见 CONTRIBUTING 5.2。
 3. **替换脚本 `hotnews_update.vbs` 必须写成 UTF-16**（写成 UTF-8 带 BOM 会让 Windows Script Host 报错，升级整个失效）。
 4. **分流口径不要随手改**：国际栏**不收主体是中国**的稿件；纯外国宏观财经从国内财经挪到国际财经。
    改了判据请在 `tools/preflight_release.py` 的真机语料断言里补一条（红了必须能解释为什么）。
@@ -49,15 +51,18 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 ## 平台（三个，代码一致）
 
 代码同时镜像到三处：**GitCode（主源）** / **GitHub（镜像）** / **AtomGit（代码镜像）**。
-**二进制发行包只发 Gitee 与 GitHub** —— AtomGit 目前没有附件上传接口（它的 Release 只提供源码归档）。
+二进制发行包发 **GitCode 与 GitHub** 两处；AtomGit 会在几分钟内把 GitHub 的发行版**连同附件**
+一起镜像过去（2026-10-26 实测；早期"AtomGit 没有附件上传接口、只能发源码"的说法已过期）。
 
 ```powershell
+# 远端名字按本机 config 为准：gitcode=主源、github=镜像、atomgit=代码镜像
+# 注意：老仓库（gitee）2026-10-17 起停更，别再往它推，也别在对外文案里写它的地址。
+git push gitcode main --tags                    # GitCode（主源，升级源就从这里读）
+git push github main --tags                     # GitHub（镜像；git 端口不通时借狐径的本地代理重试）
 git push atomgit main --tags                    # AtomGit（令牌走 GIT_ASKPASS，不会出现在命令行）
-# GitHub：走工作区的纯 REST 工具（origin 虽然是 GitHub，但这条线路走 REST 更稳）
-# Gitee：**不能直接 push main**，必须用 CONTRIBUTING 5.2 的「做法二」（远端 master 带签名数据）
 ```
 
-三个平台改完都要推，**内容必须与 Gitee `master` 一致**（判定方法：`git diff atomgit/main gitee/master` 应为空）。
+三个平台改完都要推，**内容必须逐字节一致**（判定方法：`git diff github/main gitcode/main` 应为空）。
 
 ## 任务从哪来
 
@@ -74,10 +79,10 @@ GitHub Issues 里带 `good first issue` / `help wanted` 标签的条目，每条
 - **Run / verify**: `python app.py` · `python -m py_compile server.py app.py updater.py` ·
   `python build.py --list` · `python tools/preflight_release.py` (the release gate — must be all green).
 - **Never**:
-  - **don't hand-edit `version.json`** — the local copy must stay minimal (`{"version": "..."}`);
-    the remote copy is the full, signed update source;
-  - **never force-push** (`git push -f`) the Gitee `master` branch: it carries the signed `version.json`
-    commits that every installed client reads. Use the temp-branch replay in CONTRIBUTING §5.2;
+  - **don't hand-edit `version.json` before building** — `launcher.url/sha256/size` are written
+    *after* the exe is final (the exe bundles this file, so writing its own hash first is a loop);
+  - **never force-push** (`git push -f`) any remote/branch: the full signed `version.json` (+`.sig`)
+    on `main` is the update data every installed client reads;
   - write `hotnews_update.vbs` as **UTF-16** (UTF-8 with BOM makes Windows Script Host fail and breaks updates);
   - change the domestic/international rules casually — the release gate asserts them with a real corpus;
   - rewrite line endings wholesale (this repo stores **LF**, except `说明.txt` which stays CRLF);

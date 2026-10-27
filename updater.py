@@ -48,13 +48,13 @@ REMOTE_VERSION_URL_GC = "https://gitcode.com/api/v5/repos/kele551/hotnews/raw/ve
 # 候选都拿到 **原始字节** 后统一走同一套 Ed25519 验签，验不过就换下一个 ——
 # 所以加这个候选不会削弱升级安全（没有私钥照样签不出来）。
 # ⚠ GitHub 侧必须也放**完整版** version.json（带 launcher）+ 与之配套的 version.json.sig，
-#   否则验签必失败。现在 GitHub 仓库里那份是精简版（只有 version 字段），
-#   也就是说这个兜底**要等维护者把完整版同步到 GitHub 之后才真正生效**（见 README）。
+#   否则验签必失败。2026-10-26 起两平台都是**逐字节一致**的完整版：tools/publish.py 用同一份
+#   字节发两平台，发完各自回读验签，所以这条兜底**现在是真生效的**（以前那句"待同步"作废）。
 REMOTE_VERSION_URL_GH = "https://raw.githubusercontent.com/kele551/hotnews/main/version.json"
 
-# 【2026-10-07 升级通道加固】离线生成的 Ed25519 公钥；私钥只存在作者机器的
-# 作者机器的密钥目录里，绝不进仓库。客户端用它验证 version.json 的签名，
-# 这样即便 Gitee 账号被盗也推不了恶意版本（详见 fetch_remote）。
+# 【2026-10-07 升级通道加固】离线生成的 Ed25519 公钥；私钥只在作者机器的密钥目录里，
+# 绝不进仓库。客户端用它验证 version.json 的签名，这样即便 GitCode 账号被盗、或 GitHub
+# 那侧被塞了东西，也推不出恶意版本 —— 签不出合法签名就一律拒绝升级（详见 fetch_remote）。
 UPDATE_PUBKEY = "f6931bd24749559c36fc14aa8fcdedd638502fec39bb010ef505a120f9a2dfbd"
 
 if getattr(sys, "frozen", False):

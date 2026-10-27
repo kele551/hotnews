@@ -37,3 +37,8 @@ Harnesssecrets*
 secrets/
 *.pem
 *.key
+
+# tools/publish.py 的本机落点：GitCode 令牌（set-token 存这儿）与发 GitHub 发行版时的临时文案
+# 这两样都必须"就算忘了删也进不了仓库"，所以走 ignore 而不是靠人记得清理。
+.gitcode_token
+_notes.md

@@ -3,7 +3,7 @@
 > 这里的每一行都是**能独立做完、且有明确验收**的事。规则很简单：
 > **一次一件事 → 先看「涉及文件」→ 做完贴出「验收命令」的输出 → 把状态改成 `done`**。
 > 大改动先开 Issue 说方案；验收命令必须**真的跑过**。
-> 关联的 issue 写在下表 `issue` 列（**GitHub / Gitee 两侧同步维护；AtomGit 只镜像代码，不收 issue**）（带 `good first issue` 标签的适合第一次上手）。
+> 关联的 issue 写在下表 `issue` 列（**GitCode / GitHub 两侧同步维护；AtomGit 只镜像代码，不收 issue**）（带 `good first issue` 标签的适合第一次上手）。
 
 | id | 任务 | 难度 | 涉及文件 | 验收（跑什么） | issue | 状态 |
 |---|---|---|---|---|---|---|
@@ -15,10 +15,11 @@
 | H-06 | README 里「数据源（v1.5.5）」同一句出现两次（H2 与折叠标题），删一处 | ★ | `README.md` | 全文搜索该标题只剩一处 | #7 | done（设计如此：发布闸门要求小节标题与折叠标题两处都在） |
 | H-07 | `_ico_png/` 9 个 PNG 是图标生成的中间产物（打包排除、发布不用），移出仓库或加一句说明 | ★★ | `_ico_png/`、`build.py`、README | 仓库里不再有无人引用的中间产物（或 README 说明其用途） | #8 | done |
 | H-08 | `.gitignore` 里 `Harnesssecrets*` 看似笔误，改成带注释的说明或删除 | ★ | `.gitignore` | 每条忽略规则都能说清为什么在 | #9 | done |
+| H-09 | 发布脚本 `tools/publish.py` 还只在维护者工作区里（而且按已停更的老仓库写目标），克隆仓库的人没法一键发版（见 CONTRIBUTING 5.2 末尾「这里补齐是下一件事」；**签名私钥仍然不进仓库**） | ★★ | `tools/publish.py`、`.gitignore` | 仓库里 `tools/publish.py` 的发布目标只有 gitcode.com 与 github.com 两处；`.gitignore` 有 `.gitcode_token`；`python tools/publish.py --help` 能列出「建发行版 → 传附件 → 回读验真 → 最后推 main」；改完跑 `python tools/preflight_release.py` 仍全绿 | 无 | todo |
 
 ## 验收时请顺手遵守的约定
 
-- ⚠ 动升级链路前先读 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) 第 5.2 节：**本地 `version.json` 必须精简**、**禁止强推 Gitee `master`**；
+- ⚠ 动升级链路前先读 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) 第 5.2 节：**`launcher` 段只能在 exe 定型后补写**、**禁止强推任何远端**；改完跑 `python tools/verify_release.py`；
 - 行尾 **LF**（只有 `说明.txt` 保持 CRLF）；用户可见文案不写"参赛 / 评委 / 组委会"；
 - 对外文案不许出现 绕过 / 翻墙 / 梯子 / 科学上网 / 墙 / 破解 / 屏蔽；
 - 详细约定见 [AGENTS.md](AGENTS.md)（AI 助手）/ [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)（人类贡献者）。
