@@ -6874,8 +6874,13 @@ def _dedup_same_event(items, same_wording_only=False, with_also=False):
     副本与原条同 id 同 title，平时靠"同来源只取一条"挡着，一进兜底就漏出来。
 
     **② 同一事件不同措辞**（原有）—— Jaccard 相似度，阈值只定义在 `_dup_verdict`。
-    只比较**不同 label**（同一家媒体自己发的多条不合并 —— 那是它自己的不同稿件）；
-    先比长度再算交集，长度差太大直接跳过，避免无谓开销。
+    【2026-10-29 修复】**同源也参与比较**：原先为「同一家媒体自己发的多条不合并」而对
+    `klb == lb` 直接 continue，导致同源把同一事件改写两遍时（如凤凰网热榜把
+    「中学筛查肺结核共用针头」列了第13名和第18名两条）漏重、双双上屏。放开后由
+    `_nums_conflict` / `_ordinals_conflict` / `_dir_conflict` 三道事实闸 + Jaccard /
+    中文3-gram 阈值兜底，不会误杀「同产品不同事件 / 不同价格 / 相反涨跌 /
+    同一主体不同议题」这类条目；先比长度再算交集，长度差太大直接跳过，避免无谓开销。
+    （`with_also` 模式下同源副本因 `labels` 不足两家，也不会被标成"几家在报"，行为一致。）
     """
     kept, keys, owners = [], [], []
     hard_ids, hard_links, hard_norm = {}, {}, {}     # 值 = 折叠到谁身上（with_also 要用）
@@ -6928,8 +6933,8 @@ def _dedup_same_event(items, same_wording_only=False, with_also=False):
         # same_wording_only 时比对集合给空的 —— ②一条都判不到，①照常生效
         for j, (klb, kg, knums, kords, kcg, kdr, knt) in enumerate(
                 (() if same_wording_only else keys)):
-            if klb and lb and klb == lb:
-                continue
+            # 【2026-10-29 修复】去掉「同 label 直接跳过」—— 同源同事件改写也要合并，
+            # 由下方 _nums_conflict / _ordinals_conflict / _dir_conflict 三道闸兜底防误杀。
             _lcp = _common_prefix_len(_nt, knt)
             _prefix = bool(_nt and knt and (_nt.startswith(knt) or knt.startswith(_nt)))
             _cjk_common = len(cg & kcg) - max(0, _lcp - 2)
