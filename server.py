@@ -7704,8 +7704,10 @@ def _balloon_fresh_cut(items, now=None, prefer_hours=None, prefer_need=None):
 
 
 def _notify_news(items, force=False):
-    """刷新后调用：对比基线找出新增条目，若有则弹一条「新增 N 条」右下角通知。
-    首次调用只建立基线不弹；节流窗口内不重复弹。
+    """刷新后调用：把「值得播的最新新闻」弹成右下角气泡（更新提醒）。
+    首次调用只建立基线不弹；节流窗口内（默认 10 分钟）不重复弹。
+    **自动**那一套：有新增优先弹新增；没有新增也持续滚动「已进榜但未播过」的存量
+    （2026-10-29 改 A：解决「晚上热榜趋稳后整晚不轮播」）。手动 force 另放开三道闸。
 
     force=True 是给托盘「立即轮播一轮」/双击图标用的（2026-10-28 用户要求）：
     用户明确开口要看了，就把三道"只有自动才需要"的闸放开 ——
@@ -7735,8 +7737,17 @@ def _notify_news(items, force=False):
             NEWS_BASELINE = set(list(NEWS_BASELINE)[-2000:])
     if not added:
         if not force:
-            return
-        added = new_ids                 # 手动：没有"新增"就把整池当候选
+            # 【2026-10-29 改 A】自动轮播持续滚动「已进榜但未播过」的存量，
+            # 不再只在有新进榜时才弹（热榜到晚间趋稳、无新进榜 → 旧逻辑整晚静默）。
+            # 前置的 10 分钟节流 / 夜间免打扰 / 工作不打扰三道闸照常生效，
+            # 后续常看常新(24h) / 未播(26h) / 同事件(6h) 过滤也照常生效；
+            # 真正的新增集合 added 仍留给日志「本次共新增 N 条」用，候选池改用整池。
+            pass
+        else:
+            added = new_ids             # 手动：没有"新增"就把整池当候选
+    # 候选池：无新增时自动/手动都改用整池（手动上一句已把 added 置为整池，这里兜住自动）；
+    # 有新增时仍是新增集（优先弹新进榜，旧行为不变）。
+    _cand_ids = new_ids if not added else added
     now = time.time()
     if not force and now - NEWS_LAST_TOAST < _toast_min_sec():
         return
@@ -7754,7 +7765,7 @@ def _notify_news(items, force=False):
             _balloon_trace("跳过：%s（自动气泡不打扰，手动轮播不受影响）" % _hold)
             return
     NEWS_LAST_TOAST = now
-    fresh = [it for it in items if it.get("id") in added]
+    fresh = [it for it in items if it.get("id") in _cand_ids]
     # 先给整池子标一遍「同一条新闻被几家实时热榜同时收录」（cross_hot），
     # 下面 `_pick_balloon_items` 拿它当第一排序键 —— 多家榜同上榜 = 用户要的"热点、重大"。
     _annotate_cross_hot(items)
