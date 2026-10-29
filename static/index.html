@@ -231,6 +231,10 @@
     white-space:nowrap}
   .tag.cls{color:var(--txt-2);border-color:var(--line-2)}
   .tag.fresh{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,var(--line))}
+  /* 开源热榜（2026-10-28）：★ 后面那个数就是 GitHub 星标，也是这一栏的排名依据，
+     所以给它单独的金色胶囊 —— --warn 本来就是深浅两套金色，不用另加变量。 */
+  .tag.star{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 38%,var(--line));
+    background:color-mix(in srgb,var(--warn) 10%,var(--card-2));font-weight:700}
 
   /* ===== 「同一件事，几家在报」（2026-10-25 新增）=====
      服务端把折叠掉的兄弟稿挂在条目上（also / also_n，判据与去重完全同一套），
@@ -524,7 +528,31 @@ const SSR = __SSR_DATA__;
 // 服务端要求带上本机访问令牌（window.__SSR_DATA__.token，仅本机页面拿得到）。
 // 不带的话服务端一律 403 —— 这是防「随便一个网页用 <form> 就把程序关掉」的本地 CSRF。
 const POST_HEADERS = SSR.token ? {"X-HN-Token": SSR.token} : {};
+// 【2026-10-28 兴趣投放】在控制台点开哪一类新闻，就给那一类记一分 —— 气泡以后多投它。
+// 和气泡里点开走同一条内部逻辑（/api/interest → _interest_bump）；
+// 只写本机 %LOCALAPPDATA%\hotnews\interest.json，不联网、不上传。
+// 用捕获阶段 + keepalive：新标签页抢焦点也能发出去；发失败绝不影响打开原文。
+document.addEventListener("click", function (e) {
+  const a = e.target && e.target.closest ? e.target.closest("a[data-cls]") : null;
+  if (!a) return;
+  const cls = (a.getAttribute("data-cls") || "").trim();
+  if (!cls) return;
+  try {
+    fetch("/api/interest", {
+      method: "POST", keepalive: true, credentials: "same-origin",
+      headers: Object.assign({}, POST_HEADERS, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ cls: cls })
+    }).catch(function () {});
+  } catch (_) {}
+}, true);
 let state = { region: SSR.region || "cn", items: SSR.items || [], newIds: new Set() };
+// 【2026-10-28 新增】开源热榜（GitHub 近 30 天新锐榜）单独一份数据，不混进 state.items：
+// 它不是新闻，不参与当天时效、事件合并与分区分流，抓不到就整栏收起。
+// 首屏那份由服务端 SSR 直接带到（SSR.oss，只读缓存快照），之后 /api/oss 负责更新。
+const OSS_CLS = "开源热榜";
+state.oss = (SSR && SSR.oss) || [];
+state.ossWin = Number(SSR && SSR.oss_win) || 30;   // 窗口天数以服务端为准，不在前端硬写
+state.ossAt = Number(SSR && SSR.oss_at) || 0;
 // 来源上色表（服务端 SRC_HUES：按"配置里第几家"发色相，见 server.py 的注释）。
 // 首屏那份随 SSR 一起到，之后每次 /api/news 回带时再对一遍；表里没有的名字退回按名字散列。
 let SRC_HUES = (SSR && SSR.src_hues) || {};
@@ -716,10 +744,15 @@ const EXCLUDED_CLS = new Set(["热榜","数码"]);  // 热榜置顶单独展示�
 // 上限只作用于「全部」视图；点左栏具体分类仍然是完整列表，服务端池子也一条没少。
 const HOT_SHOW = 20;
 const SEC_SHOW = {头条: 8};
+// 【2026-10-28 新增】开源热榜在「全部」视图里只露前 6 名（榜单的前几名才是信息，
+// 后面 14 条要点左栏那一栏才看完；左栏计数与区块标题上的「6 / 20」会把这话说明白）。
+const OSS_SHOW = 6;
 // 【2026-10-09 栏目定稿】国内 = 头条 / 科技 / 财经 / 娱乐 / 软件 / 热榜；
 // 国际 = 要闻 / 科技 / 财经 / 娱乐 / 体育 / 热榜（体育只有国际频道有）。
 // 这个数组只决定**左栏与分块标题的排序**，不是栏目白名单（栏目是跟着数据走的）。
-const CLS_ORDER = ["头条","要闻","科技","软件","财经","娱乐","体育","国内","国际"];
+// 【2026-10-28】新增「开源热榜」（GitHub 近 30 天新锐榜，用户点名）：排在软件后面，
+// 它是这一页上唯一一栏"榜单"性质的内容，数据单独来自 /api/oss（见 server.py 同名一节）。
+const CLS_ORDER = ["头条","要闻","科技","软件","开源热榜","财经","娱乐","体育","国内","国际"];
 function clsRank(c){
   const i = CLS_ORDER.indexOf(c);
   return i < 0 ? 99 : i;
@@ -729,6 +762,9 @@ function buildClsOptions(){
   if(!sel) return;
   const cur = sel.value;
   const set = [...new Set(state.items.map(i => i.cls))].filter(Boolean).filter(c => !EXCLUDED_CLS.has(c));
+  // 【2026-10-28】开源热榜不在 state.items 里（单独一条 /api/oss 链路），
+  // 但它要能当"分类"选 —— 有内容才出现在下拉里，抓不到就当这一栏不存在。
+  if((state.oss || []).length && !set.includes(OSS_CLS)) set.push(OSS_CLS);
   set.sort((a, b) => clsRank(a) - clsRank(b));
   sel.innerHTML = '<option value="">全部分类</option>' + set.map(c => `<option>${esc(c)}</option>`).join("");
   sel.value = set.includes(cur) ? cur : "";
@@ -744,6 +780,8 @@ function renderLeft(){
     const k = it.cls || "其他";
     cnt.set(k, (cnt.get(k) || 0) + 1);
   });
+  // 开源热榜的条数来自 /api/oss 那一份（顶部注释里有说明），并进同一张计数表显示。
+  if((state.oss || []).length) cnt.set(OSS_CLS, state.oss.length);
   const keys = [...cnt.keys()].filter(k => !EXCLUDED_CLS.has(k)).sort((a, b) => clsRank(a) - clsRank(b));
   let html = `<button type="button" class="side-item ${cur === "" ? "on" : ""}" data-cls="">
       全部<span class="n">${(state.items || []).length}</span></button>`;
@@ -783,7 +821,7 @@ function cardHTML(it, showCls, rank){
   const link = safeLink(it.link);          // 【修 低-1】非 http/https 一律当"没有链接"
   const isNew = state.newIds && state.newIds.has(it.id);
   const thumb = it.image
-    ? `<a class="thumb2" href="${esc(link)}" target="_blank" rel="noopener" title="打开原文">
+    ? `<a class="thumb2" href="${esc(link)}" target="_blank" rel="noopener" data-cls="${esc(it.cls || "")}" title="打开原文">
          <img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt=""
               data-l="${esc(shortLabel(it.label || it.channel))}" onerror="imgFail(this)"></a>`
     : "";
@@ -807,19 +845,21 @@ function cardHTML(it, showCls, rank){
   return `<article class="news ${rank <= 2 ? "hot" : ""}" data-id="${esc(it.id)}">
     <div class="rank">${rank}</div>
     <div class="body">
-      <h3><a href="${esc(link)}" target="_blank" rel="noopener"
+      <h3><a href="${esc(link)}" target="_blank" rel="noopener" data-cls="${esc(it.cls || "")}"
              title="${esc(it.title_en || it.desc_en || it.title)}">${esc(it.title)}</a></h3>
       ${desc ? `<p class="desc">${esc(desc)}</p>` : ""}
       <div class="meta">
         ${showCls && it.cls ? `<span class="tag cls">${esc(it.cls)}</span>` : ""}
         <span class="tag${_sm.cls}"${_sm.sty}>${esc(it.label || it.channel || "")}</span>
         ${isNew ? '<span class="tag fresh">新增</span>' : ""}
-        ${it.heat ? `<span class="tag" title="源站显示的热度/互动数">${fmtHeat(it.heat)}</span>` : ""}
+        ${it.stars ? `<span class="tag star" title="GitHub 星标数（开源热榜就按它排名）">★ ${fmtHeat(it.stars)}</span>` : ""}
+        ${(!it.stars && it.heat) ? `<span class="tag" title="源站显示的热度/互动数">${fmtHeat(it.heat)}</span>` : ""}
+        ${it.lang ? `<span class="tag" title="仓库主要编程语言">${esc(it.lang)}</span>` : ""}
         ${also ? `<button type="button" class="tag also" data-act="also" data-for="${esc(it.id)}"
                    aria-expanded="false" title="同一件事还有 ${also.length} 家在报，点开看看各家怎么写的">
                    同一件事 · ${it.also_n} 家在报 <i>▾</i></button>` : ""}
         ${Number(it.cross_hot) >= 2 ? `<span class="tag xh" title="这条同时上了 ${it.cross_hot} 家实时热榜——读者用点击投出来的真热点">全网热榜 ×${it.cross_hot}</span>` : ""}
-        <span>${fmt(it.published)}</span>
+        <span${it.stars ? ' title="仓库创建时间"' : ''}>${it.created_text ? ("建于 " + esc(it.created_text)) : fmt(it.published)}</span>
       </div>
       ${alsoHTML}
     </div>
@@ -862,6 +902,38 @@ function render(){
   const cls = clsEl.value;
   const sort = sortEl.value;
   const isCn = state.region === "cn";
+  // 【2026-10-28 新增】开源热榜：单独一份数据（/api/oss），国内 / 国际两个分区都显示。
+  // 它不是新闻、不属于任何一个新闻分区，跟着分区切没意义；左栏既然两个分区都摆这个
+  // tab，点进去就必须有内容（第一版误加过 isCn 条件，国际分区点进去是空栏，已去掉）。
+  // 真正没接这一栏的是 /world 那套英文外壳（static/intl.html）。
+  const oss = Array.isArray(state.oss) ? state.oss : [];
+  const ossWin = Number(state.ossWin) || 30;
+
+  // —— 选中「开源热榜」这一栏：整块就是这份榜，按服务端定好的名次排 ——
+  // 榜单不按时间排（用户要看的是"谁星最多"），所以这里不跟着工具条那个"最新/最早"走。
+  if(cls === OSS_CLS){
+    if(!oss.length){
+      grid.innerHTML = emptyHTML("这一栏暂时没有内容",
+        "GitHub 的公开仓库榜抓不到就整栏收起，一条新闻都不影响。", "");
+      const m0 = $("meta");
+      if(m0) m0.textContent = metaText(0);
+      return;
+    }
+    let oh = `<h2 class="sech">开源热榜 · GitHub 近 ${ossWin} 天新建，按星标排</h2>`;
+    oh += `<div class="newslist">` + oss.map(it => cardHTML(it, false, Number(it.rank) || 0)).join("") + `</div>`;
+    // 数据时间要写出来：这一栏 6 小时才换一批，不写就会被人当成"页面卡住了"。
+    const _ot = state.ossAt
+      ? new Date(state.ossAt * 1000).toLocaleString("zh-CN",
+          {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
+      : "-";
+    oh += `<p class="muted xs" style="text-align:center;padding-top:6px">共 ${oss.length} 条 · `
+        + `更新于 ${_ot}（每 6 小时一批）· `
+        + `只列公开仓库名与站方自己写的一句简介，点卡片直达 GitHub 原页面</p>`;
+    grid.innerHTML = oh;
+    const m1 = $("meta");
+    if(m1) m1.textContent = `开源热榜 · 共 ${oss.length} 条（近 ${ossWin} 天新建，按累计星标降序）`;
+    return;
+  }
 
   let hotItems = [], cards = [];
   if(isCn){
@@ -885,13 +957,15 @@ function render(){
                                       : (a.published || 0) - (b.published || 0));
 
   // —— 两态：还没有数据（骨架） / 池子被清空（罕见，给一句说明） ——
-  if(!state.items.length){
+  // 【2026-10-28】新闻一条都还没到、但开源热榜已从本机缓存读回来时不画骨架屏：
+  // 先让用户看到这一栏，新闻由 2.5 秒那轮自动重试接上。
+  if(!state.items.length && !oss.length){
     grid.innerHTML = skeletonHTML();
     const m = $("meta");
     if(m && !m.textContent.trim()) m.textContent = "正在抓取 RSS，请稍候…";
     return;
   }
-  if(!hotItems.length && !cards.length){
+  if(!hotItems.length && !cards.length && !(cls === "" && oss.length)){
     grid.innerHTML = emptyHTML("这一栏暂时没有内容", "稍等一轮刷新，或点左栏「全部」看看。", "");
     const m = $("meta");
     if(m) m.textContent = metaText(0);
@@ -907,6 +981,19 @@ function render(){
     html += hotlistHTML(hotItems.slice(0, HOT_SHOW));
   }
   let shown = Math.min(hotItems.length, HOT_SHOW);
+  // 【2026-10-28 新增】「全部」视图在热榜之后插一段开源热榜，只露前 OSS_SHOW 名。
+  // 插在这里而不是并进下面的分类分块，是因为它跟新闻不是一个池子（不按时效收口、
+  // 不参与事件合并），标题上也直接写明它是 GitHub 的榜，不让用户误读成新闻。
+  if(cls === "" && oss.length){
+    const cut = oss.slice(0, OSS_SHOW);
+    html += `<h2 class="sech">开源热榜 · GitHub 近 ${ossWin} 天新建</h2>`;
+    html += `<div class="newslist">`
+          + cut.map(it => cardHTML(it, false, Number(it.rank) || 0)).join("") + `</div>`;
+    if(oss.length > cut.length){
+      html += `<p class="muted xs">只显示前 ${cut.length} 名 / 共 ${oss.length} 条，点左栏「开源热榜」看全。</p>`;
+    }
+    shown += cut.length;
+  }
   if(cards.length){
     if(hotItems.length) html += `<h2 class="sech">${isCn ? "更多新闻" : "更多国际新闻"}</h2>`;
     if(!isCn && !cls){
@@ -937,7 +1024,10 @@ function render(){
       }).join("");
     }
   }
-  html += `<p class="muted xs" style="text-align:center;padding-top:4px">已显示 ${shown} / ${state.items.length} 条</p>`;
+  // 【2026-10-28】分母把开源热榜也算进去（只有「全部」视图才把它插进页面），
+  // 否则会出现"已显示 30 / 28 条"这种一眼就假的数。
+  const _tot = state.items.length + (cls === "" ? oss.length : 0);
+  html += `<p class="muted xs" style="text-align:center;padding-top:4px">已显示 ${shown} / ${_tot} 条</p>`;
   grid.innerHTML = html;
   const m = $("meta");
   if(m) m.textContent = metaText(shown);
@@ -1071,11 +1161,48 @@ async function load(showToast){
                                     : `已刷新 ${state.items.length} 条`);
     }
     loadSources();                                  // 刷新时顺带更新右栏健康度（只读）
+    loadOss();                                      // 开源热榜：独立接口，失败不影响新闻板块
   }catch(e){
     if(mySeq !== LOAD_SEQ) return;
     $("meta").textContent = "抓取失败：" + e.message;
   }
 }
+
+/* ================= 开源热榜（GitHub 新锐榜，2026-10-28） =================
+ * 这一栏走 /api/oss，和新闻池完全分开：新闻那边不受它影响，它抓不到就整栏收起
+ * （用户定的口径：默认开，抓不到自动隐藏，不报错、不拖累新闻板块）。
+ * SSR 首屏已经把缓存里的一批塞进 state.oss，所以正常情况下打开就有内容；
+ * 这里只负责"缓存空着/过期了"时把它补上。loading=true 表示服务端刚起线程在抓，
+ * 每 8 回来一次，最多 10 次（约 80 秒）就停手 —— 别在后面无限打圈。
+ */
+let OSS_RETRY = 0;
+function applyOss(items, meta){
+  state.oss = Array.isArray(items) ? items : [];
+  if(meta){
+    if(meta.window_days) state.ossWin = Number(meta.window_days) || 30;
+    state.ossAt = Number(meta.updatedAt) || 0;
+    state.ossSource = meta.source || "";
+  }
+  buildClsOptions();
+  renderLeft();
+  render();
+}
+async function loadOss(){
+  try{
+    const r = await fetch("/api/oss");
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    const js = await r.json();
+    applyOss(js.items || [], js);
+    if((js.items || []).length) OSS_RETRY = 0;
+    // 用裸 setTimeout，不用 scheduleAuto —— 那个定时器是新闻重试共用的一个槽，
+    // 两边互相 clearTimeout 会把对方的等待掐掉（开源热榜不该影响新闻首屏重试）。
+    else if(js.loading && OSS_RETRY < 10){ OSS_RETRY++; setTimeout(() => loadOss(), 8000); }
+  }catch(e){
+    // 抓不到就当这栏不存在：不往页面上抛错，也不影响用户看新闻
+  }
+}
+// 服务端每 6 小时换一批，页面跟着每 10 分钟看一次有没有新缓存就行，别打得太勤。
+setInterval(() => { if(!document.hidden) loadOss(); }, 600000);
 // 国际板块的中文译文由后台线程渐进补齐（抓取不等翻译，否则国际板块要慢 90 秒以上）。
 // 这里定期静默重拉：只有内容真的变了才重绘，避免闪烁，也把补上的译文刷出来。
 // 【2026-10-24】判"变没变"的指纹从 `id|translated` 加严到 `id|rank|heat|translated`：
@@ -1454,6 +1581,7 @@ function anchorToHotList(){
   window.addEventListener("load", anchorToHotList);
   load(false);
   loadSources();
+  loadOss();                                 // 开源热榜（SSR 没带回来时靠这里补，抓不到就收起整栏）
   digestLoad();                              // 今日 60 秒（本机 /api/digest，不碰外部）
   setInterval(() => loadSources(), 60000);   // 只读轮询：不触发任何抓取
   setInterval(() => digestLoad(), 10 * 60 * 1000);   // 日报跟着数据一起换新
@@ -1512,6 +1640,21 @@ html[data-accent]{--accent-soft:color-mix(in srgb,var(--accent) 14%,transparent)
     var a=acc();
     if(a==='default'){ R.removeAttribute('data-accent'); } else { R.setAttribute('data-accent',a); }
     sync(m,a);
+    report(m,a);
+  }
+  // 【2026-10-28 用户：「这个样式应该和控制台的颜色同步」】
+  // 主题/主色原本只存在浏览器 localStorage 里，桌面气泡读不到 —— 页面切了暗色，
+  // 气泡还是那一套硬编码配色，像两个产品。这里把**持久化的偏好**回报给本机服务
+  // （/api/ui → config.local.json 的 ui 段，只在本机、不联网），气泡按同一份值取色。
+  // 只在 (主题,主色) 真的变过时发一次；服务端也做了同样的短路。
+  // 注意用 ?theme=light 预览那一支不走这儿（sync 直接调用），一次性预览不会污染气泡。
+  var lastSent=null;
+  function report(m,a){
+    var key=m+'|'+a; if(key===lastSent) return; lastSent=key;
+    var body=JSON.stringify({theme:m,accent:a});
+    var H={'Content-Type':'application/json'};
+    try{ if(typeof POST_HEADERS==='object' && POST_HEADERS){ for(var k in POST_HEADERS) H[k]=POST_HEADERS[k]; } }catch(e){}
+    try{ fetch('/api/ui',{method:'POST',headers:H,body:body,keepalive:true,credentials:'same-origin'}).catch(function(){}); }catch(e){}
   }
   function sync(m,a){
     var mb=document.querySelectorAll('#apMode button');

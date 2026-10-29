@@ -208,6 +208,9 @@ function applyTheme(pref, remember){
       localStorage.setItem(THEME_KEY, pref);
       localStorage.setItem(AP_KEY, pref === "system" ? "auto" : pref);
     }catch(e){}
+    // 【2026-10-28】桌面气泡的配色由首页（控制台）回报给 /api/ui，这一页不回报：
+    // /api/ui 和其它有副作用的接口一样要本机访问令牌，而这一页是纯静态英文页、SSR 里没有 token。
+    // 好在两页共用 ui-theme-mode 这个键，用户下次打开控制台时会把这里改的值一起带过去，气泡跟着翻。
   }
   const eff = pref === "system" ? (sysDark() ? "dark" : "light") : pref;
   document.documentElement.setAttribute("data-theme", eff === "light" ? "light" : "dark");

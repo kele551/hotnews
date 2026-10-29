@@ -125,4 +125,17 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=os.path.join(BASE, "hotnews.ico"),
+    # 【2026-10-28 修 气泡重影/发虚】单文件 exe 必须显式声明 DPI 感知，否则 PyInstaller 默认
+    # 不带 dpiAware，Win10/11 下 DWM 会把气泡（已按缩放比放大的位图）再拉伸一次 = 双重缩放，
+    # 整图糊 + 文字重影。true/pm = 进程级 DPI 感知，配合 server.py 里的
+    # shcore.SetProcessDpiAwareness 双保险。
+    manifest='''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>''',
 )

@@ -10,6 +10,7 @@ import tempfile          # 【2026-10-07 修】第 3244 行用了 tempfile.gette
 import os
 import re
 import time
+import math              # 【2026-10-28 第五轮】播报版式的呼吸点/声波动画要算正弦
 import json
 import html
 import base64
@@ -22,6 +23,8 @@ import sqlite3           # 【2026-10-25 新增】跨天归档（见下面「跨
 import threading
 import urllib.parse
 import webbrowser
+import ctypes            # 【2026-10-28 修 NameError】气泡的 GDI+/DIB 绘制散在几个方法里，
+                        # 每个方法都写 self.ctypes 太啰嗦；顶层导入一次（跨平台安全，Linux 也有）。
 from datetime import datetime, timezone, timedelta
 from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -422,7 +425,10 @@ HOT_SOURCE_LABELS = ("凤凰网", "红星新闻")   # 热榜条目转发的媒�
 #     正好和 10-24 那条「热榜来源站点用红字」同一个红，热榜那行的徽章也不用换颜色。
 #   界面 → 25°（橙红）：原本占着 0° 的是界面（配置里第一个源）。红星要来正红，界面就得让位，
 #     不然头条栏里两家顶着一模一样的红。挪 25° 后和最近的 中新网·财经(40°) 差 15°，不撞。
-SRC_HUE_PICKS = {"红星新闻": 0, "界面": 25}
+#   GitHub → 215°（蓝）：2026-10-28 新增的「开源热榜」来源。它不在 SOURCES 里
+#     （单独一条链路，见下面「开源热榜」一节），靠这段手工点名拿到固定色，
+#     和 215° 附近没有别的家；卡片上的站名徽章、左栏计数跟新闻栏用的是同一套色。
+SRC_HUE_PICKS = {"红星新闻": 0, "界面": 25, "GitHub": 215}
 
 
 def _build_src_hues():
@@ -629,6 +635,10 @@ def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
         _low.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"))
         or ".jpg?" in _low or ".png?" in _low or ".webp?" in _low or ".gif?" in _low
         or "/img/" in _low
+        # 【2026-10-28】GitHub 的仓库分享卡没有扩展名（…/1/<owner>/<repo>），按老启发式
+        # 会被当文档：进错缓存（5 分钟的文档表，不是图片表）、Content-Type 兜成 image/jpeg。
+        # 只点名这一家、且只在「开源热榜」这一条链路上出现，别的源一律按原规则判。
+        or _low.startswith("https://opengraph.githubassets.com/")
     )
     key = "img" if _is_img else "doc"
     # 带了额外请求头（如 mefcl 的访问 cookie）时缓存键要区分开，
@@ -1310,6 +1320,12 @@ def _all_sources_meta():
                         "region": _rg, "cls": s.get("cls") or ""})
     for _sid, _label, _fn in HOT_SRC_LIST:
         out.append({"id": _sid, "label": _label, "region": "hot", "cls": "热榜"})
+    # 【2026-10-28 新增】开源热榜：它不在 SOURCES 里（单独一条链路 /api/oss），
+    # 但右栏「源健康度」该看得见它 —— 抓不到时用户能在角标里看出是这一栏没抓到，
+    # 而不是"程序坏了"。
+    if OSS_ENABLED:
+        out.append({"id": OSS_SOURCE_ID, "label": OSS_SOURCE_LABEL,
+                    "region": "cn", "cls": OSS_CLS})
     return out
 
 
@@ -3370,7 +3386,10 @@ def _collect(region):
         fresh_hot = [it for it in _parse_hot()
                      if not it.get("published") or it["published"] >= _cut]
         hot_items = _fill_missing_images(fresh_hot, "hot", max_fetch=80, force_all=True)
-        keep = [it for it in hot_items if it.get("image")]
+        # 【2026-10-28 修】热榜卡（hotlistHTML）不渲染图片，只画排名/标题/来源；
+        # 所以无图平台（如红星新闻，站内推荐流本就无图）也应保留，而不是被「没图不要」整条剔除。
+        # 否则只剩有图的凤凰一家，多平台聚合名存实亡。普通新闻卡仍需图，那一路不在此豁免。
+        keep = list(hot_items)
         dom, _intl = _split_hot_by_scope(keep)
         _HOT_INTL_SPILL[:] = _intl
         print(f"[ok] hot: 时间筛后 {len(fresh_hot)} 条，补图带图 {len(keep)} 条；"
@@ -3433,21 +3452,39 @@ def _collect(region):
         _big = [it for it in cn_only if it.get("channel") in BIG_IMAGE_CHANNELS]
         if _big:
             _fill_missing_images(_big, "cn-big", max_fetch=24)
-        # 合并实时热榜（澎湃/红星/凤凰）：文本榜无图，必须在无图过滤之后并入，否则被剔掉。
-        # 热榜整体置顶，各平台条目已混合排序。
+        # 合并实时热榜（澎湃/红星/凤凰）：热榜置顶块（hotlistHTML）不渲染图片，
+        # 只画排名/标题/来源，所以无图平台（如红星新闻）也应并入，避免只剩有图的凤凰一家。
+        # 普通头条卡需要图，故「并入头条」这一路仍只取有图，不破坏「没图不要」。
         try:
-            hot = PRELOAD.get("hot") or _collect("hot")
-            hot = [h for h in hot if h.get("image")]   # 没图的不并入，否则违反「没图不要」
+            _hot_all = PRELOAD.get("hot") or _collect("hot")
             seen_t = {it["title"] for it in cn_only}
-            hot = [h for h in hot if h["title"] not in seen_t]
-            if hot:
-                print(f"[ok] {region}: 合并实时热点 {len(hot)} 条")
-            # 去「割裂」：把 红星/凤凰 的实时热点也并入「头条」栏目（与热榜共享同一批内容），
-            # 否则「头条」只有界面+澎湃两家，红星/凤凰被锁死在热榜、永不进头条。
-            # 各取前 10 条（按热榜百分位排名），避免淹没头条里界面/澎湃的常驻源。
+            # 置顶热榜：热榜卡不渲染图片，无图平台也保留（豁免「没图不要」）
+            # 【2026-10-28 修 热榜退回单源】原来这里还套了 `h["title"] not in seen_t`，
+            # 拿 cn_only 的**全部标题**去卡热榜 —— 有 RSS 的平台（澎湃）热榜条目与自家
+            # RSS 同标题，被整批剔掉，最后只剩「没有 RSS 源」的凤凰一家。
+            # 实测证据：`hot: 时效收口 26 条 | 热榜26条/2家` → `cn: 合并实时热点 11 条`
+            # → `cn: 时效收口 ... 热榜11条/1家`，澎湃 15 条全折在这一步。
+            # 热榜是**独立榜单块**（前端 hotlistHTML 单独渲染），与新闻流不是一个区域，
+            # 不该拿列表标题去卡它。改为**只在热榜内部按标题去重**（同一条不重复进榜）。
+            _seen_hot, hot_top = set(), []
+            for h in _hot_all:
+                if not (h.get("image") or _is_hot_board(h)):
+                    continue
+                if h["title"] in _seen_hot:
+                    continue
+                _seen_hot.add(h["title"])
+                hot_top.append(h)
+            # 并入头条：只取有图（头条卡需图），并避开列表已有的（头条仍不许重复）
+            hot_headline = [h for h in _hot_all
+                            if h.get("image") and h["title"] not in seen_t]
+            if hot_top:
+                print(f"[ok] {region}: 合并实时热点（置顶）{len(hot_top)} 条")
+            # 去「割裂」：把 红星/凤凰 中**有图**的实时热点也并入「头条」栏目（与热榜共享同一批内容），
+            # 否则「头条」只有界面+澎湃两家，凤凰被锁死在热榜、永不进头条。
+            # 只并入有图的（头条卡需图），各取前 10 条，避免淹没头条里界面/澎湃的常驻源。
             for lbl in ("红星新闻", "凤凰网"):
                 cnt = 0
-                for h in hot:
+                for h in hot_headline:
                     if h.get("label") == lbl:
                         d = dict(h)
                         d["cls"] = "头条"
@@ -3456,12 +3493,12 @@ def _collect(region):
                         if cnt >= 10:
                             break
         except Exception as ex:
-            hot = []
+            hot_top = []
             print(f"[warn] 合并实时热点失败: {type(ex).__name__}")
         # 注意：hot 不能再按 rank 重排——_parse_hot 里已按「平台内归一化 score」做过跨平台混合排序，
         # 直接沿用它的顺序即可（rank 是平台内名次，跨平台无可比性）。
         cn_only.sort(key=lambda x: x["published"], reverse=True)
-        _merged_all = list(hot) + cn_only
+        _merged_all = list(hot_top) + cn_only
         # 【2026-10-09 用户点名「财经类新闻一定要区别化类，不能错放栏目」】
         # **放在 PRELOAD_ALL 之前**：搜索池与列表用同一份已纠正的分类，不会出现
         # 「列表里是财经、搜出来变头条」这种自相矛盾。见 _fix_finance_cls 的三处一致性说明。
@@ -3484,7 +3521,9 @@ def _collect(region):
         # 2026-10-07：国际热榜同样是纯文字榜（当时那一路是境外热榜），
         # 按「每条新闻必须有高清大图」的规矩，必须先补图，补不到的丢掉。
         hot = _fill_missing_images(hot, f"{region}-hot", max_fetch=80, force_all=True)
-        hot = [h for h in hot if h.get("image")]
+        # 【2026-10-28 修】国际热榜置顶块（hotlistHTML）不渲染图片，无图平台也应保留，
+        # 避免只剩有图的源、多平台聚合退化。国际热榜条目只进置顶块（cls=热榜），不进普通要闻卡。
+        hot = [h for h in hot if h.get("image") or _is_hot_board(h)]
         seen_t = {it["title"] for it in items}
         hot = [h for h in hot if h["title"] not in seen_t]
         # 【2026-10-10 修 真机验收失败】**热榜这条链也必须过国别判定**。
@@ -3560,9 +3599,17 @@ def _enrich_quality_bg(region):
             # 要么给这个站开豁免（图偏小但能用），要么整个「软件」栏目消失。
             # 用户明确说「我重点关注的网站」就是 mefcl，所以选择开豁免（仍必须有图）。
             # 其余源一个都不放过，照旧按 MIN_IMG_SHORT_SIDE 剔除。
+            # 【2026-10-28 修 热榜退回单源】最后一关就在下面这个 lambda：
+            # 它要求「必须有图且达标」，无图一律丢。而热榜卡（前端 hotlistHTML）
+            # 只画排名/标题/来源、**不渲染图片**，有图没图对展示毫无影响。
+            # 澎湃热榜多数不带图 → 整批被这一关剔掉，页面上热榜就只剩有图的凤凰一家。
+            # （日志铁证：`_collect_exclusive cn 赋值后 热榜 25 条/2家 {凤凰11,澎湃14}`
+            #   → `[ok] cn: 后台剔除低质图 39 条` → `/api/news` 只剩热榜 9 条/1家）
+            # 与 mefcl 同一条规矩：**这个板块不渲染图就豁免图要求**，是热榜条目就留。
             keep = list(ex.map(
                 lambda it: (_img_ok(it["image"]) if it.get("image") else False)
-                or (it.get("channel") in MIN_IMG_EXEMPT_CHANNELS and bool(it.get("image"))),
+                or (it.get("channel") in MIN_IMG_EXEMPT_CHANNELS and bool(it.get("image")))
+                or _is_hot_board(it),
                 items))
         pruned = [it for it, k in zip(items, keep) if k]
         dropped = len(items) - len(pruned)
@@ -3636,10 +3683,14 @@ def _autostart_set(enable):
         return False, f"设置失败: {type(ex).__name__}"
 
 
-def _open_app_window():
+def _open_app_window(url=None):
     """把程序页面打开（托盘菜单、气泡点击都用它）。
-    优先 ShellExecuteW —— Windows 上打开 URL 最可靠；失败退回 webbrowser。"""
-    url = APP_URL or "http://127.0.0.1:8000"
+
+    url 传了就开那一页（气泡正播到哪条，点「打开」就开那条的原文），
+    不传 / 传空回落到首页 APP_URL。
+    优先 ShellExecuteW —— Windows 上打开 URL 最可靠；失败退回 webbrowser。
+    """
+    url = url or APP_URL or "http://127.0.0.1:8000"
     try:
         import ctypes as _ct
         if _ct.windll.shell32.ShellExecuteW(None, "open", url, None, None, 1) > 32:
@@ -3650,6 +3701,18 @@ def _open_app_window():
         webbrowser.open(url)
     except Exception:
         pass
+
+
+def _open_app_later(url=None):
+    """把 _open_app_window 扔到后台线程去做 —— 专供 Win32 消息回调里用。
+
+    为什么必须这样：ShellExecuteW 是同步的，它要等外壳把浏览器拉起来才返回，
+    浏览器冷启动、默认浏览器异常、或本机此刻正叠着代理抖动，就是好几秒。
+    这几秒发生在托盘/气泡自己的消息线程里，那条线程就没在 GetMessage 循环里等着，
+    Windows 判定"这个窗口点下去没响应"，于是给鼠标挂上转圈（2026-10-28 用户反馈
+    「点退出鼠标一直转」的直接原因之一）。消息回调只做「收起窗口」这种本地动作。
+    """
+    threading.Thread(target=_open_app_window, args=(url,), daemon=True).start()
 
 
 def _install_ready_update():
@@ -3683,6 +3746,7 @@ def _quit_app_now():
     这是自动升级真正落地的时刻（页面上的「退出程序」与托盘菜单的「退出程序」都走这里）。
     """
     _install_ready_update()
+    _balloon_shown_flush()      # 常看常新 ③：os._exit 不走 atexit，名单得在退出前自己写盘
     def _die():
         time.sleep(0.2)
         os._exit(0)
@@ -3781,6 +3845,30 @@ class _Tray:
             s.Shell_NotifyIconW.restype = wintypes.BOOL
             k.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
             k.GetModuleHandleW.restype = wintypes.HMODULE
+            # 2026-10-28 加「轮播间隔」子菜单时补的原型声明。这几个原来一个都没声明，
+            # 全靠 ctypes 默认按 32 位 int 传：菜单句柄今天恰好没超出 32 位所以没出事，
+            # 但 AppendMenuW 的第三个参数在 MF_POPUP 下装的是**子菜单句柄**，
+            # 一旦被截成 32 位，弹出来的就是一张空白菜单 —— 这种坑要提前堵。
+            u.CreatePopupMenu.argtypes = []
+            u.CreatePopupMenu.restype = wintypes.HMENU
+            # 注意：ctypes.wintypes 里**没有** UINT_PTR（3.13 也没有），写它会 AttributeError
+            # 把整个托盘初始化打断、通知和右键菜单一起静默失效。指针宽度自己搭。
+            _UINT_PTR = ctypes.c_size_t
+            u.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT,
+                                      _UINT_PTR, wintypes.LPCWSTR]
+            u.AppendMenuW.restype = wintypes.BOOL
+            u.CheckMenuItem.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.UINT,
+                                        wintypes.UINT]
+            u.CheckMenuItem.restype = wintypes.BOOL
+            u.GetMenuStringW.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.LPWSTR,
+                                         ctypes.c_int, wintypes.UINT]
+            u.GetMenuStringW.restype = ctypes.c_int
+            u.TrackPopupMenu.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int, wintypes.HWND,
+                                         wintypes.HWND]
+            u.TrackPopupMenu.restype = ctypes.c_int
+            u.DestroyMenu.argtypes = [wintypes.HMENU]
+            u.DestroyMenu.restype = wintypes.BOOL
             self.ok = True
         except Exception as ex:
             # 同上：打完整原因，别再让托盘静默失效
@@ -3794,7 +3882,13 @@ class _Tray:
             # lp 低字为通知码；用户点击气泡 → 打开应用（APP_URL 由 app.py 写入真实端口）
             _low = lp & 0xFFFF
             if _low == self.NIN_BALLOONUSERCLICK:
-                _open_app_window()
+                _open_app_later()
+            elif _low == 0x0203:
+                # 【2026-10-28 用户选的入口】双击托盘图标 = 立即轮播一轮。
+                # 只认 WM_LBUTTONDBLCLK(0x0203)：单击 0x0202 一直是什么都不做，
+                # 保持原样，免得把"点一下图标就跳出一屏新闻"变成误触。
+                # _balloon_play_now 自己会另起线程，消息线程不在这儿干活（鼠标不转）。
+                _balloon_play_now("双击托盘")
             elif _low == 0x0205:
                 # 【2026-10-07 用户要求「右下角图标右键弹出退出和打开软件的菜单」】
                 # WM_RBUTTONUP：在托盘图标上点右键 → 弹出菜单
@@ -3803,20 +3897,92 @@ class _Tray:
             user32.PostQuitMessage(0)
         return user32.DefWindowProcW(hwnd, msg, wp, lp)
 
+    def _build_menu(self):
+        """搭托盘右键菜单，返回 (父菜单句柄, {命令号: 文字})。
+
+        单独拆出来是为了能验：不真把菜单弹到屏幕上，也能用 GetMenuStringW 把标签读回来
+        （本机脚本 E:\\Qdoer\\tmp\\ossbuild\\verify_tray_menu.py 就这么做的）。
+        """
+        u = self.user32
+        cur_min = _toast_min_sec() // 60
+        hmenu = u.CreatePopupMenu()
+        items = {}
+        u.AppendMenuW(hmenu, 0x00000000, _TRAY_CMD_OPEN, "打开热点新闻")
+        u.AppendMenuW(hmenu, 0x00000000, _TRAY_CMD_PLAY, "立即轮播一轮")
+        items[_TRAY_CMD_OPEN] = "打开热点新闻"
+        items[_TRAY_CMD_PLAY] = "立即轮播一轮"
+        u.AppendMenuW(hmenu, 0x00000800, 0, None)              # 分隔线
+        # 「轮播间隔」做成子菜单：四档放主菜单里太长，而且这一组是互斥的一件事。
+        hsub = u.CreatePopupMenu()
+        for i, m in enumerate(TOAST_MIN_CHOICES):
+            cid = _TRAY_CMD_TOAST_BASE + i
+            lab = _tray_toast_label(m)
+            u.AppendMenuW(hsub, 0x00000000 | 0x00000200, cid, lab)   # STRING|RADIOCHECK
+            if m == cur_min:
+                # CheckMenuItem(hMenu, uID, uCheckState, uFlags) —— 后两个别记反：
+                # uCheckState 放 MF_CHECKED(0x8)，uFlags 放 MF_BYCOMMAND(0)。
+                # 记反了 ctypes 不报错、菜单也不带勾，只能靠真机把 GetMenuState 读回来才看得出来。
+                u.CheckMenuItem(hsub, cid, 0x00000008, 0x00000000)
+            items[cid] = lab
+        u.AppendMenuW(hmenu, 0x00000010, hsub, "轮播间隔（自动弹一组）")   # MF_POPUP
+        # 【2026-10-28 用户：「都好看，不行就让用户可以自行选择吧」】
+        # 播报样式也做成子菜单。选完立刻播一条给用户看 —— 样式这种东西，不看见就等于没选。
+        hsty = u.CreatePopupMenu()
+        cur_style = _balloon_style()
+        for i, st in enumerate(BALLOON_STYLES):
+            cid = _TRAY_CMD_STYLE_BASE + i
+            lab = BALLOON_STYLE_LABEL.get(st, st)
+            u.AppendMenuW(hsty, 0x00000000 | 0x00000200, cid, lab)
+            if st == cur_style:
+                u.CheckMenuItem(hsty, cid, 0x00000008, 0x00000000)
+            items[cid] = lab
+        u.AppendMenuW(hmenu, 0x00000010, hsty, "播报样式")
+        u.AppendMenuW(hmenu, 0x00000800, 0, None)
+        u.AppendMenuW(hmenu, 0x00000000, _TRAY_CMD_QUIT, "退出程序")
+        items[_TRAY_CMD_QUIT] = "退出程序"
+        # 子菜单挂进父菜单之后就归父菜单所有了：DestroyMenu(hmenu) 会连着它一起销毁，
+        # 所以这里不需要（也不能）再单独 DestroyMenu(hsub)。
+        self._hsub = hsub
+        self._hsub_style = hsty
+        return hmenu, items
+
+    def _run_cmd(self, cmd):
+        """菜单返回的命令号落到动作上。拆开是为了单测能直接喂数字，不用真弹菜单。"""
+        if cmd == _TRAY_CMD_OPEN:
+            print("[ok] 托盘菜单：打开热点新闻")
+            _open_app_later()
+        elif cmd == _TRAY_CMD_PLAY:
+            print("[ok] 托盘菜单：立即轮播一轮")
+            _balloon_play_now("托盘菜单")
+        elif _TRAY_CMD_TOAST_BASE <= cmd < _TRAY_CMD_TOAST_BASE + len(TOAST_MIN_CHOICES):
+            m = _toast_min_set(TOAST_MIN_CHOICES[cmd - _TRAY_CMD_TOAST_BASE])
+            print("[ok] 托盘菜单：轮播间隔 = %d 分钟" % m)
+            # 改完给一条气泡回执：这个设置没有别的界面能看见，不回执就等于没改成。
+            _show_toast("轮播间隔已设为 %d 分钟" % m,
+                        "自动弹一组的间隔；想现在就看一轮，右键托盘点「立即轮播一轮」。")
+        elif _TRAY_CMD_STYLE_BASE <= cmd < _TRAY_CMD_STYLE_BASE + len(BALLOON_STYLES):
+            st = BALLOON_STYLES[cmd - _TRAY_CMD_STYLE_BASE]
+            _save_ui_cfg({"balloon": st})
+            print("[ok] 托盘菜单：播报样式 = %s" % st)
+            # 直接播一条新样式的：样式是给人看的，不看见就等于没选。
+            # 这里另起线程（_balloon_play_now 自己会），菜单消息线程不干重活。
+            _balloon_play_now("播报样式")
+        elif cmd == _TRAY_CMD_QUIT:
+            print("[ok] 托盘菜单：退出程序")
+            _quit_app_now()
+
     def _popup_menu(self, hwnd):
-        """托盘图标右键菜单：打开热点新闻 / 退出程序。
+        """托盘图标右键菜单：打开热点新闻 / 立即轮播一轮 / 轮播间隔 / 退出程序。
 
         两个坑：
         1) 弹菜单前必须先 SetForegroundWindow，否则菜单点完不消失（Windows 的老规矩）；
-        2) 用 TPM_RETURNCMD 让 TrackPopupMenu 直接返回选中的命令号，比等 WM_COMMAND 简单可靠。
+        2) 用 TPM_RETURNCMD 让 TrackPopupMenu 直接返回选中的命令号，比等 WM_COMMAND 简单可靠
+           —— 子菜单里的条目也一样返回它的命令号。
         """
         u = self.user32
         wintypes = self.wintypes
         try:
-            hmenu = u.CreatePopupMenu()
-            u.AppendMenuW(hmenu, 0x00000000, 1, "打开热点新闻")
-            u.AppendMenuW(hmenu, 0x00000800, 0, None)          # 分隔线
-            u.AppendMenuW(hmenu, 0x00000000, 2, "退出程序")
+            hmenu, _items = self._build_menu()
             pt = wintypes.POINT()
             u.GetCursorPos(self.ctypes.byref(pt))   # ctypes 在这个类里是 self.ctypes
             u.SetForegroundWindow(hwnd)
@@ -3824,12 +3990,7 @@ class _Tray:
                                    pt.x, pt.y, 0, hwnd, None)
             u.PostMessageW(hwnd, 0, 0, 0)                       # 让菜单正常收起
             u.DestroyMenu(hmenu)
-            if cmd == 1:
-                print("[ok] 托盘菜单：打开热点新闻")
-                _open_app_window()
-            elif cmd == 2:
-                print("[ok] 托盘菜单：退出程序")
-                _quit_app_now()
+            self._run_cmd(cmd)
         except Exception as ex:
             print(f"[warn] 托盘菜单失败: {type(ex).__name__}: {ex}")
 
@@ -3897,11 +4058,13 @@ class _Tray:
             # 通知区图标是空白的。现在补上图标。
             nid.uFlags = self.NIF_MESSAGE | self.NIF_TIP | self.NIF_ICON
             nid.uCallbackMessage = self.WM_TRAY
-            nid.szTip = "热点新闻"
+            # 【2026-10-28】把两个新入口写在鼠标悬停提示里 —— 这程序的用户不会去翻菜单，
+            # 提示条是"双击能干什么"唯一的自解释处（szTip 上限 127 字，这里 24 字）。
+            nid.szTip = "热点新闻｜双击=立即轮播一轮｜右键=菜单"
             nid.hIcon = self._load_icon()
             self.nid = nid
             self.shell32.Shell_NotifyIconW(self.NIM_ADD, ctypes.byref(nid))
-            print("[ok] 托盘就绪（图标已设，点击气泡可打开应用）")
+            print("[ok] 托盘就绪（图标已设；双击=立即轮播，右键=菜单）")
             msg = wintypes.MSG()
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 user32.TranslateMessage(ctypes.byref(msg))
@@ -3925,30 +4088,492 @@ TRAY = _Tray()
 #   表现就是"代码返回成功，但用户什么都看不见"（用户实际反馈就是这个）。
 #   所以这里自绘一个置顶小窗：不经过通知中心，关掉通知也一定看得见。
 #   点击气泡 → 打开应用；9 秒后自动消失；多条通知排队依次显示。
-BALLOON_W, BALLOON_H = 400, 118
+# 卡片尺寸见下面「气泡版式」那段（2026-10-28 从 400x118 改成 440x152，给按钮留出独立的一行）。
 # 【2026-10-07 用户要求「三行不过瘾，显示六行，间隔延长两秒」】停留 5200 → 7200 毫秒。
 # 【2026-10-09 用户要求「气泡推送新闻还是太少，增加 10 组新闻」】一组 3 条 → 6 条 → **10 条**。
 #   停留时间重新定档 7200 → 5600 毫秒，依据：
 #     · 用户此前明确偏好「更长」，原话「间隔延长两秒」，所以**不取 3 秒那种**；
-#     · 10 条 × 7.2 秒 = 72 秒一组，实测（真机 125% 缩放、400x118 卡片）太长：
+#     · 10 条 × 7.2 秒 = 72 秒一组，实测（真机 125% 缩放、当时的 400x118 卡片）太长：
 #       用户多半在播到第 4~5 条时就点开别的窗口了，后面的栏目等于没播；
 #     · 需求书给的建议区间就是 5200~6000 毫秒（一组 52~60 秒）；
-#     · 气泡正文最多两行、一行约 22 个汉字，实测读完一条（含抬头栏目行）需要 4.5~5.5 秒，
+#     · 气泡标题一行约 22 个汉字、最多三行（见上面「气泡版式」），实测读完一条
+#       （含标签行的栏目/来源）需要 4.5~5.5 秒，
 #       5600 毫秒正好卡在「读得完」与「不拖沓」之间，一组 56 秒，比原来的 6 条 ×7.2=43 秒
 #       只长 13 秒，却多播 4 条、多覆盖 3 个栏目。
 BALLOON_PER_ITEM_MS = 5600   # 每条新闻停留多久（毫秒）；一组 10 条 ≈ 56 秒
 BALLOON_PLAY_COUNT = 10      # 一条气泡里滚动播放几条（用户要求「增加 10 组新闻」）
-# 气泡里「头条」那一行的前缀：自绘气泡会据此把它画成红字加粗 + 红色强调条（见 _wndproc 的 WM_PAINT）。
+# 【2026-10-28 用户反馈「点打开进了网页，轮播就停止了」】
+# 点「打开」原本把整组一起收掉：第 3 条点开，剩下 7 条就没了 —— 一轮 10 条等于只看 3 条。
+# 现在改成：开完这一条，气泡先让开屏幕（浏览器要看清楚），隔这么久再**接着播这一组剩下的**。
+BALLOON_RESUME_MS = 8000
+# 气泡里「头条」那一行的前缀：自绘气泡会据此把它画成红色标签（见 _wndproc 的 WM_PAINT）。
 BALLOON_HEADLINE_TAG = "【头条】"
+
+# ────────────── 气泡版式（2026-10-28 用户：「打开和退出两个按键已经遮挡文字，调整布局」）──────────────
+# 老版式的病根就在两个矩形上：正文画到「底边-10px」，而胶囊按钮从「底边-36px」起 ——
+# 两块必然重叠，鼠标一悬停，按钮就压在正文第二、三行上（用户截图里就是这个）。
+# 现在把卡片分成三条**互不相交**的横带，并且用下面的常量把话说死：
+#   ① 标签行（栏目 / 来源）→ ② 新闻标题（最多 3 行）→ ③ 底部操作行（分页点 + 按钮 + 倒计时条）
+# 正文的**下边界 = 底部操作行的上边界**，写成一个常量算式，测试直接断言不相交（tests/test_balloon_layout.py）。
+# 卡片比原来高 34 像素、宽 40 像素，仍然只占右下角一小块（125% 缩放下 550×190）。
+# 【2026-10-28 第三轮改版】用户看过 440×152 与 480×176 图文卡后说「还是不好看」，
+# 让试一种苹果风格。这版按「macOS 通知」重画：没有胶囊标签、没有描边按钮，
+# 圆角 20、字重 600、App 行（小图标 + 热点新闻 + 栏目）+ 右侧 84×84 圆角题图 +
+# 底部无边框文字按钮 + 贴底 2px 进度线。几何仍然只从 _balloon_rects 出。
+BALLOON_W, BALLOON_H = 480, 176
+BALLOON_PAD_X = 22
+BALLOON_APP_TOP = 14      # App 行（小图标 + 应用名 + 栏目）的顶
+BALLOON_APP_H = 20        # 图标边长，也是这一行的高度
+# 【2026-10-29 用户：「这个字体换成，聚光灯式的字体，包括卡片式字体，自动的字体」】
+# 标题带从此**各档共用一条**：整行 436 宽、两行 × 30。原来它是「右侧让出 84 给题图、
+# 两行 × 24」，那是 16px 字的老节奏 —— 换成聚光灯那一档（21.6/700）后行高 24 会顶到
+# 下一行、340 的列宽又装不下本机一半的标题（见 _fit_lines 的实测）。题图因此从右侧
+# 挪进底部那一档（左边），标题永远占满整行。
+BALLOON_TEXT_TOP = 44     # 标题起始 y
+BALLOON_TEXT_LINES = 2
+BALLOON_LINE_H = 30       # 聚光灯那一档的行高
+BALLOON_TEXT_BOTTOM = BALLOON_TEXT_TOP + BALLOON_TEXT_LINES * BALLOON_LINE_H   # 104
+BALLOON_META_TOP = 112    # 来源 / 名次那一行
+BALLOON_META_H = 14
+BALLOON_THUMB = 58        # 题图边长（正方形，居中裁切；原来 84 挤在标题右边）
+BALLOON_THUMB_GAP = 16    # 题图和它右边那行小字/分页点之间的气隙
+BALLOON_THUMB_RADIUS = 14
+BALLOON_THUMB_TOP = BALLOON_H - 8 - BALLOON_THUMB    # 110 —— 底距 8，和操作行同一档
+BALLOON_FOOT_TOP = BALLOON_H - 42        # 134 —— 底部操作行；正文**绝不**伸进这一行
+BALLOON_FOOT_BOTTOM = BALLOON_H - 8      # 168
+# 【2026-10-28 用户：「打开和关闭，位置向底部靠」】操作行再往下压：
+# 按钮底边离卡片底只有 12px（125% 屏上 15 像素），不再"悬"在中间。
+# 【2026-10-28 第五轮·WinUI3】用户把 WinUI3 样张转正：按钮不再是紧凑胶囊，
+# 改成 Fluent 的矩形按钮 —— 等宽（两颗都 64）、高 27、圆角 4、左右各 16px 内边距。
+BALLOON_BTN_H = 27                       # 按钮高度（Fluent 34 物理像素 ÷ 1.25）
+BALLOON_BTN_W = 64                       # 两颗按钮等宽（Fluent 的次按钮/主按钮同尺寸）
+BALLOON_BTN_OPEN_W = BALLOON_BTN_W
+BALLOON_BTN_CLOSE_W = BALLOON_BTN_W
+BALLOON_BTN_GAP = 12
+BALLOON_BTN_RADIUS = 4                   # Fluent 按钮圆角（不是 h/2 的胶囊）
+BALLOON_DOT_W, BALLOON_DOT_ON_W, BALLOON_DOT_GAP = 6, 16, 5   # 分页点
+# 【2026-10-28 用户：「倒计时条不要，看着心慌」】底部那根进度线删了（连同 BALLOON_BAR_H /
+# BALLOON_BAR_TOP / BALLOON_TICK_MS 和 200ms 的重画计时器）。留这条注释是防止以后"好心"加回来：
+# 气泡是「随手扫一眼」的东西，不是让人盯着等条走完的进度条。
+BALLOON_RADIUS = 8                       # 【第五轮】WinUI3 的 8px 圆角（苹果那版是 20）
+BALLOON_CARD_ALPHA = 252                 # 卡面几乎不透明：238 时桌面上的黑图标会透出个影子
+BALLOON_TITLE_PX = 16                    # 兜底版式（_paint_fallback）那一档：宁可小一号，不许挤掉字
+BALLOON_HEAD_PX = 21.6                   # 标题字号：聚光灯那一档，2026-10-29 起各档共用
+# 标题带宽 = 480-22-22 = 436 逻辑像素，21.6 的汉字一行约 20 个，两行 40 个字。
+BALLOON_TITLE_W = BALLOON_W - 2 * BALLOON_PAD_X
+BALLOON_TITLE_MAX = 40
+
+# ────────────── 播报样式（2026-10-28 用户：「都好看，不行就让用户可以自行选择吧」）──────────────
+# 用户看过四张「播报方式」样张（翻牌 / 电视新闻条 / 直播速递 / 聚光灯），
+# 后来又说「方块式字体的轮播，效果不好，这的样式取消」—— 翻牌已删掉。
+# 剩下的让他自己挑：样式进本机配置（ui.balloon），托盘右键菜单的「播报样式」能改，
+# 选完立刻播一条，下一条气泡就换。入口只放在右下角托盘菜单里（用户指定的位置）。
+#
+# 【2026-10-29 用户：「播报样式太多，可以精简成三个样式，聚光灯必须留下，你自己衡量」】
+# 五档砍到三档。砍掉的是「卡片」和「新闻条」，理由不是"少一个算一个"：
+#   · 卡片(card) —— 2026-10-29 把标题字号统一成聚光灯那一档之后，它和速递就是**同一张版面**，
+#     只差"有没有打字机和声波"。留在菜单里，用户看到的是两个几乎一样的名字，
+#     选哪个都不算错 —— 这种选项本身就是"太多"的那一种。
+#     版面代码**没删**：它退成内部兜底那一张（`_paint_bcast` 画崩时走 `_paint_fallback`，
+#     版式解析抛异常时 self.style 落到 "card"，见 `_set_current`），只是不再让人选。
+#   · 新闻条(tv) —— 唯一一档版面不同的（标题带只有 302 宽：右边让给题图、底边让给跑马灯），
+#     标题字号因此只能自成一套；底带那条跑马灯反复和悬停的[关闭][打开]抢位置（实拍叠成一团过，
+#     专门加过 `_band_x2` 让位逻辑）。三档共用一支标题字体这件事，它是那个例外 —— 删掉之后
+#     "换样式=换字号"这种割裂感就没了。整档删除（`_paint_tv` + 只给它用的 `font_hl`）。
+# 留这三档的衡量：聚光灯是用户点名必须留的；速递是"题图还没下载回来也不空手"的那一档
+# （自动分流的落点，也是本机缓存 miss 时唯一不依赖图的版式）；自动留着是因为**他不看菜单**
+# —— 默认值必须做到"不用选也对"，这正是用户自己定过的那条（别做需要用户先去找的功能）。
+#   auto —— 有图用聚光灯、没图用速递（默认；不选也好看，不用用户先懂设置）
+#   live —— 打字机 + 声波，没图时最稳
+#   spot —— 整卡大图 + 压暗 + 光扫，视觉冲击最强
+BALLOON_STYLES = ("auto", "live", "spot")
+BALLOON_STYLE_LABEL = {"auto": "自动", "live": "速递", "spot": "聚光灯"}
+# 老取值归位表：本机配置（config.local.json 的 ui.balloon）里可能还写着已经下线的档 ——
+# 用户以前手选过，升级后不该"偷偷改主意"。按最接近的活档归位，而不是一律回落 auto：
+# 选过卡片的人本来就爱"干净的文字卡"（速递就是它的动画版），选过新闻条的人爱"带图的大标题"
+# （交给自动分流：图到位给聚光灯，没到位给速递）。
+BALLOON_STYLE_LEGACY = {"card": "live", "tv": "auto"}
+BALLOON_BCAST_RADIUS = 20                # 播报版式共用的圆角（480×176 上 20 才像"通知"）
+BALLOON_ANIM_MS = 6000                   # 一轮进场动画的时长（和样张一致）
+BALLOON_ANIM_TICK_MS = 40                # 25fps：小画布重绘很轻，够顺
+
+
+def _balloon_style(raw=None):
+    """把用户选的播报样式收敛到合法值（空值/脏值一律 auto）。
+
+    已经下线的老取值不算脏值 —— 先过一遍 `BALLOON_STYLE_LEGACY` 归到最近的活档，
+    剩下的（拼错的、别的程序写进来的、将来又删掉的）才回落 auto。
+    """
+    try:
+        v = str(raw if raw is not None else (_ui_cfg().get("balloon") or "auto"))
+    except Exception:
+        v = "auto"
+    v = v.strip().lower()
+    v = BALLOON_STYLE_LEGACY.get(v, v)
+    return v if v in BALLOON_STYLES else "auto"
+
+
+def _balloon_pick_style(raw=None, has_img=False):
+    """这一条实际用哪个版式。
+
+    「自动」按**题图真拿得到**分流（调用处传的是一句 `_balloon_img_local(url)` 命中，
+    不是「这条有没有图 URL」—— 实测境内这些站每条都带图 URL，按 URL 判等于永远判成有图，
+    分流就形同虚设）：图到本机的给大图聚光灯、还在路上的给打字机速递，
+    不会出现一张什么都没有的大黑卡。
+
+    **用户点名选的那一档不退**（2026-10-28 用户：「图片样式，会出现没有图片的样式」）。
+    以前 spot 没图就偷偷换成 live，而题图是边播边后台补下的：池子 200 条 100% 有图 URL，
+    开播那一刻本机只命中 95/200 = 48% —— 所以那一退几乎天天在退，一组里聚光灯 / 速递
+    来回跳，看着就是"样式坏了"。现在 spot 无图由 `_paint_spot_backdrop` 画一张程序自己的底
+    （深蓝渐变 + 主色光洗 + 一道慢慢走的光柱）：版式、字号、圆点、按钮位置一概不动，
+    图到了下一帧自然盖上。速递那一档本来就没有"没图怎么办"的问题，照原样返回；
+    三档里只有 auto 会分流（2026-10-29 精简：card / tv 两档已下线，见 BALLOON_STYLES 上面那段）。
+    """
+    s = _balloon_style(raw)
+    if s == "auto":
+        return "spot" if has_img else "live"
+    return s
+
+
+def _balloon_radius_of(style):
+    """卡片版是 WinUI3 的 8px；播报版式按样张是 20px。
+
+    卡片那一档从菜单下来以后（2026-10-29 精简成三档），style 只会因为兜底路径等于 "card"
+    （版式解析抛异常时），所以这条判据留着是给那一张用的，别再当成"第五种可选样式"。
+    """
+    return BALLOON_RADIUS if style == "card" else BALLOON_BCAST_RADIUS
+
+
+def _balloon_ease(p):
+    """三次缓出（CSS cubic-bezier(.2,.8,.2,1) 的近似），动画看着不"顿"。"""
+    p = max(0.0, min(1.0, p))
+    return 1.0 - (1.0 - p) ** 3
+
+
+def _balloon_rects(w=None, h=None, total=10, idx=0, thumb=True):
+    """算出气泡各条带的矩形（**逻辑像素**，绘制时再乘缩放比）。
+
+    单独拎出来有两个好处：① WM_PAINT 和点击命中判断共用同一份几何，不会再出现
+    "画在这儿、判定在那儿"；② 可以纯静态单测（tests/test_balloon_layout.py 里断言
+    正文带和按钮带永不相交 —— 这次用户报的就是这个）。
+
+    苹果通知版（2026-10-28 第三轮）→ 2026-10-29 起标题带各档共用（聚光灯那一档）：
+      · app    —— 顶部一行：小图标 + 「热点新闻」+ 栏目，右端是时间
+      · text   —— **整行宽**的两行大标题（21.6/700）
+      · thumb  —— 底部左角 58×58 圆角题图（没图时 None，来源行/分页点跟着回到最左）
+      · meta   —— 来源 · 名次（题图右边那一栏）
+      · foot   —— 分页点在左，两个按钮在右（关闭 / 打开，主操作贴最右，和 WinUI3 一致）
+    """
+    w = w or BALLOON_W
+    h = h or BALLOON_H
+    x0 = BALLOON_PAD_X
+    xr = w - BALLOON_PAD_X
+    # 操作行贴着底边（2026-10-28 用户两次要求往下靠）：底距固定 8 逻辑像素起步，
+    # 按钮在带内居中后底边离卡片底约 12px；小尺寸卡片也按同样的底距收。
+    foot_top, foot_bottom = h - 42, h - 8
+    btn_y1 = foot_top + max(0, (foot_bottom - foot_top - BALLOON_BTN_H) // 2)
+    btn_y2 = btn_y1 + BALLOON_BTN_H
+    # 【2026-10-28 第五轮】顺序按 WinUI3 样张：次按钮「关闭」在左、主按钮「打开」贴最右。
+    # 之前把「关闭」放在最右，鼠标扫过去顺手一点就把这条新闻退了，不合适。
+    openc = (xr - BALLOON_BTN_OPEN_W, btn_y1, xr, btn_y2)
+    close = (openc[0] - BALLOON_BTN_GAP - BALLOON_BTN_CLOSE_W, btn_y1,
+             openc[0] - BALLOON_BTN_GAP, btn_y2)
+    total = max(1, int(total or 1))
+    pager_w = (total - 1) * (BALLOON_DOT_W + BALLOON_DOT_GAP) + BALLOON_DOT_ON_W
+    dot_y1 = foot_top + ((foot_bottom - foot_top) - BALLOON_DOT_W) // 2
+    cur = max(0, min(int(idx or 0), total - 1))
+    app = (x0, BALLOON_APP_TOP, xr, BALLOON_APP_TOP + BALLOON_APP_H)
+    # 【2026-10-29 用户：「这个字体换成，聚光灯式的字体，包括卡片式字体，自动的字体」】
+    # 标题带各档共用一条：整行宽、两行 × 30（聚光灯那一档）。题图从右侧挪进底部那一档的
+    # 左角，来源行和分页点跟着让出题图占的那 58+16 宽 —— 谁都不许压到谁。
+    # 有图/没图只是**底部左角有没有那张方图**，纵向节奏一样。
+    thumb_bottom_gap = BALLOON_H - (BALLOON_THUMB_TOP + BALLOON_THUMB)     # 8
+    if thumb:
+        ty1 = max(BALLOON_TEXT_TOP, h - thumb_bottom_gap - BALLOON_THUMB)
+        thumb_r = (x0, ty1, x0 + BALLOON_THUMB, ty1 + BALLOON_THUMB)
+        side_x1 = x0 + BALLOON_THUMB + BALLOON_THUMB_GAP
+    else:
+        thumb_r = None
+        side_x1 = x0
+    text_x2 = xr
+    meta_y = min(BALLOON_META_TOP, foot_top - BALLOON_META_H)
+    text_bottom = min(BALLOON_TEXT_BOTTOM, meta_y - 2, foot_top)
+    if thumb_r:
+        text_bottom = min(text_bottom, thumb_r[1] - 2)
+    text = (x0, BALLOON_TEXT_TOP, text_x2, text_bottom)
+    meta = (side_x1, meta_y, text_x2, meta_y + BALLOON_META_H)
+    return {
+        "card": (0, 0, w, h),
+        "app": app,
+        "icon": (x0, BALLOON_APP_TOP, x0 + BALLOON_APP_H, BALLOON_APP_TOP + BALLOON_APP_H),
+        "thumb": thumb_r,
+        "text": text,
+        "meta": meta,
+        "foot": (x0, foot_top, xr, foot_bottom),
+        "pager": (side_x1, dot_y1, side_x1 + pager_w, dot_y1 + BALLOON_DOT_W),
+        "btn_open": openc,
+        "btn_close": close,
+        "dots": {"n": total, "idx": cur,
+                 "w": BALLOON_DOT_W, "on": BALLOON_DOT_ON_W, "gap": BALLOON_DOT_GAP},
+    }
+
+
+# ────────────── 气泡配色：抄控制台的设计令牌（2026-10-28 用户：「这个样式应该和控制台的颜色同步」）──────────────
+# 原来气泡自带一套颜色（#2B6CB0 蓝、#E53E3E 红、#DD6B20 橙…），和控制台是**两套色**，
+# 同一篇新闻在页面上是琥珀色标签、到气泡里变成蓝色 —— 看着像两个产品。
+# 现在直接把 static/index.html 里的设计令牌搬过来当唯一出处：
+#   :root 是暗色档（--card #20252d / --txt #e7ebf1 / --accent #ef6a3a …）
+#   [data-theme="light"] 是亮色档（--card #ffffff / --txt #17202b / --accent #c94a1a …）
+# 选哪一档走**和控制台同一条判据**：控制台默认「跟随系统」= 浏览器 prefers-color-scheme，
+# 而 Windows 上这个信号就是注册表的 AppsUseLightTheme（本机实测 =1，也就是亮色档）。
+# 用户在控制台里手动切过主题/主色的话，页面会把生效值 POST 到 /api/ui 存进本机配置，
+# 气泡优先读那份 —— 页面上看到什么颜色，气泡就是什么颜色。
+CONSOLE_TOKENS = {
+    "dark": {
+        "card": "#20252d", "card2": "#262d37", "line": "#303844", "line2": "#3e4856",
+        "txt": "#e7ebf1", "txt2": "#a3aebe", "txt3": "#76818f",
+        "ok": "#3ecf8e", "warn": "#f0b429", "danger": "#f2555a", "info": "#4f8cff",
+        "accent": "#ef6a3a", "accent_ink": "#2a0f05",
+        # 来源标签：hsl(var(--sh) var(--src-s) var(--src-l))，描边用 --src-b，底色带透明度 --src-bg
+        "src_s": 50, "src_l": 70, "src_b": 36, "src_a": 0.12,
+    },
+    "light": {
+        "card": "#ffffff", "card2": "#f7f9fc", "line": "#e2e7ef", "line2": "#d3dae5",
+        "txt": "#17202b", "txt2": "#5b6675", "txt3": "#8a96a5",
+        "ok": "#12a150", "warn": "#a86f00", "danger": "#d13438", "info": "#1a5fd0",
+        "accent": "#c94a1a", "accent_ink": "#ffffff",
+        "src_s": 56, "src_l": 33, "src_b": 74, "src_a": 0.08,
+    },
+}
+# 控制台「主色」那排圆点对应的覆盖色（html[data-accent=…] 那几条规则），深浅两套各一组
+CONSOLE_ACCENTS = {
+    "dark": {"blue": ("#4f8cff", "#04122e"), "green": ("#3ecf8e", "#062016"),
+             "violet": ("#a78bfa", "#1a1030"), "amber": ("#f0b429", "#221603")},
+    "light": {"blue": ("#1a5fd0", "#ffffff"), "green": ("#0f9d58", "#ffffff"),
+              "violet": ("#6d28d9", "#ffffff"), "amber": ("#a86f00", "#ffffff")},
+}
+
+
+def _rgb_of(ref):
+    """COLORREF（GDI 用的 0x00BBGGRR）→ (r,g,b)。"""
+    return (ref & 0xFF, (ref >> 8) & 0xFF, (ref >> 16) & 0xFF)
+
+
+def _ref(r, g, b):
+    """(r,g,b) → COLORREF。"""
+    return (int(b) << 16) | (int(g) << 8) | int(r)
+
+
+def _hex_ref(s):
+    """'#20252d' → COLORREF。"""
+    s = (s or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    try:
+        return _ref(int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    except Exception:
+        return _ref(0, 0, 0)
+
+
+def _hsl_ref(hh, ss, ll):
+    """HSL（色相 0~360、饱和/亮度 0~100）→ COLORREF，和控制台的 hsl() 一个口径。"""
+    try:
+        import colorsys
+        r, g, b = colorsys.hls_to_rgb((hh % 360) / 360.0, ll / 100.0, ss / 100.0)
+        return _ref(round(r * 255), round(g * 255), round(b * 255))
+    except Exception:
+        return _ref(0, 0, 0)
+
+
+def _mix_ref(fg, bg, alpha):
+    """带透明度的前景色压到背景色上（GDI 没有 alpha 通道，只能自己算混合后的实色）。"""
+    a = max(0.0, min(1.0, float(alpha)))
+    r1, g1, b1 = _rgb_of(fg)
+    r2, g2, b2 = _rgb_of(bg)
+    return _ref(round(r1 * a + r2 * (1 - a)),
+                round(g1 * a + g2 * (1 - a)),
+                round(b1 * a + b2 * (1 - a)))
+
+
+def _system_prefers_light():
+    """Windows 的「应用使用浅色模式」—— 浏览器 prefers-color-scheme 在 Windows 上就是它。"""
+    try:
+        import winreg
+        # 必须查**打开的那把键句柄**：值挂在 Personalize 子键下，
+        # 直接拿 HKEY_CURRENT_USER 根键去 QueryValueEx 会 FileNotFoundError，
+        # 然后掉进下面的 except —— 真机实测过（本机 AppsUseLightTheme=1 是亮色，
+        # 那样读会永远退回暗色，气泡和页面又成两套色，正好是用户报的「主题没变化」）。
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as _k:
+            v, _t = winreg.QueryValueEx(_k, "AppsUseLightTheme")
+        return bool(int(v))
+    except Exception:
+        # 读不到就退回暗色档：控制台 <html data-theme="dark"> 是写死的默认值，JS 没跑起来时也是暗色，
+        # 气泡跟着它才不会和页面"两套色"。
+        return False
+
+
+def _balloon_theme_name(ui=None):
+    """这一轮气泡该用哪一档：'dark' / 'light'。
+
+    优先级和本页一致：本机配置里点了名的（控制台里手动切过）> 跟随系统 > 暗色兜底。
+    """
+    ui = ui if isinstance(ui, dict) else _ui_cfg()
+    t = str(ui.get("theme") or "auto").strip().lower()
+    if t in ("light", "亮色"):
+        return "light"
+    if t in ("dark", "暗色"):
+        return "dark"
+    return "light" if _system_prefers_light() else "dark"
+
+
+def _balloon_palette(ui=None):
+    """把控制台令牌翻译成 GDI 用的 COLORREF 表（气泡唯一的配色出处）。"""
+    name = _balloon_theme_name(ui)
+    tk = dict(CONSOLE_TOKENS.get(name) or CONSOLE_TOKENS["dark"])
+    acc = str((ui if isinstance(ui, dict) else _ui_cfg()).get("accent") or "default").strip().lower()
+    pair = (CONSOLE_ACCENTS.get(name) or {}).get(acc)
+    if pair:
+        tk["accent"], tk["accent_ink"] = pair
+    pal = {"theme": name, "accent_name": acc,
+           "src_s": tk.get("src_s", 50), "src_l": tk.get("src_l", 70),
+           "src_b": tk.get("src_b", 36), "src_a": tk.get("src_a", 0.12)}
+    for k in ("card", "card2", "line", "line2", "txt", "txt2", "txt3",
+              "ok", "warn", "danger", "info", "accent", "accent_ink"):
+        pal[k] = _hex_ref(tk.get(k, "#000000"))
+    # 【2026-10-28 用户：「字体不清楚」】控制台那两档次要文字色是给**坐着凑近读的网页**用的
+    # （亮色 --txt3 在白卡上对比只有 2.9:1），气泡是离一臂远扫一眼的东西，11.5px 的小字
+    # 直接发灰。这里只往 txt 的方向把气泡这一份调实（网页不动）：暗色档同理提亮一档。
+    pal["txt3"] = _mix_ref(pal["txt3"], pal["txt"], 0.62)
+    pal["txt2"] = _mix_ref(pal["txt2"], pal["txt"], 0.80)
+    return pal
+
+
+def _balloon_split_head(head):
+    """把 _balloon_head 生成的第一行拆回「栏目 / 来源 / 备注」三段，好分别排版。
+
+    _balloon_head 是拼串的（`科技 · 快科技`、`【热榜】凤凰网 第4`、`国际·要闻 · 凤凰网`、`【头条】`），
+    这里按同一套规则拆回去，不动数据链路：
+      · `【X】尾巴`  → 栏目 X；尾巴末尾的 `第N` 当备注，其余当来源（`凤凰网 第4`）
+      · `A · B`      → 栏目 A、来源 B
+      · 其它         → 整串当栏目
+    """
+    s = (head or "").strip()
+    if not s:
+        return ("", "", "")
+    if s.startswith("【") and "】" in s:
+        badge = s[1:s.index("】")].strip()
+        tail = s[s.index("】") + 1:].strip(" ·　")
+    elif " · " in s:
+        badge, tail = s.split(" · ", 1)
+        badge, tail = badge.strip(), tail.strip(" ·　")
+    else:
+        return (s, "", "")
+    # 尾巴只有两种形态：`来源`，或 `来源 第N`（热榜的排名）。
+    # 来源名自己可能带空格（BBC News / The Guardian），所以只能从**末尾**摘 `第N`，
+    # 不能按空格劈一刀 —— 劈了就把 "BBC News" 拆成 "BBC" + "News"，标签上少半截站名。
+    m = re.search(r"\s(第\s*\d+)$", tail) if tail else None
+    if m:
+        return (badge, tail[:m.start()].strip(), m.group(1))
+    return (badge, tail.strip(), "")
+
+
+# ────────────── 气泡题图（2026-10-28 第二轮改版：用户选 A 图文卡）──────────────
+# 题图在**服务端**先下到本机缓存，气泡绘制时只读本地文件：
+#   · 绘制线程（窗口消息线程）绝不等网络 —— 收到条目时后台预热，轮到时文件多半已经在了；
+#   · 同一条新闻的图只下一次（按 URL 的 sha1 命名），重启后也直接命中；
+#   · 下载与解码都失败就画占位块，版面不跳、也不留一块空白。
+BALLOON_IMG_DIR = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "balloon_img")
+_IMG_LOCK = threading.Lock()
+_IMG_BUSY = set()          # 正在下载的 URL（避免一条图被并发拉几遍）
+_IMG_FAILS = set()         # 下过但失败的 URL（这一进程里不再重试，别每帧都去撞超时）
+
+
+def _balloon_img_local(url):
+    """URL → 本地缓存路径（还没下好返回 ""）。判定只用文件在不在，不碰网络。"""
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return ""
+    h = hashlib.sha1(url.encode("utf-8", "ignore")).hexdigest()[:24]
+    p = os.path.join(BALLOON_IMG_DIR, h + ".img")
+    try:
+        if os.path.exists(p) and os.path.getsize(p) > 1024:
+            return p
+    except Exception:
+        pass
+    return ""
+
+
+def _balloon_img_warm(url):
+    """确保这张图在后台下一份（已经在本地 / 正在下 / 下过失败 → 直接返回）。"""
+    if _balloon_img_local(url) or not isinstance(url, str) \
+            or not url.startswith(("http://", "https://")):
+        return
+    with _IMG_LOCK:
+        if url in _IMG_BUSY or url in _IMG_FAILS:
+            return
+        _IMG_BUSY.add(url)
+    threading.Thread(target=_balloon_img_fetch, args=(url,), daemon=True).start()
+
+
+def _balloon_img_fetch(url):
+    """后台线程：直接连（trust_env=False，不读系统代理，和抓新闻一条口径）拉一张图存盘。"""
+    try:
+        os.makedirs(BALLOON_IMG_DIR, exist_ok=True)
+        with httpx.Client(trust_env=False, timeout=8, follow_redirects=True) as c:
+            r = c.get(url, headers={"User-Agent": "Mozilla/5.0 (hotnews balloon)"})
+            body = r.content if r.status_code == 200 else b""
+        # 8MB 上限：热榜站偶尔给 4K 大图，缓存目录别被几张图撑爆
+        if 1024 < len(body) <= 8 * 1024 * 1024:
+            h = hashlib.sha1(url.encode("utf-8", "ignore")).hexdigest()[:24]
+            p = os.path.join(BALLOON_IMG_DIR, h + ".img")
+            tmp = p + ".part"
+            with open(tmp, "wb") as f:
+                f.write(body)
+            os.replace(tmp, p)
+        else:
+            with _IMG_LOCK:
+                _IMG_FAILS.add(url)
+    except Exception:
+        with _IMG_LOCK:
+            _IMG_FAILS.add(url)
+    finally:
+        with _IMG_LOCK:
+            _IMG_BUSY.discard(url)
+
+
+def _balloon_prefetch(entries):
+    """一组条目进队列时顺手把题图都排上（**一条一条下**，别十条一起轰站方）。"""
+    def _run():
+        for e in entries or []:
+            url = e[4] if len(e) > 4 else ""
+            if _balloon_img_local(url) or not isinstance(url, str) \
+                    or not url.startswith(("http://", "https://")):
+                continue
+            with _IMG_LOCK:
+                if url in _IMG_BUSY or url in _IMG_FAILS:
+                    continue
+                _IMG_BUSY.add(url)
+            _balloon_img_fetch(url)      # 在这个后台线程里同步等，一条一条来
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        pass
 
 
 class _Balloon:
     def __init__(self):
         self.ok = False
         self.q = []                 # 队列里每一项是「一组要滚动播放的条目」[(title,msg,warn), ...]
+        # 【2026-10-28 用户：「切换样式模式，播报暂停了一分钟」】这一组播完之前，新来的
+        # 那一组一直排在队列里（队列只在 not showing 时取）—— 一组是 10 条 × 5.6 秒 = 56 秒，
+        # 用户看到的正是"点了没反应，一分钟后才换"。interrupt 是"把当前这组掐掉、立刻换"的
+        # 请求标记：只有**用户主动开口**那几条路会置它（托盘选样式 / 立即轮播 / 双击图标），
+        # 自动那一轮照常排队，不打断正在看的。
+        self.interrupt = False
         self.lock = threading.Lock()
         self.hwnd = None
-        self.cur = ("", "", False, "")
+        self.cur = ("", "", False, "", "", "", "")
         self.showing = False
         self.playlist = []
         self.hover = False            # 鼠标是否停在气泡上（悬停才显示「打开/退出」)
@@ -3956,7 +4581,17 @@ class _Balloon:
         self._btn_open = None         # 两个按钮的位置，点击时做命中判断
         self._btn_close = None
         self._tracking = False        # 是否已登记 WM_MOUSELEAVE
+        self.cur_arrow = None         # 箭头光标句柄（WM_SETCURSOR 用），取不到就交给系统
         self.idx = 0                # 播到第几条
+        # 【2026-10-28 第五轮】播报版式：每条开播前按配置 + 有没有图重新选一次，
+        # 动画从 self._t0 起算（40ms 一支计时器推进，见 WM_TIMER 5）。
+        # "card" 是**还没播过任何东西**时的初值：静态卡片版，不开计时器（见 _set_current
+        # 那句 `!= "card"`）。2026-10-29 精简成三档以后它不再是用户能选的一档，只当内部值。
+        self.style = "card"
+        self._t0 = 0.0
+        # ↓ 2026-10-28 新版式要用的三样：控制台同款配色、画刷缓存、倒计时条的剩余时间
+        self.pal = None               # 见 _balloon_palette()；每条开播前刷一次，主题变了就跟着换
+        self._brushes = {}            # COLORREF → HBRUSH（同色复用，换配色时整批删掉）
         if sys.platform != "win32":
             return
         try:
@@ -3969,8 +4604,16 @@ class _Balloon:
             # 【2026-10-07 修「毛刺感」】显示器是 125% 缩放，但进程没声明 DPI 感知时，
             # Windows 会把窗口按 100% 画好再整块放大 —— 文字因此发虚、边缘起毛刺。
             # 声明 DPI 感知后按物理像素绘制，再把尺寸/字号按缩放比放大，字就实了。
+            # 【2026-10-28 修 重影/发虚】单靠老 API SetProcessDPIAware 在 PyInstaller 单文件 exe
+            # 里可能不生效，DWM 把已按缩放比放大的位图再拉伸一次 = 双重缩放，整图糊 + 文字重影。
+            # 改用更可靠的 shcore.SetProcessDpiAwareness（进程级，优先 Per-MonitorV2），
+            # 老 API 作兜底；并在 build_exe.spec 里写进 exe manifest 的 dpiAware 声明，双保险。
             try:
-                u.SetProcessDPIAware()
+                u.SetProcessDPIAware()   # 老 API，兜底
+            except Exception:
+                pass
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE = 2
             except Exception:
                 pass
             try:
@@ -3989,6 +4632,14 @@ class _Balloon:
             self.W = int(BALLOON_W * s)
             self.H = int(BALLOON_H * s)
             self.pad = int(16 * s)
+            # 【2026-10-28 第四轮「Fluent 化」】卡片四周留一圈透明边给阴影。
+            # 窗口比卡片大 2*M：外面那圈画的是本程序自己叠出来的柔和投影
+            # （UpdateLayeredWindow 的逐像素 alpha，圆角是真抗锯齿，不再是 region 切出来的台阶）。
+            self.M = int(20 * s)
+            self.winW = self.W + 2 * self.M
+            self.winH = self.H + 2 * self.M
+            self._dib = None
+            self._memdc = None
             print(f"[ok] 气泡缩放比 = {s:.2f}（{int(s * 100)}%），尺寸 {self.W}x{self.H}")
 
             WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
@@ -4012,7 +4663,19 @@ class _Balloon:
                             ("fIncUpdate", wintypes.BOOL),
                             ("rgbReserved", ctypes.c_byte * 32)]
 
+            class SIZE(ctypes.Structure):
+                _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            class BLENDFUNCTION(ctypes.Structure):
+                _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                            ("SourceConstantAlpha", ctypes.c_ubyte),
+                            ("AlphaFormat", ctypes.c_ubyte)]
+
             self.WNDCLASSW, self.RECT, self.PAINTSTRUCT = WNDCLASSW, RECT, PAINTSTRUCT
+            self.SIZE, self.POINT, self.BLENDFUNCTION = SIZE, POINT, BLENDFUNCTION
 
             # --- 原型：x64 下句柄/LPARAM 是 64 位，不声明会被截断或报 too long to convert ---
             u.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT,
@@ -4045,6 +4708,11 @@ class _Balloon:
                                                 wintypes.LPVOID, wintypes.UINT]
             u.LoadImageW.restype = wintypes.HANDLE
             u.LoadIconW.restype = wintypes.HICON
+            u.DestroyIcon.argtypes = [wintypes.HICON]
+            # 这两个不声明原型，x64 下句柄会被当 int 截断（SetCursor 拿到坏句柄直接无效）
+            u.LoadCursorW.restype = wintypes.HANDLE
+            u.SetCursor.argtypes = [wintypes.HANDLE]
+            u.SetCursor.restype = wintypes.HANDLE
             g.CreateSolidBrush.argtypes = [wintypes.COLORREF]
             g.CreateSolidBrush.restype = wintypes.HBRUSH
             g.CreateFontW.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -4058,6 +4726,11 @@ class _Balloon:
             g.DeleteObject.argtypes = [wintypes.HANDLE]
             g.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
             g.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
+            # 量文字宽度：栏目/来源标签的胶囊要按**实际字宽**收紧（写死宽度遇到
+            # 「国际·要闻」这种长栏目名就露白边），控制台那边是 padding:0 7px 跟着内容走。
+            g.GetTextExtentPoint32W.argtypes = [wintypes.HDC, wintypes.LPCWSTR,
+                                                ctypes.c_int, ctypes.POINTER(SIZE)]
+            g.GetTextExtentPoint32W.restype = wintypes.BOOL
             k.GetModuleHandleW.restype = wintypes.HMODULE
             # 浅色卡片要用的 GDI 函数（圆角、描边、画小图标）
             g.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, wintypes.COLORREF]
@@ -4091,6 +4764,118 @@ class _Balloon:
             g.SetStretchBltMode.restype = ctypes.c_int
             g.SetBrushOrgEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
                                         wintypes.LPVOID]
+            g.SetViewportOrgEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                                           wintypes.LPVOID]
+            g.SetViewportOrgEx.restype = wintypes.BOOL
+            # 【2026-10-28 第五轮】速递的「擦出式」进场靠 SaveDC + 矩形裁剪 + 还原。
+            # 这几个必须钉 argtypes：不钉的话 ctypes 把 64 位 HDC 当 C int 传，直接
+            # `OverflowError: int too long to convert`，三个版式全都掉进兜底卡片。
+            g.SaveDC.argtypes = [wintypes.HDC]
+            g.SaveDC.restype = ctypes.c_int
+            g.RestoreDC.argtypes = [wintypes.HDC, ctypes.c_int]
+            g.RestoreDC.restype = wintypes.BOOL
+            g.IntersectClipRect.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_int]
+            g.IntersectClipRect.restype = ctypes.c_int
+            # 【2026-10-28 第四轮】分层窗口（逐像素 alpha）：画到 32 位 DIB 上再整块交给 DWM。
+            # 圆角/阴影才能是真抗锯齿的；SetWindowRgn 那套只能切出台阶。
+            class _BMIH(ctypes.Structure):
+                _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long),
+                            ("biHeight", ctypes.c_long), ("biPlanes", wintypes.WORD),
+                            ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                            ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                            ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD),
+                            ("biClrImportant", wintypes.DWORD)]
+            self.BMIH = _BMIH
+            g.CreateDIBSection.argtypes = [wintypes.HDC, wintypes.LPVOID, wintypes.UINT,
+                                           ctypes.POINTER(ctypes.c_void_p),
+                                           wintypes.HANDLE, wintypes.DWORD]
+            g.CreateDIBSection.restype = wintypes.HBITMAP
+            u.UpdateLayeredWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.LPVOID,
+                                              wintypes.LPVOID, wintypes.HDC, wintypes.LPVOID,
+                                              wintypes.COLORREF, wintypes.LPVOID, wintypes.DWORD]
+            u.UpdateLayeredWindow.restype = wintypes.BOOL
+            # 【2026-10-28 第二轮】题图要 GDI+ 解码（JPEG/PNG/WebP 都能读），gdi32 只认 BMP。
+            # 启动失败不算致命：_draw_thumb 会退成占位块，文字卡照常显示。
+            self.gdip = None
+            self.gdip_tok = None
+            self._img_cache = {}          # 本地路径 → (GpImage*, w, h)，避免每帧重新解码
+            try:
+                gp = ctypes.WinDLL("gdiplus")
+
+                class GdiplusStartupInput(ctypes.Structure):
+                    _fields_ = [("GdiplusVersion", ctypes.c_uint32),
+                                ("DebugEventCallback", ctypes.c_void_p),
+                                ("SuppressBackgroundThread", ctypes.c_int),
+                                ("SuppressExternalCodecs", ctypes.c_int)]
+
+                inp = GdiplusStartupInput(1, None, 0, 0)
+                tok = ctypes.c_size_t()
+                gp.GdiplusStartup.argtypes = [ctypes.POINTER(ctypes.c_size_t),
+                                              ctypes.POINTER(GdiplusStartupInput),
+                                              ctypes.c_void_p]
+                gp.GdipLoadImageFromFile.argtypes = [ctypes.c_wchar_p,
+                                                     ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+                gp.GdipGetImageWidth.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+                gp.GdipGetImageHeight.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+                gp.GdipCreateFromHDC.argtypes = [wintypes.HDC,
+                                                 ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipDeleteGraphics.argtypes = [ctypes.c_void_p]
+                gp.GdipSetInterpolationMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipSetPixelOffsetMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipDrawImageRectRectI.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                                      ctypes.c_int, ctypes.c_int,
+                                                      ctypes.c_int, ctypes.c_int,
+                                                      ctypes.c_int, ctypes.c_int,
+                                                      ctypes.c_int, ctypes.c_int,
+                                                      ctypes.c_int, ctypes.c_void_p,
+                                                      ctypes.c_void_p, ctypes.c_void_p]
+                # 第四轮：软阴影 / 圆角卡面 / 胶囊按钮都走 GDI+（GDI 的 RoundRect 没抗锯齿）
+                gp.GdipSetSmoothingMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipSetPixelOffsetMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipGraphicsClear.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+                gp.GdipCreatePath.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipAddPathArc.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float,
+                                              ctypes.c_float, ctypes.c_float,
+                                              ctypes.c_float, ctypes.c_float]
+                gp.GdipClosePathFigure.argtypes = [ctypes.c_void_p]
+                gp.GdipDeletePath.argtypes = [ctypes.c_void_p]
+                gp.GdipCreateSolidFill.argtypes = [ctypes.c_uint,
+                                                   ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipFillPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+                gp.GdipDeleteBrush.argtypes = [ctypes.c_void_p]
+                gp.GdipCreatePen1.argtypes = [ctypes.c_uint, ctypes.c_float, ctypes.c_int,
+                                              ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipDrawPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+                gp.GdipDeletePen.argtypes = [ctypes.c_void_p]
+                gp.GdipSetClipPath.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+                # 第五轮：聚光灯版要「上暗-中透-下暗」的压暗层和一道斜着扫过的光。
+                # 都是 REAL 参数，必须先把 argtypes 钉死 —— 不钉的话 ctypes 按 C double 传，
+                # GDI+ 按 float 读，坐标会读成天文数字（整张卡直接黑掉）。
+                gp.GdipCreateLineBrushI.argtypes = [ctypes.POINTER(wintypes.POINT),
+                                                    ctypes.POINTER(wintypes.POINT),
+                                                    ctypes.c_uint, ctypes.c_uint,
+                                                    ctypes.c_int,
+                                                    ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipSetLinePresetBlend.argtypes = [ctypes.c_void_p,
+                                                      ctypes.POINTER(ctypes.c_uint),
+                                                      ctypes.POINTER(ctypes.c_float),
+                                                      ctypes.c_int]
+                gp.GdipFillPolygonI.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                                ctypes.POINTER(wintypes.POINT),
+                                                ctypes.c_int, ctypes.c_int]
+                if gp.GdiplusStartup(ctypes.byref(tok), ctypes.byref(inp), None) == 0:
+                    self.gdip, self.gdip_tok = gp, tok
+            except Exception as ex:
+                print(f"[warn] GDI+ 初始化失败（题图退成占位块）: {type(ex).__name__}: {ex}")
+            g.SelectClipRgn.argtypes = [wintypes.HDC, wintypes.HANDLE]
+            g.SelectClipRgn.restype = ctypes.c_int
+            # 【2026-10-28 用户反馈「鼠标指向打开和退出，鼠标一直转圈圈」】
+            # 普通箭头（IDC_ARROW=32512）：注册窗类时当默认光标用，WM_SETCURSOR 里也按回去
+            # （见 _wndproc 的 0x0020 分支）。必须放在上面的原型声明之后 —— 早于 restype
+            # 声明取回来的句柄在 x64 下会被当 32 位整数截断，SetCursor 拿到的是坏句柄。
+            self.cur_arrow = u.LoadCursorW(None, 32512)
             self.ok = True
         except Exception as ex:
             import traceback
@@ -4112,152 +4897,1050 @@ class _Balloon:
         except Exception:
             return None
 
-    def _draw_capsule(self, hdc, rect, bg_color, fill_color, pen_color,
-                      text, fg_color, font_big):
-        """4 倍离屏画「底色+胶囊+描边+文字」，再用 HALFTONE 缩回 1/4 贴到卡片上。
+    def _draw_pager(self, hdc, rect, pal, total, idx):
+        """底部那一排分页点：当前这一条拉长一截并用主色，走过的用亮一点的描边色。
 
-        为什么要绕这一圈：GDI 的 RoundRect 没有抗锯齿，小尺寸胶囊的圆弧边
-        在 125%/150% 缩放屏上全是台阶毛刺（2026-10-12 用户反馈）。先放大画、
-        再高质量缩小，边缘像素被平均化 —— 不引第三方库的土办法抗锯齿。
-        内存位图没有 alpha 通道，所以离屏上先铺**和卡片底色相同的背景**，
-        贴回去才不会在按钮四角露出色差。
+        取代原来挤在标题尾巴上的 `(3/10)`（2026-10-28 用户选了「新闻卡 + 倒计时条」那版：
+        一眼看出这组十条播到第几，又不占标题的字数）。同样走 4 倍离屏 ——
+        6 像素的小圆点直接 RoundRect 会糊成方块。
         """
         u, g = self.u, self.g
         ctypes = self.ctypes
         x1, y1, x2, y2 = rect
         w, h = x2 - x1, y2 - y1
+        s = self.scale
         if w <= 0 or h <= 0:
             return
-        K = 4                                      # 离屏放大倍数
+        K = 4
+        dot = max(2, int(BALLOON_DOT_W * s))
+        on = max(dot, int(BALLOON_DOT_ON_W * s))
+        gap = max(1, int(BALLOON_DOT_GAP * s))
         mem = g.CreateCompatibleDC(hdc)
         bmp = g.CreateCompatibleBitmap(hdc, w * K, h * K)
         old = g.SelectObject(mem, bmp)
-        br = pn = bg = None
+        made = []
         try:
-            bg = g.CreateSolidBrush(bg_color)
+            bg = g.CreateSolidBrush(pal["card"])
+            made.append(bg)
             u.FillRect(mem, ctypes.byref(self.RECT(0, 0, w * K, h * K)), bg)
-            br = g.CreateSolidBrush(fill_color)
-            pn = g.CreatePen(0, max(1, int(self.scale)) * K, pen_color)
-            ob = g.SelectObject(mem, br)
-            op = g.SelectObject(mem, pn)
-            g.RoundRect(mem, 0, 0, w * K, h * K, h * K, h * K)   # 胶囊=圆角拉满
-            g.SelectObject(mem, ob)
-            g.SelectObject(mem, op)
-            g.SelectObject(mem, font_big)
-            g.SetTextColor(mem, fg_color)
-            g.SetBkMode(mem, 1)                                 # TRANSPARENT
-            r = self.RECT(0, 0, w * K, h * K)
-            u.DrawTextW(mem, text, -1, ctypes.byref(r), 0x1 | 0x4 | 0x800)
-            g.SetStretchBltMode(hdc, 4)                         # HALFTONE
+            x = 0
+            for i in range(max(1, int(total or 1))):
+                ww = on if i == idx else dot
+                col = pal["accent"] if i == idx else (pal["line2"] if i < idx else pal["line"])
+                br = g.CreateSolidBrush(col)
+                made.append(br)
+                ob = g.SelectObject(mem, br)
+                g.RoundRect(mem, x * K, 0, (x + ww) * K, h * K, h * K, h * K)
+                g.SelectObject(mem, ob)
+                x += ww + gap
+            g.SetStretchBltMode(hdc, 4)
             g.SetBrushOrgEx(hdc, 0, 0, None)
             g.StretchBlt(hdc, x1, y1, w, h, mem, 0, 0, w * K, h * K, 0x00CC0020)
         finally:
             g.SelectObject(mem, old)
-            if br:
-                g.DeleteObject(br)
-            if pn:
-                g.DeleteObject(pn)
-            if bg:
-                g.DeleteObject(bg)
+            for b in made:
+                g.DeleteObject(b)
             g.DeleteObject(bmp)
             g.DeleteDC(mem)
+
+    def _round_fill(self, hdc, rect, fill, line, radius):
+        """圆角块填充（题图占位/裁切底用）。小面积，直接用 RoundRect 即可，不走 4 倍离屏。"""
+        u, g = self.u, self.g
+        ctypes = self.ctypes
+        x1, y1, x2, y2 = rect
+        br = g.CreateSolidBrush(fill)
+        pn = g.CreatePen(0, max(1, int(self.scale)), line)
+        ob = g.SelectObject(hdc, br)
+        op = g.SelectObject(hdc, pn)
+        try:
+            d = max(1, int(2 * radius * self.scale))
+            g.RoundRect(hdc, x1, y1, x2, y2, d, d)
+        finally:
+            g.SelectObject(hdc, ob)
+            g.SelectObject(hdc, op)
+            g.DeleteObject(br)
+            g.DeleteObject(pn)
+
+    def _draw_thumb(self, hdc, rect, path, pal, radius=BALLOON_THUMB_RADIUS,
+                    zoom=1.0, ken=(0.5, 0.5)):
+        """把题图贴进 rect（设备像素）：按目标宽高比裁原图（cover）+ 圆角裁剪 + 双三次缩放。
+
+        没有图 / 解码失败 → 画一块 --card2 的圆角占位（版面不跳，看着也不像坏了）。
+        解码结果按路径缓存在 self._img_cache，倒计时条每 200 毫秒的重画不会反复读盘。
+
+        zoom / ken 给聚光灯版用：zoom=1.0 是最大范围（"离得最远"），越大越往里推；
+        ken 是推镜头的锚点（0.5, 0.5 = 正中间）。
+        注意这里吃的是**原图**（缓存里是几百 KB 的原尺寸），不是 84px 缩略图 ——
+        整卡大图要是拿小图放大，背景会糊成一片（用户：「背景图片太模糊了」）。
+        裁的是**目标矩形同宽高比**的一块，不是正方形 —— 方正裁片拉进扁卡，人会横着胖
+        （用户：「图片变形了」）。
+        """
+        ctypes = self.ctypes
+        g = self.g
+        x1, y1, x2, y2 = rect
+        if x2 <= x1 or y2 <= y1:
+            return False
+        gp = getattr(self, "gdip", None)
+        _rad = radius * self.scale
+        # 底：圆角块。分层画布上用 GDI+ 填（GDI 的 RoundRect 是台阶），
+        # 图没到位 / 解码失败时就靠这块占位，版面不跳。
+        if self._memdc and gp:
+            _gr = self._gp_graphics()
+            try:
+                # 这里的 GDI+ 是画在「视口原点已挪到 M」的画布上，坐标就是卡片坐标，
+                # 不要再自己加 M（加了等于挪两次，题图会往右下偏一整块留白）。
+                self._gp_fill_round(_gr, x1, y1, x2 - x1, y2 - y1,
+                                    _rad, self._argb(pal["card2"]))
+            finally:
+                gp.GdipDeleteGraphics(_gr)
+        else:
+            self._round_fill(hdc, rect, pal["card2"], pal["line"], radius)
+        if not gp or not path:
+            return False
+        img = self._img_cache.get(path)
+        if img is None:
+            ip = ctypes.c_void_p()
+            if gp.GdipLoadImageFromFile(path, ctypes.byref(ip)) != 0 or not ip:
+                return False
+            iw, ih = ctypes.c_uint(), ctypes.c_uint()
+            gp.GdipGetImageWidth(ip, ctypes.byref(iw))
+            gp.GdipGetImageHeight(ip, ctypes.byref(ih))
+            if not iw.value or not ih.value:
+                gp.GdipDisposeImage(ip)
+                return False
+            img = (ip, iw.value, ih.value)
+            if len(self._img_cache) >= 6:          # 一组最多十条，留 6 张够用
+                for _p, _im in list(self._img_cache.items()):
+                    try:
+                        gp.GdipDisposeImage(_im[0])
+                    except Exception:
+                        pass
+                self._img_cache = {}
+            self._img_cache[path] = img
+        # 圆角裁剪：GDI+ 用圆角路径裁（抗锯齿）；没有 GDI+ 时退回 GDI 区域裁。
+        # 【2026-10-28 第四轮】裁剪区域用的是**设备坐标**（不受视口原点影响），
+        # 而这一帧的视口整体挪了 M（投影留白）—— 区域也得跟着挪，否则圆角会切错位置。
+        _m = getattr(self, "M", 0)
+        rgn = None
+        if not gp:
+            rgn = g.CreateRoundRectRgn(x1 + _m, y1 + _m, x2 + 1 + _m, y2 + 1 + _m,
+                                       int(2 * radius * self.scale), int(2 * radius * self.scale))
+        gfx = ctypes.c_void_p()
+        ok = False
+        try:
+            if rgn:
+                g.SelectClipRgn(hdc, rgn)
+            if gp.GdipCreateFromHDC(hdc, ctypes.byref(gfx)) == 0 and gfx:
+                gp.GdipSetInterpolationMode(gfx, 7)    # HighQualityBicubic
+                gp.GdipSetPixelOffsetMode(gfx, 2)      # HalfPixel
+                _cp = self._gp_round_path(gfx, x1, y1, x2 - x1, y2 - y1, _rad)
+                gp.GdipSetClipPath(gfx, _cp, 0)        # CombineModeReplace
+                gp.GdipDeletePath(_cp)
+                iw, ih = img[1], img[2]
+                _z = max(1.0, float(zoom or 1.0))
+                # 【2026-10-28 用户：「图片变形了，应该是由远到近，渐进式展示」】
+                # 原来是「一律裁正方形，再塞进目标矩形」—— 84×84 的缩略图没问题，
+                # 但整卡 600×220 是扁的，方形裁片一拉，人脸就横着胖了一圈。
+                # 现在按**目标矩形的宽高比**裁源图（cover），横竖同一个比例缩放，不变形；
+                # zoom 只决定裁进来多大一块（1.0 = 能看到的最大范围，越大越近）。
+                dw = max(1, x2 - x1)
+                dh = max(1, y2 - y1)
+                _ar = dw / float(dh)
+                if iw / float(ih) > _ar:        # 图比卡宽 → 高度占满，左右裁
+                    sh = ih / _z
+                    sw = sh * _ar
+                else:                          # 图比卡高（或正好）→ 宽度占满，上下裁
+                    sw = iw / _z
+                    sh = sw / _ar
+                sw = max(1, min(int(round(sw)), iw))
+                sh = max(1, min(int(round(sh)), ih))
+                kx, ky = ken if ken else (0.5, 0.5)
+                sx = int(round((iw - sw) * max(0.0, min(1.0, kx))))
+                sy = int(round((ih - sh) * max(0.0, min(1.0, ky))))
+                gp.GdipDrawImageRectRectI(gfx, img[0], x1, y1, dw, dh,
+                                          sx, sy, sw, sh, 2, None, None, None)
+                ok = True
+        except Exception:
+            ok = False
+        finally:
+            if gfx:
+                try:
+                    gp.GdipDeleteGraphics(gfx)
+                except Exception:
+                    pass
+            if rgn:
+                g.SelectClipRgn(hdc, None)
+                g.DeleteObject(rgn)
+        if not ok:
+            self._round_fill(hdc, rect, pal["card2"], pal["line"], radius)
+        return ok
+
+    def _draw_app_icon(self, hdc, rect, pal):
+        """App 行最左边的小图标：优先用程序自己的 .ico（就是托盘那个），取不到画圆角块。
+
+        苹果通知的 App 行就是这个位置放一个 20px 左右的应用图标 —— 一眼知道是谁在说话。
+        """
+        u = self.u
+        x1, y1, x2, y2 = rect
+        size = max(8, x2 - x1)
+        try:
+            cand = _res("hotnews.ico")
+            if cand and os.path.exists(cand):
+                # IMAGE_ICON(1) | LR_LOADFROMFILE(0x10)，cx/cy 直接要目标尺寸，省一次缩放
+                h = u.LoadImageW(None, cand, 1, size, size, 0x10 | 0x40)
+                if h:
+                    u.DrawIconEx(hdc, x1, y1, h, size, size, 0, None, 0x0003)  # DI_NORMAL
+                    u.DestroyIcon(h)
+                    return
+        except Exception:
+            pass
+        # 兜底：主色圆角块 + 「热」
+        self._round_fill(hdc, rect, pal["accent"], pal["accent"], 5)
+        self.g.SelectObject(hdc, self.font_icon)
+        self.g.SetTextColor(hdc, pal["accent_ink"])
+        r = self.RECT(x1, y1, x2, y2)
+        u.DrawTextW(hdc, "热", -1, self.ctypes.byref(r),
+                    0x1 | 0x4 | 0x800)          # CENTER|VCENTER|NOPREFIX
+
+    def _brush(self, ref):
+        """按颜色取画刷（同色复用，别每次重绘都新建 —— GDI 对象泄漏会把桌面其他窗口拖坏）。"""
+        b = self._brushes.get(ref)
+        if not b:
+            b = self.g.CreateSolidBrush(ref)
+            self._brushes[ref] = b
+        return b
+
+    def _text_w(self, hdc, s, font):
+        """量一段文字在当前字体下的像素宽（标签胶囊按它收紧）。
+
+        【2026-10-28 第五轮】以前只量**已经被选进 DC 的那个字体**，传进来的 font
+        其实是摆设 —— 播报版式要拿 19px / 10.5px 来回量，不先选字体量出来全是错的。
+        """
+        try:
+            if font:
+                self.g.SelectObject(hdc, font)
+            sz = self.SIZE()
+            if self.g.GetTextExtentPoint32W(hdc, s, len(s), self.ctypes.byref(sz)):
+                return int(sz.cx)
+        except Exception:
+            pass
+        return int(len(s or "") * 12 * self.scale)
+
+    def _refresh_pal(self):
+        """取一次控制台同款配色；主题/主色变了就把旧的画刷整批删掉重建。"""
+        pal = _balloon_palette()
+        if self.pal and self.pal.get("theme") == pal.get("theme") \
+                and self.pal.get("accent") == pal.get("accent"):
+            return self.pal
+        for b in list((self._brushes or {}).values()):
+            try:
+                self.g.DeleteObject(b)
+            except Exception:
+                pass
+        self._brushes = {}
+        self.pal = pal
+        return pal
+
+    # ────────── 第四轮：GDI+ 装饰层（软阴影 / 抗锯齿圆角 / 常驻胶囊）+ 分层窗口 ──────────
+    # 用户原话：「WinUI3 可以尝试一下」「还是不好看」。不用换框架也能拿到 Fluent 的七成质感：
+    # 关键是**圆角和投影要抗锯齿**（GDI 的 RoundRect/SetWindowRgn 都是台阶），
+    # 以及按钮要常驻（悬停才出现的按钮等于藏起来）。这两件都能在现有绘制里做。
+    def _argb(self, cref, alpha=255):
+        """COLORREF(0x00BBGGRR) → GDI+ 的 ARGB(0xAARRGGBB)。"""
+        c = int(cref or 0)
+        return ((int(alpha) & 0xFF) << 24) | ((c & 0xFF) << 16) \
+            | (((c >> 8) & 0xFF) << 8) | ((c >> 16) & 0xFF)
+
+    def _gp_round_path(self, gr, x, y, w, h, r):
+        """圆角矩形路径（四段 90° 圆弧 + 闭合）。r 是圆角半径。"""
+        gp = self.gdip
+        path = ctypes.c_void_p()
+        gp.GdipCreatePath(0, ctypes.byref(path))
+        d = float(max(1, int(r)) * 2)
+        x, y, w, h = float(x), float(y), float(w), float(h)
+        gp.GdipAddPathArc(path, x, y, d, d, 180.0, 90.0)
+        gp.GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0)
+        gp.GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0)
+        gp.GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0)
+        gp.GdipClosePathFigure(path)
+        return path
+
+    def _gp_fill_round(self, gr, x, y, w, h, r, argb):
+        gp = self.gdip
+        p = self._gp_round_path(gr, x, y, w, h, r)
+        br = ctypes.c_void_p()
+        gp.GdipCreateSolidFill(argb, ctypes.byref(br))
+        gp.GdipFillPath(gr, br, p)
+        gp.GdipDeleteBrush(br)
+        gp.GdipDeletePath(p)
+
+    def _gp_stroke_round(self, gr, x, y, w, h, r, argb, width=1.0):
+        gp = self.gdip
+        p = self._gp_round_path(gr, x, y, w, h, r)
+        pen = ctypes.c_void_p()
+        gp.GdipCreatePen1(argb, float(max(1.0, width)), 2, ctypes.byref(pen))   # UnitPixel
+        gp.GdipDrawPath(gr, pen, p)
+        gp.GdipDeletePen(pen)
+        gp.GdipDeletePath(p)
+
+    def _gp_graphics(self):
+        """拿一个画在 DIB 上的 Graphics（抗锯齿 + 高质量像素对齐）。"""
+        gp = self.gdip
+        gr = ctypes.c_void_p()
+        gp.GdipCreateFromHDC(self._memdc, ctypes.byref(gr))
+        gp.GdipSetSmoothingMode(gr, 4)      # AntiAlias
+        gp.GdipSetPixelOffsetMode(gr, 2)    # HighQuality
+        return gr
+
+    def _paint_card_base(self, hdc, pal, g_rects=None, s=1.0):
+        """铺底：柔和投影 + 圆角卡面 + 1px 描边（+ 悬停时才浮出的两颗按钮）。
+
+        【2026-10-28 第五轮】按用户选定的 WinUI3 样张重画：
+          · 8px 圆角（不是苹果的 20）、卡面基本不透明（252/255，只留一丝透）；
+          · 「关闭 / 打开」是 Fluent 的矩形按钮：等宽、圆角 4、主操作贴最右；
+          · 按钮平时不画，鼠标靠近卡片才浮出来（用户第三次要的就是这个）。
+        全部画在窗口坐标里（卡片左上角在 (M, M)），然后用**视口原点**把后续 GDI 内容
+        平移到卡片坐标系 —— 上面那一大段绘制代码一个字都不用改。
+        """
+        g = self.g
+        M, W, H = self.M, self.W, self.H
+        R = int(_balloon_radius_of(self.style) * self.scale)
+        # 【坑】视口原点会留在 HDC 上：本次画完设成 M，下一次重绘时
+        # GdipCreateFromHDC 会**继承**它 —— GDI+ 再叠一个 M，卡片每重绘一次就
+        # 往右下跑一截（首版实拍整张卡歪到窗口外，投影成了一块黑板）。
+        # 每次开画前先归零，GDI+ 和后面的 GDI 才在同一套坐标里。
+        g.SetViewportOrgEx(self._memdc or hdc, 0, 0, None)
+        if self._memdc and self.gdip:
+            gr = self._gp_graphics()
+            try:
+                self.gdip.GdipGraphicsClear(gr, 0)
+                # 投影：10 层同心圆角矩形由外向内叠，靠卡片边缘最深、向外淡出。
+                # 整体下移 2px —— 光从上方来，卡片才"浮"在桌面之上（用户说的"浮不起来"）。
+                _dy = int(2 * self.scale)
+                for i in range(10, 0, -1):
+                    grow = int(i * (M - 3) / 10.0) + 1
+                    self._gp_fill_round(gr, M - grow, M - grow + _dy,
+                                        W + 2 * grow, H + 2 * grow, R + grow,
+                                        11 << 24)         # 纯黑 11/255，叠十层 ≈ 43% 黑
+                # 卡面：几乎不透明（252/255）。原来 238 时，桌面上的黑色图标会透过卡片
+                # 映出一个淡淡的影子（实测色差 9 级），看着像卡里夹了个水印。
+                self._gp_fill_round(gr, M, M, W, H, R,
+                                    self._argb(pal["card"], BALLOON_CARD_ALPHA))
+                self._gp_stroke_round(gr, M, M, W, H, R, self._argb(pal["line"]),
+                                      max(1.0, self.scale))
+                # 【2026-10-28 第五轮·最终口径】用户：「要整成鼠标靠近才显示的状态」——
+                # 两颗按钮平时不画（卡片只留内容），鼠标靠近卡片才浮出来。
+                # 按钮的底片和字都由 _draw_buttons 画（它是每帧最后一步，才能压在
+                # 聚光灯大图之上）—— 在这里画会被后面的版式盖掉。
+            finally:
+                self.gdip.GdipDeleteGraphics(gr)
+            g.SetViewportOrgEx(self._memdc, M, M, None)
+            return
+        # 兜底（DIB/GDI+ 都没起来）：老样子，不透明卡片，至少别画歪
+        u = self.u
+        g.SetViewportOrgEx(hdc, M, M, None)
+        u.FillRect(hdc, ctypes.byref(self.RECT(0, 0, W, H)), self._brush(pal["card"]))
+
+    def _draw_buttons(self, hdc, g_rects, pal, s):
+        """两颗按钮：**每次重绘都记命中矩形**，只有鼠标靠近时才把底片和字画出来。
+
+        【2026-10-28 第五轮】用户：「要整成鼠标靠近才显示的状态」——按钮平时隐身，
+        卡片只留内容。命中矩形照旧每帧算（不然鼠标第一次扫过去、重绘还没发生，
+        点下去就落空），只是不画。
+        底片也在这里画：这是每帧的最后一步，才能压在聚光灯大图之上
+        （原来画在 _paint_card_base 里，被后面的版式直接盖掉 —— 实拍只剩两行裸文字）。
+        """
+        g, u = self.g, self.u
+        self._btn_close = tuple(int(v * s) for v in g_rects["btn_close"])
+        self._btn_open = tuple(int(v * s) for v in g_rects["btn_open"])
+        if not self.hover:
+            return
+        # 底片：卡片/速递的底还是卡片色（Fluent 次级按钮：几乎透明的片 + 细边）；
+        # 聚光灯底下是照片，浅灰会直接消失，改用深色片 + 白边。
+        gp = getattr(self, "gdip", None)
+        if self._memdc and gp:
+            if self.style == "spot":
+                _bgs = ((self._btn_close, 0x0A1016, 150, 0xFFFFFF, 70),
+                        (self._btn_open, pal["accent"], 255, 0, 0))
+            else:
+                _bgs = ((self._btn_close, pal["line"], 70, pal["line2"], 190),
+                        (self._btn_open, pal["accent"], 255, 0, 0))
+            _gr = self._gp_graphics()
+            try:
+                for r, bg, a, bd, ba in _bgs:
+                    # 这一帧的视口原点已经挪到 M（和字一样），坐标就是卡片坐标 ——
+                    # 再自己加 M 会多挪一块投影留白，底片掉到字下面去（实拍验过）。
+                    x, y = r[0], r[1]
+                    w, h = r[2] - r[0], r[3] - r[1]
+                    self._gp_fill_round(_gr, x, y, w, h,
+                                        BALLOON_BTN_RADIUS * s, self._argb(bg, a))
+                    if ba:
+                        self._gp_stroke_round(_gr, x, y, w, h, BALLOON_BTN_RADIUS * s,
+                                              self._argb(bd, ba), max(1.0, self.scale))
+            finally:
+                gp.GdipDeleteGraphics(_gr)
+        g.SelectObject(hdc, self.font_link)
+        # 聚光灯底下是照片，两行字都用白；其余版式底色还是卡片，沿用 txt2。
+        _fg_close = _ref(255, 255, 255) if self.style == "spot" else pal["txt2"]
+        for r, txt, fg in (
+                (self._btn_close, "关闭", _fg_close),
+                (self._btn_open, "打开", pal["accent_ink"])):
+            g.SetTextColor(hdc, fg)
+            rr = self.RECT(r[0], r[1], r[2], r[3])
+            u.DrawTextW(hdc, txt, -1, ctypes.byref(rr),
+                        0x20 | 0x1 | 0x4 | 0x8000 | 0x800)   # SINGLE|CENTER|VCENTER|NOPREFIX
+
+    def _anim_t(self):
+        """这一条从开播到现在过了多少毫秒 —— 播报版式的动画都从这里取时间。"""
+        try:
+            return max(0.0, (time.monotonic() - self._t0) * 1000.0)
+        except Exception:
+            return 0.0
+
+    def _dt(self, hdc, txt, rect, font, color, s, flags=0x20 | 0x4 | 0x8000 | 0x800):
+        """按**逻辑坐标**画一行字（内部乘缩放比），省得每个调用点都写一遍。
+
+        【2026-10-28 修 字体发虚】`int()` 截断改成 `round()`：
+        125% 缩放下逻辑坐标 13 → 16.25，`int` 砍成 16 会丢掉那 0.25 像素，
+        整行字相对卡片网格偏移半像素，GDI 灰度抗锯齿就只能糊一条灰边；
+        `round` 让它落在最近的物理像素上，笔画边缘才是实边。
+        """
+        g, u = self.g, self.u
+        g.SelectObject(hdc, font)
+        g.SetTextColor(hdc, color)
+        r = self.RECT(int(round(rect[0] * s)), int(round(rect[1] * s)),
+                      int(round(rect[2] * s)), int(round(rect[3] * s)))
+        u.DrawTextW(hdc, txt, -1, ctypes.byref(r), flags)
+
+    def _dt_shadow(self, hdc, txt, rect, font, color, s, flags=0x20 | 0x4 | 0x8000 | 0x800,
+                   off=0.8, halo=0):
+        """先垫一层黑影子再写字 —— 只给聚光灯用。
+
+        那一档的底图是新闻原图，碰上大亮图（天空、白墙、图里自带大字）时，光靠压暗层
+        还是会把白字吃掉（2026-10-28 用户：「这种模式字体不清楚」）。影子往右下挪一个多
+        物理像素，勾边不糊字。
+
+        【2026-10-28 二次更正·投影必须只有 1 个物理像素】
+        用户最初反馈的「有重影」有一半是它：偏移 `off` 是按**逻辑像素**给值，`_dt` 里再
+        乘缩放比取整。原来 `off=1.2`，125% 下 1.2*1.25 = 1.5 —— `int()` 砍成 1 物理像素，
+        本来是对的；上一轮为了「落整像素」换成 `round()`，`round(1.5) = 2`，**影子从 1px
+        变成 2px**。
+        一层偏离 2 像素的纯黑字糊在 24px 的白字下面，观感就是"每个字都有双影"。
+        现在把 `off` 压到 0.8：0.8*1.25 = 1.0 → 恰好 1 物理像素，既勾得住轮廓又不糊字。
+        记住：这里要的是**整数物理像素等于 1**，不是"逻辑值取个整"。
+
+        halo>0 时再绕字描一圈黑（上下左右 + 四个对角，共 8 遍）—— 描边是**贴着笔画**的，
+        不靠方向，所以底图哪一块突然变亮都不会把字吃掉。有了它，底下那层压暗就可以调轻
+        （2026-10-28 用户：「图背景样式还要改进一下，图片都看不清了有些」：上一版压到
+        226~246/255，整张图下半截基本是黑的，聚光灯变成了黑底白字，图没意义了）。
+        代价是每条标题多画 8 次 DrawTextW —— 文字短、重画只在动画帧和换条时发生，不值一提。
+
+        【2026-10-28 修 重影/毛边，用户截图反馈「这个字体怎么优化一下，看的更清晰」】
+        偏移必须先落到**整数物理像素**、再换算回逻辑坐标。
+        原来直接把 `halo` 当作逻辑像素加进 rect，`_dt` 里再乘 s 取整 —— s=1.25 时
+        同一个 1 逻辑像素的偏移，在 x 位置 22 处被算成 1px、在 41 处被算成 2px，
+        八个方向粗细还不一致。结果是描边一圈深浅不匀、笔画之间被填满，看着就是
+        "重影 + 毛边"，字号越小越明显（标题 19px、来源行 11.5px 首当其冲）。
+        现在统一按 `round(v*s)/s` 换算：进 `_dt` 乘 s 之后正好是整数，八向等宽、每帧稳定。
+        """
+        def _px(v):
+            """把逻辑像素换算成"整数物理像素"再折回逻辑坐标（_dt 里乘 s 后就是整数）。"""
+            try:
+                return round(float(v) * s) / s
+            except Exception:
+                return float(v)
+
+        if halo:
+            h = _px(halo)
+            for dx, dy in ((-h, 0.0), (h, 0.0), (0.0, -h), (0.0, h),
+                           (-h, -h), (h, -h), (-h, h), (h, h)):
+                self._dt(hdc, txt, (rect[0] + dx, rect[1] + dy,
+                                    rect[2] + dx, rect[3] + dy), font, 0, s, flags)
+        _o = _px(off if off else 1.0)
+        self._dt(hdc, txt, (rect[0] + _o, rect[1] + _o, rect[2] + _o, rect[3] + _o),
+                 font, 0, s, flags)
+        self._dt(hdc, txt, rect, font, color, s, flags)
+
+    def _fit_lines(self, hdc, text, font, maxw, n=2):
+        """把标题按**逻辑像素**宽折成最多 n 行（按字符折；中文一行 20 来个字，够用）。
+
+        超出 n 行的部分在最后一行收成「…」，不让它把版面顶出卡片。
+
+        【2026-10-29 修 提前 20% 折行】`maxw` 一直是逻辑像素，但 `_text_w` 量回来的是
+        **物理像素**（字体按 `-round(px × scale)` 建的）—— 两个单位直接比大小，125% 屏上
+        等于提前 20% 就折行、折不下就砍字。拿本机在跑的 200 条真标题量过（中位数 33 字）：
+          · 速递旧版式（18/600、列宽 340）：81/200 条被收成省略号 = **40.5%**；
+          · 聚光灯（21.6/700、列宽 436）：58/200 = 29%；
+          · 单位对齐后同样这两档：31/200（15.5%）、14/200（7%）。
+        所以这一行乘法不是装饰：它单独就把"标题看不全"这件事砍掉一大半，
+        也是这次敢把速递/卡片的字号提到聚光灯那一档的前提。
+        """
+        box = maxw * (self.scale or 1.0)        # 逻辑像素 → 物理像素，和 _text_w 同一单位
+        text = (text or "").strip()
+        if not text:
+            return [""]
+        lines, cur = [], ""
+        i = 0
+        while i < len(text) and len(lines) < n:
+            ch = text[i]
+            if not cur or self._text_w(hdc, cur + ch, font) <= box:
+                cur += ch
+                i += 1
+                continue
+            lines.append(cur)
+            cur = ""
+        if cur and len(lines) < n:
+            lines.append(cur)
+            cur = ""
+        if i < len(text) and lines:
+            last = lines[-1]
+            while last and self._text_w(hdc, last + "…", font) > box:
+                last = last[:-1]
+            lines[-1] = last + "…"
+        return lines or [""]
+
+    _grad_warned = False
+
+    def _gp_grad_brush(self, x1, y1, x2, y2, colors, positions, horizontal=False):
+        """竖向/横向渐变笔刷（GDI 没有渐变，只能借 GDI+）。
+
+        聚光灯的压暗层和扫过去的那道光都靠它。
+        【2026-10-28 用户：「这种模式字体不清楚」】mode 原来写死 4 —— LinearGradientMode
+        只有 0(横)/1(竖)/2(斜)/3(反斜) 四个值，4 是非法参数，GdipCreateLineBrushI 直接返回
+        错误，**压暗层一帧都没画上去**（拿状态码打出来才看见：每次都是 None）。底图是亮图时
+        白字当然看不清。现在按方向传合法值，并且失败会吼一声，不再闷着。
+        """
+        gp = self.gdip
+        br = ctypes.c_void_p()
+        p1 = self.wintypes.POINT(int(x1), int(y1))
+        p2 = self.wintypes.POINT(int(x2), int(y2))
+        st = gp.GdipCreateLineBrushI(ctypes.byref(p1), ctypes.byref(p2),
+                                     int(colors[0]), int(colors[-1]),
+                                     0 if horizontal else 1, ctypes.byref(br))
+        if st != 0 or not br:
+            if not _Balloon._grad_warned:
+                _Balloon._grad_warned = True
+                print("[warn] GDI+ 渐变笔刷创建失败 status=%s（压暗层/扫光会缺）" % st)
+            return None
+        n = len(colors)
+        ca = (ctypes.c_uint * n)(*[int(c) for c in colors])
+        pa = (ctypes.c_float * n)(*[float(p) for p in positions])
+        gp.GdipSetLinePresetBlend(br, ca, pa, n)
+        return br
+
+    def _paint_bcast(self, hdc, pal, s, g_rects):
+        """播报版式的总入口：按 self.style 分派，最后把悬停按钮压在最上层。
+
+        版式尺寸和样张一致（480×176 逻辑像素）：整行宽的两行大标题，题图在底部左角。
+        所有版式都**不画进度条**（用户：「倒计时条不要，看着心慌」）。
+        2026-10-29 精简成三档以后这里只剩两条分支：速递（live）和聚光灯（spot）
+        —— 新闻条（tv）整档删掉了，理由写在 BALLOON_STYLES 上面那段。
+        """
+        self.g.SetBkMode(hdc, 1)                  # TRANSPARENT
+        t = self._anim_t()
+        try:
+            if self.style == "live":
+                self._paint_live(hdc, pal, s, t)
+            else:
+                self._paint_spot(hdc, pal, s, t)
+        except Exception as ex:
+            # 某个版式画崩了不能让整条气泡消失：退回卡片版的内容（至少字还在）
+            print("[warn] 播报版式绘制失败（%s）: %s: %s" % (self.style, type(ex).__name__, ex))
+            self._paint_fallback(hdc, pal, s)
+        self._draw_buttons(hdc, g_rects, pal, s)
+
+    def _paint_fallback(self, hdc, pal, s):
+        """兜底：标题 + 来源两行字，颜色走当前配色。"""
+        text = self.cur[1] if len(self.cur) > 1 else ""
+        meta = self.cur[5] if len(self.cur) > 5 else ""
+        self._dt(hdc, text, (22, 46, BALLOON_W - 22, 110), self.font_msg, pal["txt"], s,
+                 0x10 | 0x2000 | 0x40000 | 0x800)
+        if meta:
+            self._dt(hdc, meta, (22, 140, 380, 154), self.font_meta, pal["txt3"], s)
+
+    def _bc_open_link(self, hdc, s, color):
+        """右下角那个「打开 ↗」：鼠标靠近后换成 Fluent 按钮，所以悬停时不画。"""
+        if self.hover:
+            return
+        self._dt(hdc, "打开 ↗", (BALLOON_W - 22 - 64, 134, BALLOON_W - 22, 154),
+                 self.font_link, color, s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800)
+
+    def _paint_live(self, hdc, pal, s, t):
+        """③ 直播速递：像主播念稿，标题一个字一个字打出来，右上声波一直在跳。
+
+        没有题图也成立（这正是它在「自动」里接住纯文字稿的原因）。
+        """
+        g, u = self.g, self.u
+        L = lambda v: int(round(v * s))
+        text = self.cur[1] if len(self.cur) > 1 else ""
+        meta = self.cur[5] if len(self.cur) > 5 else ""
+        time_txt = self.cur[6] if len(self.cur) > 6 else ""
+        img = self.cur[4] if len(self.cur) > 4 else ""
+        self._draw_app_icon(hdc, (L(22), L(14), L(40), L(32)), pal)
+        self._dt(hdc, "热点新闻", (47, 14, 200, 34), self.font_app, pal["txt"], s)
+        ax = 47 + self._text_w(hdc, "热点新闻", self.font_app) / float(s) + 8
+        gr = self._gp_graphics() if (self._memdc and self.gdip) else None
+        if gr:
+            try:
+                # 绿点：1.3 秒一个呼吸
+                e = 0.55 + 0.45 * abs(math.sin(t / 1300.0 * math.pi))
+                self._gp_fill_round(gr, L(ax), L(20), L(7), L(7), L(3.5),
+                                    self._argb(_mix_ref(pal["ok"], pal["card"], e), 255))
+            finally:
+                self.gdip.GdipDeleteGraphics(gr)
+        self._dt(hdc, "实时播报", (ax + 12, 14, ax + 100, 34), self.font_badge,
+                 pal["accent"], s)
+        # ── 右上五根声波：高低错开，永远在跳 ──
+        if gr:
+            gr = self._gp_graphics()
+            try:
+                bx = BALLOON_W - 22 - 5 * 4.5
+                for i in range(5):
+                    hh = 4 + 9 * (0.5 + 0.5 * math.sin(t / 1050.0 * 2 * math.pi + i * 0.9))
+                    x = bx + i * 4.5
+                    self._gp_fill_round(gr, L(x), L(27 - hh), L(2.5), L(hh), L(1.2),
+                                        self._argb(pal["accent"], 255))
+            finally:
+                self.gdip.GdipDeleteGraphics(gr)
+        # ── 两行标题：打字机（第一行 0~1.32s，第二行 1.14~2.46s）──
+        # 【2026-10-29 用户：「这个字体换成，聚光灯式的字体，包括卡片式字体，自动的字体」】
+        # 字号字重 = 聚光灯那一档（21.6/700），标题带也和它共用同一条：整行 436 宽、两行 ×30。
+        # 以前是 18/600 + 列宽 340（右边让给 74 的题图）：本机 200 条真标题量下来两行装不下
+        # 81 条（40.5%），字还比聚光灯小一号。现在题图挪到底部左角，标题占满整行，
+        # 装不下的只剩 14 条（7%）—— 字变大、被砍的字反而变少。
+        lines = self._fit_lines(hdc, text, self.font_title, BALLOON_TITLE_W, 2)
+        for i, ln in enumerate(lines[:2]):
+            base, span, steps = (0.0, 1320.0, 14) if i == 0 else (1140.0, 1320.0, 10)
+            e = max(0.0, min(1.0, (t - base) / span))
+            frac = int(steps * e) / float(steps)
+            if frac <= 0:
+                continue
+            g.SaveDC(hdc)
+            g.IntersectClipRect(hdc, L(22), L(44 + i * 30),
+                                L(22 + BALLOON_TITLE_W * frac), L(74 + i * 30))
+            self._dt(hdc, ln, (22, 44 + i * 30, 22 + BALLOON_TITLE_W, 74 + i * 30),
+                     self.font_title, pal["txt"], s)
+            g.RestoreDC(hdc, -1)
+        mtxt = meta + (" · " + time_txt if (meta and time_txt) else "")
+        if mtxt:
+            self._dt(hdc, mtxt, (22 + BALLOON_THUMB + BALLOON_THUMB_GAP, BALLOON_META_TOP,
+                                 390, BALLOON_META_TOP + BALLOON_META_H),
+                     self.font_meta, pal["txt3"], s)
+        # ── 题图：念完两行才淡入（用 0.96→1 的轻微放大代替透明度，GDI 图片没有 alpha）──
+        # 位置在底部左角（和卡片版同一格），右端那块留给「打开」和悬停时的两颗按钮。
+        e = max(0.0, min(1.0, (t - 2400) / 600.0))
+        if img and e > 0:
+            side = BALLOON_THUMB * (0.96 + 0.04 * e)
+            cx, cy = 22 + BALLOON_THUMB / 2.0, BALLOON_THUMB_TOP + BALLOON_THUMB / 2.0
+            self._draw_thumb(hdc, (L(cx - side / 2), L(cy - side / 2),
+                                   L(cx + side / 2), L(cy + side / 2)),
+                             _balloon_img_local(img), pal, BALLOON_THUMB_RADIUS)
+        self._bc_open_link(hdc, s, pal["accent"])
+
+    def _paint_spot_backdrop(self, gr, Wd, Hd, R, pal, e):
+        """聚光灯拿不到题图时的那张底（自己画一张，不退成别的样式）。
+
+        为什么要有它（2026-10-28 用户：「图片样式，会出现没有图片的样式」）：题图是**边播边
+        后台补下**的。实测本机池子 200 条 **100% 都带图 URL**，但开播那一刻缓存只命中 48%，
+        慢的那几条十几秒才到 —— 以前一没命中就整条退回速递，一组里聚光灯 / 速递来回跳，
+        看着就是"样式自己变了"。画一张底之后从头到尾是同一个版式：字位、圆点、按钮一个像素
+        不动，图到了下一帧自然盖上。
+
+        四层，全在圆角以内（和题图那一版共用同一套压暗 + 描边，所以字永远一样实）：
+          ① 主色 → 近黑的竖底渐变（上面带色、下面压暗，标题本来就压在下半截）；
+          ② 右上角一道斜着下来的主色光洗 —— 让整张卡有方向感，不是一张平涂；
+          ③ 标题那一带一小片很软的白光池（"灯"打在这儿）；
+          ④ 一道从左往右慢慢走过去的斜光柱，5.2 秒走完 —— 和有图那版的推近同一条时间轴，
+             所以两种底来回切的时候节奏是一致的。
+
+        为什么第一版要重画（2026-10-28 自查）：底渐变给的是深蓝(20,28,44)→近黑，主色光洗
+        只有 118/255 且压在渐变上，再叠一层有图版沿用下来的 46/255 全局 veil 和底部 190/255
+        —— 实拍出来主色几乎看不见，整张卡是一块死黑，看着像"图挂了"而不是"这一档长这样"。
+        现在主色直接进底渐变（上半截给到 58% 的主色），五档主色一眼能分辨。
+        """
+        gdp, L = self.gdip, int
+        dark, deep, white = _ref(9, 13, 21), _ref(20, 28, 44), _ref(255, 255, 255)
+        acc = pal["accent"]
+
+        def _fillp(br):
+            """把一条渐变按圆角卡形铺满（路径用完即删，别让 GDI+ 对象漏着）。"""
+            if not br:
+                return
+            pth = self._gp_round_path(gr, 0, 0, Wd, Hd, R)
+            gdp.GdipFillPath(gr, br, pth)
+            gdp.GdipDeletePath(pth)
+            gdp.GdipDeleteBrush(br)
+
+        # ① 底：上半截带主色，往下收到近黑（字在下半截，那里必须暗）
+        _top = _mix_ref(acc, dark, 0.42)
+        _fillp(self._gp_grad_brush(0, 0, 0, Hd,
+                                   [self._argb(_top, 255),
+                                    self._argb(_mix_ref(deep, dark, 0.55), 255),
+                                    self._argb(dark, 255)],
+                                   (0.0, 0.55, 1.0)))
+        # ② 右上到左下的主色光洗：右上角最亮，往标题方向淡掉
+        _hot = _mix_ref(acc, white, 0.22)
+        _fillp(self._gp_grad_brush(Wd, 0, L(Wd * 0.15), Hd,
+                                   [self._argb(_hot, 120),
+                                    self._argb(_mix_ref(acc, dark, 0.55), 46),
+                                    self._argb(dark, 0)],
+                                   (0.0, 0.45, 1.0)))
+        # ③ 标题那一带的软光池
+        _fillp(self._gp_grad_brush(0, L(Hd * 0.30), 0, Hd,
+                                   [self._argb(white, 0),
+                                    self._argb(_ref(206, 222, 255), 34),
+                                    self._argb(white, 0)],
+                                   (0.0, 0.55, 1.0)))
+        bw, x = 0.34 * Wd, -0.22 * Wd + 0.62 * Wd * e
+        slant = L(0.30 * Hd)
+        pts = (self.wintypes.POINT * 4)()
+        pts[0] = self.wintypes.POINT(L(x), 0)
+        pts[1] = self.wintypes.POINT(L(x + bw), 0)
+        pts[2] = self.wintypes.POINT(L(x + bw - slant), Hd)
+        pts[3] = self.wintypes.POINT(L(x - slant), Hd)
+        br = self._gp_grad_brush(x, 0, x + bw, 0,
+                                 [self._argb(white, 0),
+                                  self._argb(white, 40),
+                                  self._argb(white, 0)],
+                                 (0.0, 0.5, 1.0), horizontal=True)
+        if br:
+            pth = self._gp_round_path(gr, 0, 0, Wd, Hd, R)
+            gdp.GdipSetClipPath(gr, pth, 0)
+            gdp.GdipFillPolygonI(gr, br, pts, 4, 1)
+            gdp.GdipResetClip(gr)       # 裁剪不收回来，后面几层压暗就被裁进这道光里
+            gdp.GdipDeletePath(pth)
+            gdp.GdipDeleteBrush(br)
+
+    def _paint_spot(self, hdc, pal, s, t):
+        """④ 聚光灯大图：整卡铺原图、压暗、一道光扫过，标题从下往上浮。
+
+        图没到位时**不换样式**：改画 `_paint_spot_backdrop` 那张底，压暗、字位、圆点、按钮
+        和有图那一版完全一样（2026-10-28 用户：「图片样式，会出现没有图片的样式」）。
+
+        背景用的是**原图**（缓存里几百 KB 那种），不是 84 的缩略图 —— 拿小图放大
+        整卡会糊成一片（用户：「背景图片太模糊了」）。
+        """
+        g, u = self.g, self.u
+        L = lambda v: int(round(v * s))
+        Wd, Hd = L(BALLOON_W), L(BALLOON_H)
+        text = self.cur[1] if len(self.cur) > 1 else ""
+        meta = self.cur[5] if len(self.cur) > 5 else ""
+        time_txt = self.cur[6] if len(self.cur) > 6 else ""
+        img = self.cur[4] if len(self.cur) > 4 else ""
+        # 【2026-10-28 用户：「应该是由远到近，渐进式展示」】
+        # 从 zoom=1.0（能看到的范围最大、整张图"离得最远"）缓推到 1.10，
+        # 锚点同时从正中慢慢偏向人物所在的一侧；5.2 秒推完就停住，不来回抽。
+        _e = _balloon_ease(min(1.0, max(0.0, t / 5200.0)))
+        zoom = 1.0 + 0.10 * _e
+        ken = (0.50 + 0.12 * _e, 0.50 - 0.08 * _e)
+        _pic = self._draw_thumb(hdc, (0, 0, Wd, Hd), _balloon_img_local(img), pal,
+                                BALLOON_BCAST_RADIUS, zoom=zoom, ken=ken)
+        # 【2026-10-28 用户：「图片样式，会出现没有图片的样式」】
+        # 图没到位**不再退回速递**（以前这里画不出底图就直接退一档，一组里
+        # 聚光灯 / 速递来回跳）。改由 _paint_spot_backdrop 画一张自己的底，字的位置一个像素不动，
+        # 图在后台下好了下一帧自然盖上 —— 用户选的是样式，不该被下载进度改写。
+        # GDI+ 起不来时（self.gdip 为 None，画不了渐变）仍退回速递：那是一张纯黑方块卡，
+        # 比打字机难看，属于"环境坏了"而不是"这条没图"。
+        if not _pic and not (self._memdc and self.gdip):
+            self._paint_live(hdc, pal, s, t)
+            return
+        if self._memdc and self.gdip:
+            R = int(BALLOON_BCAST_RADIUS * s)
+            gr = self._gp_graphics()
+
+            def _fill(br):
+                """把一条渐变刷裁着圆角卡形铺满（GDI+ 的渐变是"无限"的，靠路径收边）。"""
+                if not br:
+                    return
+                pth = self._gp_round_path(gr, 0, 0, Wd, Hd, R)
+                self.gdip.GdipFillPath(gr, br, pth)
+                self.gdip.GdipDeletePath(pth)
+                self.gdip.GdipDeleteBrush(br)
+
+            def _fill_solid(argb):
+                """整卡铺一层纯色（圆角收边）—— 聚光灯那层很轻的全局 veil 用它。"""
+                self._gp_fill_round(gr, 0, 0, Wd, Hd, R, argb)
+
+            try:
+                if not _pic:
+                    # 没图：先铺一张画出来的底，再走和「有图」一模一样的压暗 + 描边 + 字位
+                    self._paint_spot_backdrop(gr, Wd, Hd, R, pal, _e)
+                # 【2026-10-28 用户：「图背景样式还要改进一下，图片都看不清了有些」】
+                # 上一版为了救白字，把 56 以下整片压到 226~246/255 —— 图的下半截基本成了纯黑，
+                # 聚光灯退化成"黑底白字"，而这档存在的理由本来就是"图好看"。
+                # 现在三样分担，压暗只负责压住最亮的那部分，边缘对比交给贴着笔画的描边：
+                #   ① 整卡一层很轻的 veil（18%）：把高光压下去一档，图还是图；
+                #   ② 顶部一条给 App 行、底部一条给标题/来源行，峰值只有 190（原来 246）；
+                #   ③ 字用 halo 描边（8 个方向各描一遍黑），底图某一块突然变亮也不会吃字。
+                _fill_solid(self._argb(0x060A10, 46))
+                _fill(self._gp_grad_brush(0, 0, 0, L(46),
+                                          [self._argb(0x060A10, 150),
+                                           self._argb(0x060A10, 70),
+                                           self._argb(0x060A10, 0)],
+                                          (0.0, 0.6, 1.0)))
+                # 【2026-10-28 修 字体清晰度】底部这一档 190 → 212、中段 130 → 148。
+                # 用户截图反馈标题"看着不清楚"：标题压在新闻原图上，峰值 190 时
+                # 白字还得靠一圈黑描边撑对比，描边又把笔画间空隙填满 → 越看越糊。
+                # 把标题所在的下半截再压暗一档（离 226~246 那个"图全黑"的极端还差很远，
+                # 图照样看得出内容），字就能少依赖描边，边缘才干净。
+                _fill(self._gp_grad_brush(0, L(56), 0, Hd,
+                                          [self._argb(0x060A10, 0),
+                                           self._argb(0x060A10, 78),
+                                           self._argb(0x060A10, 148),
+                                           self._argb(0x060A10, 212)],
+                                          (0.0, 0.35, 0.68, 1.0)))
+                # 扫光：1.2~3.72 秒从左边扫到右边
+                e = _balloon_ease((t - 1200) / 2520.0)
+                if 0.0 < e < 1.0:
+                    bw = 0.46 * Wd
+                    x = -0.55 * Wd + (1.18 + 0.55) * Wd * e
+                    slant = int(0.287 * Hd)
+                    pts = (self.wintypes.POINT * 4)()
+                    pts[0] = self.wintypes.POINT(int(x), 0)
+                    pts[1] = self.wintypes.POINT(int(x + bw), 0)
+                    pts[2] = self.wintypes.POINT(int(x + bw - slant), Hd)
+                    pts[3] = self.wintypes.POINT(int(x - slant), Hd)
+                    br = self._gp_grad_brush(x, 0, x + bw, 0,
+                                             [self._argb(0xFFFFFF, 0),
+                                              self._argb(0xFFFFFF, 52),
+                                              self._argb(0xFFFFFF, 0)],
+                                             (0.0, 0.5, 1.0), horizontal=True)
+                    if br:
+                        pth = self._gp_round_path(gr, 0, 0, Wd, Hd, R)
+                        self.gdip.GdipSetClipPath(gr, pth, 0)
+                        self.gdip.GdipFillPolygonI(gr, br, pts, 4, 1)
+                        # 用完把裁剪收回来：gr 是这一帧共用的，留着裁剪会把后面几条 _fill
+                        # 一起裁进这道光里（无图那一版要先画底，顺序就撞上过）
+                        self.gdip.GdipResetClip(gr)
+                        self.gdip.GdipDeletePath(pth)
+                        self.gdip.GdipDeleteBrush(br)
+            finally:
+                self.gdip.GdipDeleteGraphics(gr)
+        white = _ref(255, 255, 255)
+        # 次级文字（时间 / 来源）：压暗变轻了，这两档就得比原来亮一截，
+        # 靠描边站住，不靠把底图涂黑站住。
+        # 【2026-10-28 第七轮】再各提一档（0.88→0.93、0.84→0.90）：标题加粗之后，
+        # 次级字要是还那么灰，整块就成了"一个粗标题 + 两行虚影"，层级反而乱。
+        dim = _mix_ref(white, _ref(12, 16, 20), 0.93)
+        dim2 = _mix_ref(white, _ref(12, 16, 20), 0.90)
+        self._draw_app_icon(hdc, (L(22), L(13), L(40), L(31)), pal)
+        self._dt_shadow(hdc, "热点新闻", (47, 13, 200, 33), self.font_app, white, s, halo=1)
+        self._dt_shadow(hdc, time_txt or "刚刚", (BALLOON_W - 130, 13, BALLOON_W - 22, 33),
+                        self.font_meta, dim, s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800, halo=1)
+        # 标题从下往上浮（0.72 秒到位），两行 21.6/700 —— 这一档现在是四版式共用的 font_title
+        # 行高 30、起始位置 83：21.6 的字塞在 27 的行高里会顶到下一行；
+        # 83 + 30*2 = 143，来源行（146）还留 3px 空隙。
+        lines = self._fit_lines(hdc, text, self.font_title, BALLOON_TITLE_W, 2)
+        e = _balloon_ease(t / 720.0)
+        top = 83 + int((1.0 - e) * 10)
+        for i, ln in enumerate(lines[:2]):
+            self._dt_shadow(hdc, ln, (22, top + i * 30, BALLOON_W - 22, top + i * 30 + 30),
+                            self.font_title, white, s, halo=1)
+        if meta:
+            self._dt_shadow(hdc, meta, (22, 146, 330, 164), self.font_meta, dim2, s, halo=1)
+        if not self.hover:
+            self._dt_shadow(hdc, "打开 ↗", (BALLOON_W - 22 - 64, 146, BALLOON_W - 22, 164),
+                            self.font_link, white, s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800,
+                            halo=1)
+
+    def _finish_paint(self, hwnd, ps, hdc):
+        """结束这次绘制：分层窗口要把整块画布推给 DWM，普通窗口只要 EndPaint。"""
+        self.u.EndPaint(hwnd, ctypes.byref(ps))
+        if self._memdc:
+            self._solidify_alpha()
+            self._present()
+        else:
+            try:
+                self.u.ReleaseDC(hwnd, hdc)
+            except Exception:
+                pass
+
+    def _solidify_alpha(self):
+        """卡片内部 alpha 钉成卡面那一档 —— 修 GDI 在 32 位 DIB 上画出的"透明洞"。
+
+        分层窗口的像素带 alpha，而 GDI（DrawText / FillRect / StretchBlt / DrawIconEx）
+        只认 XRGB，写进去的像素 alpha 一律是 0。第一版实拍里，分页点整条成了
+        透出桌面的白杠、文字颜色也发灰，就是这来的。卡片本身是半透明的（BALLOON_CARD_ALPHA），
+        所以画完把圆角矩形内每行可见区间的 alpha 写成那一档（圆角外留给 GDI+ 的投影）。
+        220 行切片赋值，耗时可以忽略；比逐像素扫一遍快几个数量级。
+        """
+        if not (self._memdc and getattr(self, "_dib_bits", None)):
+            return
+        W, H, M = self.W, self.H, self.M
+        R = int(_balloon_radius_of(self.style) * self.scale)
+        stride = self.winW * 4
+        raw = (ctypes.c_ubyte * (self.winW * self.winH * 4)) \
+            .from_address(int(self._dib_bits.value or 0))
+        mv = memoryview(raw).cast("B")
+        card_a = bytes((int(BALLOON_CARD_ALPHA),))
+        for y in range(H):
+            # 离上/下边越近，圆角处越要往里收：inset = R - sqrt(R² - (R-d)²)
+            d = min(y, H - 1 - y)
+            inset = 0
+            if d < R:
+                inset = int(R - ((R * R - (R - d) * (R - d)) ** 0.5) + 0.5)
+            x0, x1 = M + inset, M + W - inset
+            if x1 <= x0:
+                continue
+            base = (M + y) * stride
+            mv[base + x0 * 4 + 3: base + x1 * 4 + 3: 4] = card_a * (x1 - x0)
+
+    def _present(self):
+        """把 DIB 整块交给 DWM（逐像素 alpha：圆角/阴影外是透明的，鼠标也点不到）。"""
+        if not (self._memdc and self.hwnd):
+            return
+        u = self.u
+        sdc = u.GetDC(None)
+        try:
+            pt = self.POINT(self.x, self.y)
+            sz = self.SIZE(self.winW, self.winH)
+            src = self.POINT(0, 0)
+            bf = self.BLENDFUNCTION(0, 0, 255, 1)          # AC_SRC_OVER / AC_SRC_ALPHA
+            u.UpdateLayeredWindow(self.hwnd, sdc, ctypes.byref(pt), ctypes.byref(sz),
+                                  self._memdc, ctypes.byref(src), 0, ctypes.byref(bf), 2)
+        finally:
+            u.ReleaseDC(None, sdc)
 
     def _wndproc(self, hwnd, msg, wp, lp):
         ctypes, wintypes = self.ctypes, self.wintypes
         u, g = self.u, self.g
         try:
+            if msg == 0x0020:                      # WM_SETCURSOR —— 光标钉回普通箭头
+                # 【2026-10-28 用户反馈「鼠标指向打开和退出，鼠标一直转圈圈」】
+                # 转圈有两层来历，这里挡第二层：
+                #   1) 开网页原本卡在气泡的消息线程里（ShellExecuteW 同步等浏览器起来），
+                #      那几秒线程不在消息循环里 → 系统判定窗口没响应。已改后台线程，见 0x0201。
+                #   2) 即便不卡，ShellExecute 一类调用期间系统会把"等待"光标盖到本进程窗口上；
+                #      气泡只是右下角一张小卡片，用户在这儿不需要等待光标。
+                # 返回 TRUE（非 0）= 我自己处理了，别让 DefWindowProc 再按"忙"来设光标。
+                if self.cur_arrow:
+                    u.SetCursor(self.cur_arrow)
+                    return 1
             if msg == 0x000F:                      # WM_PAINT
                 ps = self.PAINTSTRUCT()
-                hdc = u.BeginPaint(hwnd, ctypes.byref(ps))
-                rc = self.RECT()
-                u.GetClientRect(hwnd, ctypes.byref(rc))
+                u.BeginPaint(hwnd, ctypes.byref(ps))
+                hdc = self._memdc or u.GetDC(hwnd)
+                rc = self.RECT(0, 0, self.W, self.H)
                 title, text, warn = self.cur[0], self.cur[1], self.cur[2]
+                img = self.cur[4] if len(self.cur) > 4 else ""
+                meta = self.cur[5] if len(self.cur) > 5 else ""
+                time_txt = self.cur[6] if len(self.cur) > 6 else ""
                 s = self.scale
-                # 【2026-10-09 用户要求「头条要有醒目标识，一眼看出是头条」】
-                # 自绘气泡是自己画的，所以头条那一屏整体换一套配色：
-                #   浅红底 + 红色强调条 + 更大的红字标题（其余条目保持白底/灰字）。
-                # 判据是标题前缀（BALLOON_HEADLINE_TAG，由 _balloon_head 生成），
-                # 不依赖元组长度变化，_show_toast_list 的 3/4 元组兼容性不受影响。
-                _head = (title or "").startswith(BALLOON_HEADLINE_TAG)
-                # 卡片底色：明快浅色（跟程序网页风格一致，不用黑底）。
-                # 大事样式用暖白底 + 橙条区分，一眼能看出"这条不一样"；头条另一套（浅红）。
-                if _head:
-                    u.FillRect(hdc, ctypes.byref(rc), self.br_bg_head)
-                else:
-                    u.FillRect(hdc, ctypes.byref(rc), self.br_bg_warn if warn else self.br_bg)
-                # 左侧彩色强调条
-                _barw = int(7 * s) if _head else int(5 * s)
-                bar = self.RECT(0, 0, _barw, rc.bottom)
-                if _head:
-                    u.FillRect(hdc, ctypes.byref(bar), self.br_head)
-                else:
-                    u.FillRect(hdc, ctypes.byref(bar), self.br_warn if warn else self.br_info)
-                # 1px 浅灰圆角描边，让卡片在浅色桌面上有边界感
-                op = g.SelectObject(hdc, self.pen_border)
-                ob = g.SelectObject(hdc, self.null_brush)
-                g.RoundRect(hdc, 0, 0, rc.right, rc.bottom, int(16 * s), int(16 * s))
-                g.SelectObject(hdc, op)
-                g.SelectObject(hdc, ob)
-                g.SetBkMode(hdc, 1)                # TRANSPARENT
-                # 左上角小图标（有就用，没有就把标题左移）
-                x0 = int(20 * s)
-                if self.hicon16:
-                    _ic = int(18 * s)
-                    u.DrawIconEx(hdc, int(19 * s), int(17 * s), self.hicon16, _ic, _ic, 0, None, 3)
-                    x0 = int(46 * s)
-                right = rc.right - int(16 * s)
-                # 标题（深色、加粗；头条用红色 + 更大的字号，并且下方补一条红色下划线）
-                g.SelectObject(hdc, self.font_head if _head else self.font_title)
-                g.SetTextColor(hdc, 0x1E1EC8 if _head else 0x2C201A)   # 头条 #C81E1E / 常规 #1A202C
-                t = self.RECT(x0, int(13 * s), right, int(41 * s))
-                u.DrawTextW(hdc, title, -1, ctypes.byref(t),
-                            0x20 | 0x4 | 0x8000 | 0x800)     # SINGLELINE|VCENTER|ELLIPSIS|NOPREFIX
-                if _head:
-                    # 标题行下面画一条 2px 红线：远看也能一眼认出「这条是头条」
-                    u.FillRect(hdc, ctypes.byref(self.RECT(x0, int(41 * s), right, int(43 * s))),
-                               self.br_head)
-                # 正文（中灰、加粗）
-                g.SelectObject(hdc, self.font_msg)
-                g.SetTextColor(hdc, 0x68554A)      # #4A5568
-                m = self.RECT(x0, int(47 * s), right, rc.bottom - int(10 * s))
-                u.DrawTextW(hdc, text, -1, ctypes.byref(m),
-                            0x10 | 0x800)                    # WORDBREAK|NOPREFIX
+                pal = self._refresh_pal()
+                total = max(1, len(self.playlist))
+                _g = _balloon_rects(BALLOON_W, BALLOON_H, total=total, idx=self.idx,
+                                    thumb=bool(img))
 
+                def _dev(r):
+                    return (int(r[0] * s), int(r[1] * s), int(r[2] * s), int(r[3] * s))
+
+                # 【2026-10-28 用户：「这个样式应该和控制台的颜色同步」】
+                # 卡片本身不再自带颜色，一律走 _balloon_palette()：控制台亮色它就亮色、
+                # 暗色它就暗色，主色那五档（品牌/蓝/绿/紫/琥珀）也跟着页面的生效值走。
+                # 判据和网页同一条：页面默认「跟随系统」= 注册表 AppsUseLightTheme；
+                # 页面里手动点过亮/暗，会把生效值回报到 /api/ui，气泡优先读那份。
+                # 【2026-10-28 第四轮】卡面/圆角/投影交给 GDI+（抗锯齿 + 逐像素 alpha），
+                # 之后所有内容都画在卡片坐标系里（视口原点挪到留白 M 处）。
+                self._paint_card_base(hdc, pal, _g, s)
+                # 【2026-10-28 第五轮】播报版式各自整块画（速递/聚光灯；2026-10-29 精简掉新闻条）。
+                # 它们和卡片版共用投影、圆角卡面、悬停按钮这一层底，内容层各画各的。
+                # 走不到 _paint_bcast 的那一张（self.style == "card"）就是下面这段静态卡片版 ——
+                # 用户菜单里已经没有它了，留作"版式解析炸了也还有一条新闻能读"的兜底。
+                if self.style != "card":
+                    self._paint_bcast(hdc, pal, s, _g)
+                    self._finish_paint(hwnd, ps, hdc)
+                    return 0
+                g.SetBkMode(hdc, 1)                # TRANSPARENT
+                badge, _src, _note = _balloon_split_head(title)
+                # 【2026-10-09 用户要求「头条要有醒目标识」】苹果版不再有胶囊标签，
+                # 栏目挪进 App 行「热点新闻 · 热点」；头条仍用 --danger、大事用 --warn 着色，
+                # 只是从"色块"降成"一点颜色"—— 和控制台里 .tag 的用法同一个分寸。
+                _head = (badge == "头条") or (title or "").startswith(BALLOON_HEADLINE_TAG)
+                tint = pal["danger"] if _head else (pal["warn"] if warn else None)
+                # ── App 行：小图标 + 热点新闻 + 栏目 …… 右端 时间 ──
+                a = _dev(_g["app"])
+                self._draw_app_icon(hdc, _dev(_g["icon"]), pal)
+                g.SelectObject(hdc, self.font_app)
+                g.SetTextColor(hdc, pal["txt"])
+                ax = int(_g["icon"][2] * s) + int(8 * s)
+                ar = self.RECT(ax, a[1], a[2], a[3])
+                u.DrawTextW(hdc, "热点新闻", -1, ctypes.byref(ar),
+                            0x20 | 0x4 | 0x8000 | 0x800)       # SINGLELINE|VCENTER|ELLIPSIS|NOPREFIX
+                ax += self._text_w(hdc, "热点新闻", self.font_app) + int(6 * s)
+                if badge:
+                    g.SelectObject(hdc, self.font_meta)
+                    g.SetTextColor(hdc, tint if tint else pal["txt3"])
+                    dr = self.RECT(ax, a[1], ax + int(120 * s), a[3])
+                    u.DrawTextW(hdc, "· " + badge, -1, ctypes.byref(dr),
+                                0x20 | 0x4 | 0x8000 | 0x800)
+                if time_txt:
+                    g.SelectObject(hdc, self.font_meta)
+                    g.SetTextColor(hdc, pal["txt3"])
+                    tr2 = self.RECT(a[0], a[1], a[2], a[3])
+                    u.DrawTextW(hdc, time_txt, -1, ctypes.byref(tr2),
+                                0x20 | 0x2 | 0x8000 | 0x800)   # SINGLELINE|RIGHT|ELLIPSIS|NOPREFIX
+                # 题图：底部左角 58×58 圆角（2026-10-29 起标题带走整行宽，题图从右侧挪下来了）；
+                # 还没下好 / 没图就画占位块，有图 URL 但文件没到位时**仍然占位**，
+                # 不让版面在两条之间跳。
+                if _g["thumb"]:
+                    self._draw_thumb(hdc, _dev(_g["thumb"]), _balloon_img_local(img), pal)
+                # 新闻标题：这一行才是用户真正要读的东西，给它主字号主字色
+                # 【2026-10-29 用户：「这个字体换成，聚光灯式的字体，包括卡片式字体，自动的字体」】
+                # 卡片档的标题从此和聚光灯同一档（font_title = 21.6/700，真粗体）。
+                # 上面那行注释说的"主字号"以前是 16/600 —— 换样式就换一号字，用户读到的
+                # 意思是"这几档不是一回事"；现在各档（速递 / 聚光灯，加上退居兜底的卡片版）
+                # 共用这一支 font_title —— 标题字号不再是"样式"的一部分。
+                g.SelectObject(hdc, self.font_title)
+                g.SetTextColor(hdc, pal["txt"])
+                t = _dev(_g["text"])
+                tr = self.RECT(t[0], t[1], t[2], t[3])
+                u.DrawTextW(hdc, text, -1, ctypes.byref(tr),
+                            0x10 | 0x2000 | 0x40000 | 0x800)   # WORDBREAK|EDITCONTROL|WORD_ELLIPSIS|NOPREFIX
+                # 来源 · 名次：比正文轻一档
+                if meta:
+                    m = _dev(_g["meta"])
+                    g.SelectObject(hdc, self.font_meta)
+                    g.SetTextColor(hdc, pal["txt3"])
+                    mr = self.RECT(m[0], m[1], m[2], m[3])
+                    u.DrawTextW(hdc, meta, -1, ctypes.byref(mr),
+                                0x20 | 0x4 | 0x8000 | 0x800)   # SINGLELINE|VCENTER|ELLIPSIS|NOPREFIX
+                # 分页点：取代原来挤在标题尾巴上的 (3/10)；十条播到第几眼就能看见
+                if total > 1:
+                    self._draw_pager(hdc, _dev(_g["pager"]), pal, total, self.idx)
+                # 【2026-10-28 用户：「倒计时条不要，看着心慌」】底部那根进度线整个删掉，
+                # 连同 200ms 的重画计时器一起（没有条要刷了）。别再"好心"加回来：
+                # 用户要的是「随手看一眼新闻」，不是「盯着倒计时等它走完」。
                 # 【2026-10-07 用户要求「鼠标指向，显示退出和打开的字样」】
-                # 鼠标悬停在气泡上时，右下角浮出两个胶囊按钮；移开就消失。
-                if self.hover:
-                    bw, bh = int(56 * s), int(26 * s)
-                    gap = int(8 * s)
-                    by = rc.bottom - int(36 * s)
-                    ex = rc.right - int(14 * s)
-                    self._btn_close = (ex - bw, by, ex, by + bh)
-                    self._btn_open = (ex - bw - gap - bw, by, ex - bw - gap, by + bh)
-                    # 【2026-10-12 用户反馈「毛刺感太强」】原来直接 GDI RoundRect，
-                    # 圆弧无抗锯齿。改走 _draw_capsule（4 倍离屏 + HALFTONE 缩回）。
-                    # 颜色与原画刷保持一致：打开 #2B6CB0 白字，退出 #E2E8F0 深字，
-                    # 描边沿用 pen_border 的 #E2E8F0；底色跟着卡片三套配色取。
-                    _bg = 0xF0F1FF if _head else (0xF1F8FF if warn else 0xFFFFFF)
-                    self._draw_capsule(hdc, self._btn_open, _bg,
-                                       0xB06C2B, 0xF0E8E2, "打开", 0xFFFFFF,
-                                       self.font_btn4)
-                    self._draw_capsule(hdc, self._btn_close, _bg,
-                                       0xF0E8E2, 0xF0E8E2, "退出", 0x2C201A,
-                                       self.font_btn4)
-                u.EndPaint(hwnd, ctypes.byref(ps))
+                # 【2026-10-28 第四轮】改成**常驻胶囊**：不再靠悬停才画 —— 悬停才出现的按钮，
+                # 用户根本不知道可以点（"退出在哪"就是这么来的）。常驻灰胶囊「关闭」+
+                # 主色胶囊「打开」，悬停时两个都提亮一档。
+                self._draw_buttons(hdc, _g, pal, s)
+                self._finish_paint(hwnd, ps, hdc)
                 return 0
             if msg == 0x0113:                      # WM_TIMER
                 if wp == 1:                        # 轮询队列：取下一组来播
                     pl = None
                     with self.lock:
-                        if self.q and not self.showing:
+                        _ip = self.interrupt
+                        if self.q and (not self.showing or _ip):
                             pl = self.q.pop(0)
+                        if _ip:
+                            self.interrupt = False
+                    if pl and self.showing:
+                        # 用户主动要看的（选样式 / 立即轮播 / 双击托盘）不等上一组播完：
+                        # 先把它掐掉再开新的。掐的动作在**本线程**做（这些计时器就是本线程
+                        # SetTimer 出来的），调用方只留了个标记，不跨线程动窗口和计时器。
+                        print("[ok] 用户主动要看，掐掉正在播的那一组（停在第 %d/%d 条），"
+                              "立刻换成新的 %d 条"
+                              % (self.idx + 1, len(self.playlist), len(pl)))
+                        self._dismiss(hwnd, drop_pending=False)
                     if pl:
                         self.playlist = pl
                         self.idx = 0
                         self._apply_current()
                         self._place()
                         u.ShowWindow(hwnd, 4)       # SW_SHOWNOACTIVATE
-                        u.SetWindowPos(hwnd, -1, self.x, self.y, self.W, self.H,
+                        u.SetWindowPos(hwnd, -1, self.x, self.y, self.winW, self.winH,
                                        0x0010 | 0x0040)          # NOACTIVATE|SHOWWINDOW
                         u.InvalidateRect(hwnd, None, True)
                         self.showing = True
@@ -4268,6 +5951,7 @@ class _Balloon:
                 elif wp == 2:                      # 整组播完 → 隐藏
                     u.KillTimer(hwnd, 2)
                     u.KillTimer(hwnd, 3)
+                    u.KillTimer(hwnd, 5)
                     u.ShowWindow(hwnd, 0)           # SW_HIDE
                     self.showing = False
                     self.playlist = []
@@ -4278,9 +5962,31 @@ class _Balloon:
                         u.InvalidateRect(hwnd, None, True)
                     else:
                         u.KillTimer(hwnd, 3)
+                elif wp == 4:                      # 「打开」之后：接着播这一组剩下的
+                    u.KillTimer(hwnd, 4)
+                    self._resume_rest(hwnd)
+                elif wp == 5:                      # 播报版式的动画节拍
+                    if not self.showing:
+                        u.KillTimer(hwnd, 5)
+                    else:
+                        u.InvalidateRect(hwnd, None, False)
                 return 0
             if msg == 0x0200:                      # WM_MOUSEMOVE —— 悬停
                 # 【2026-10-07 用户要求「鼠标指向，显示退出和打开的字样」】
+                # 【2026-10-28 第四轮】窗口比卡片大一圈（投影留白 M），鼠标划过那圈阴影
+                # 也会收到 WM_MOUSEMOVE。换算回卡片坐标再判，出了敏感圈就当移开。
+                _mx = ctypes.c_short(lp & 0xFFFF).value - self.M
+                _my = ctypes.c_short((lp >> 16) & 0xFFFF).value - self.M
+                # 【2026-10-28 第五轮】用户：「要整成鼠标靠近才显示的状态」——
+                # 判悬停的圈比卡片本身大一圈（投影那十几像素也算「靠近」），
+                # 手刚凑到卡片边上按钮就浮出来，不用精确压到卡片上；
+                # 出了这一圈才收（仍然不是整块留白，手从旁边路过不会误触暂停）。
+                _pad = int(16 * self.scale)
+                if not (-_pad <= _mx <= self.W + _pad
+                        and -_pad <= _my <= self.H + _pad):
+                    if self.hover:
+                        self._mouse_leave(hwnd)
+                    return 0
                 if not self.hover:
                     self.hover = True
                     u.InvalidateRect(hwnd, None, True)
@@ -4312,36 +6018,42 @@ class _Balloon:
                         pass
                 return 0
             if msg == 0x02A3:                      # WM_MOUSELEAVE —— 鼠标移开
-                self.hover = False
-                if getattr(self, "paused", False):
-                    # 移开就恢复计时，重新给一整组的时间，别立刻消失
-                    try:
-                        u.SetTimer(hwnd, 2, BALLOON_PER_ITEM_MS * max(1, len(self.playlist)), None)
-                        if len(self.playlist) > 1:
-                            u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)
-                        self.paused = False
-                    except Exception:
-                        pass
-                self._tracking = False
-                self._btn_open = None
-                self._btn_close = None
-                u.InvalidateRect(hwnd, None, True)
+                self._mouse_leave(hwnd)
                 return 0
             if msg == 0x0201:                      # WM_LBUTTONDOWN
                 # 【2026-10-07 用户反馈「气泡的新闻无法点开」】原来点哪里都只打开程序首页，
                 # 看不到那一条新闻。现在优先打开**当前正在播放的这条**的原文链接；
                 # 没有链接（比如"我的软件发布"是纯提示、没有跳转目标）才回落到首页。
+                # 【2026-10-28 修「点退出没反应、鼠标一直转」】坐标取错了一整轮：
+                #   WM_LBUTTONDOWN 的 wParam 是**按键状态位**（按下左键就是 1），
+                #   鼠标坐标全在 lParam 里 —— 低 16 位是 x、高 16 位是 y，
+                #   而且两个都是有符号 short（副屏在主屏左边时坐标为负，
+                #   不还原符号直接 & 0xFFFF 会得到 65535 附近的正数，越点越偏）。
+                # 命中判断原来写成 `r[0] <= wp <= r[2]`，等于拿状态位"1"去比按钮的 x 区间
+                # （卡片宽 400×缩放，两个胶囊贴在右侧 x≈330~386），永远判不中：
+                # 「退出」于是和「打开」、和点正文走了同一条路 —— 都去开网页，
+                # 用户看到的就是"退出这个键按了没用"。
+                _x = ctypes.c_short(lp & 0xFFFF).value
+                _y = ctypes.c_short((lp >> 16) & 0xFFFF).value
+                # 【2026-10-28 第四轮】窗口比卡片大一圈（投影留白 M），按钮矩形记的是卡片坐标，
+                # 先把鼠标位置换算回卡片坐标系；点在留白那圈（阴影/圆角外）就当没点。
+                _x -= self.M
+                _y -= self.M
+                if not (0 <= _x <= self.W and 0 <= _y <= self.H):
+                    return 0
                 # 先看是不是点在两个按钮上（坐标来自上一次绘制）
+                # 胶囊只有 56x26（×缩放），笔记本上更难瞄，判定区四边各放宽 3px；
+                # 两个按钮之间留 8px 间隔，各放 3px 不会互相吃掉。
+                _pad = int(3 * self.scale)
+
                 def _in(r):
-                    return bool(r) and r[0] <= wp <= r[2] and r[1] <= lp <= r[3]
+                    return bool(r) and (r[0] - _pad) <= _x <= (r[2] + _pad) \
+                                and (r[1] - _pad) <= _y <= (r[3] + _pad)
                 if _in(self._btn_close):
-                    # 「退出」= 收起这条气泡，不打开任何东西
-                    u.ShowWindow(hwnd, 0)
-                    self.showing = False
-                    self.hover = False
-                    self._tracking = False
-                    u.KillTimer(hwnd, 2)
-                    u.KillTimer(hwnd, 3)
+                    # 「退出」= 收起这条气泡，不打开任何东西。
+                    # 连排在后面的那组也一起丢掉（drop_pending）：不然 300 毫秒后
+                    # 轮询计时器把下一组顶上来，在用户眼里还是"退出按了没反应"。
+                    self._dismiss(hwnd, drop_pending=True)
                     return 0
                 _link = ""
                 try:
@@ -4349,26 +6061,23 @@ class _Balloon:
                         _link = self.cur[3] or ""
                 except Exception:
                     _link = ""
+                # 剩下的落点（「打开」胶囊、以及卡片正文任意处）都是打开这一条。
                 # 【2026-10-07】原来只用 webbrowser.open，在打包环境里偶尔不生效
-                # （用户反馈"气泡点不开"）。改用 ShellExecuteW —— 这是 Windows 上
-                # 打开 URL 最直接、最可靠的方式；失败再退回 webbrowser。
-                _url = _link or APP_URL
-                _done = False
+                # （用户反馈"气泡点不开"），改用 ShellExecuteW 最直接可靠。
+                # 【2026-10-28】开网页这一步从消息线程里挪走了：ShellExecuteW 同步等浏览器
+                # 起来，那几秒气泡线程不在消息循环里待着，Windows 就判定窗口没响应、
+                # 给鼠标挂上转圈。现在只做「收起」，开网页交给后台线程。
+                # 【2026-10-28 兴趣投放】点开的是哪一类，就给哪一类记一分。
+                # 这是「喜欢科技就多投科技」的全部信号来源：不看用户勾选，只看他真点开了什么。
+                # 写盘失败也绝不影响开网页，所以整段包在 try 里。
                 try:
-                    if ctypes.windll.shell32.ShellExecuteW(
-                            None, "open", _url, None, None, 1) > 32:
-                        _done = True
+                    _interest_bump(_balloon_split_head(self.cur[0])[0])
                 except Exception:
-                    _done = False
-                if not _done:
-                    try:
-                        webbrowser.open(_url)
-                    except Exception:
-                        pass
-                u.ShowWindow(hwnd, 0)
-                self.showing = False
-                self.hover = False
-                self._tracking = False
+                    pass
+                # 【2026-10-28 第二次】点「打开」不再把整组一起收掉（用户反馈"进网页后轮播停了"）：
+                # 摘掉已看过的这条，剩下的隔 BALLOON_RESUME_MS 毫秒接着播。
+                _open_app_later(_link or APP_URL)
+                self._hide_and_resume(hwnd)
                 return 0
             if msg == 0x0002:                      # WM_DESTROY
                 u.PostQuitMessage(0)
@@ -4377,28 +6086,175 @@ class _Balloon:
             print(f"[warn] 气泡窗口消息处理异常: {type(ex).__name__}: {ex}")
         return u.DefWindowProcW(hwnd, msg, wp, lp)
 
+    def _mouse_leave(self, hwnd):
+        """鼠标离开卡片（真的移开，或者只是划过外面那圈阴影）：收起悬停态、恢复计时。"""
+        self.hover = False
+        if getattr(self, "paused", False):
+            # 移开就恢复计时，重新给一整组的时间，别立刻消失
+            try:
+                self.u.SetTimer(hwnd, 2,
+                                BALLOON_PER_ITEM_MS * max(1, len(self.playlist)), None)
+                if len(self.playlist) > 1:
+                    self.u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)
+                self.paused = False
+            except Exception:
+                pass
+        self._tracking = False
+        self.u.InvalidateRect(hwnd, None, True)
+
     def _apply_current(self):
-        """把当前播放到的那一条装进 self.cur，并在标题尾巴标出 (第几条/共几条)。"""
+        """把当前播放到的那一条装进 self.cur。
+
+        【2026-10-28】标题尾巴上那个 `(3/10)` 去掉了：新版式底部有一排分页点（用户选的
+        「新闻卡 + 倒计时条」那版），进度由点表示，标题整行都是新闻本身，不用再占五个字符。
+        每条开播前顺手刷一次配色 —— 用户在控制台里切了亮/暗、或 Windows 换了深浅色，
+        下一条气泡就是那个颜色，不用重启程序。
+        """
+        try:
+            self._refresh_pal()
+        except Exception:
+            pass
         pl = self.playlist
         if not pl:
-            self.cur = ("", "", False, "")
+            self.cur = ("", "", False, "", "", "", "")
             return
         i = max(0, min(self.idx, len(pl) - 1))
-        title, text, warn = pl[i][0], pl[i][1], pl[i][2]
-        link = pl[i][3] if len(pl[i]) > 3 else ""
-        if len(pl) > 1:
-            title = f"{title}    ({i + 1}/{len(pl)})"
-        self.cur = (title, text, warn, link)
+        row = pl[i]
+        title, text, warn = row[0], row[1], row[2]
+        link = row[3] if len(row) > 3 else ""
+        img = row[4] if len(row) > 4 else ""
+        meta = row[5] if len(row) > 5 else ""
+        time_txt = row[6] if len(row) > 6 else ""
+        self.cur = (title, text, warn, link, img, meta, time_txt)
+        # 【2026-10-28 第五轮】这一条用哪个播报版式：配置里选的样式 + 这条有没有图。
+        # auto 的默认口径是「图已经在本机就大图、还在路上就速递」；用户在任何地方改了样式，
+        # 下一条开播就换，不用重启（和主题/主色一个规矩）。
+        # 判"有没有图"要看**本机缓存**而不是 URL：URL 每条都有，缓存才是真拿得到（见上条注释）。
+        # 用户点名那档不受这里影响 —— spot 没图也照画聚光灯，只是底换成画出来的那张。
+        try:
+            self.style = _balloon_pick_style(has_img=bool(_balloon_img_local(img)))
+        except Exception:
+            # 版式解析这一步整个炸了（读配置失败之类）也要有东西可画：退回静态卡片版 ——
+            # 它就是 WM_PAINT 那条 fall-through（`if self.style != "card"` 才走 _paint_bcast），
+            # 不带动画、不烧 CPU，字一定在。用户 2026-10-29 把菜单精简成三档，卡片没删、
+            # 只是从"可选样式"降成"最后的兜底"。
+            self.style = "card"
+        self._t0 = time.monotonic()
+        # 40ms 的动画节拍：只有播报版式需要（卡片版是静态的，别白烧 CPU）。
+        try:
+            if self.style != "card" and self.hwnd:
+                self.u.SetTimer(self.hwnd, 5, BALLOON_ANIM_TICK_MS, None)
+        except Exception:
+            pass
+        # 题图在后台补下（等文件到位后下一帧自然就画出来了；没有也不耽误正文）
+        try:
+            _balloon_img_warm(img)
+        except Exception:
+            pass
 
     def _place(self):
-        """放到工作区右下角（避开任务栏）。"""
+        """放到工作区右下角（避开任务栏）。
+
+        窗口比卡片大一圈（投影留白），所以位置要再往左上挪 M，卡片本身才落在原来的点上。
+        """
         rc = self.RECT()
         try:
             self.u.SystemParametersInfoW(0x0030, 0, self.ctypes.byref(rc), 0)   # SPI_GETWORKAREA
         except Exception:
             rc = self.RECT(0, 0, 1920, 1080)
-        self.x = max(0, rc.right - self.W - self.pad)
-        self.y = max(0, rc.bottom - self.H - self.pad)
+        self.x = max(0, rc.right - self.W - self.pad - self.M)
+        self.y = max(0, rc.bottom - self.H - self.pad - self.M)
+
+    def _dismiss(self, hwnd, drop_pending=False):
+        """收起气泡：停掉计时器、隐窗口、把状态清干净。
+
+        2026-10-28 抽出来：「退出」和「打开」两条路原本各写一遍收尾，结果两处都不全
+        —— 打开那条路没杀计时器（窗口已经隐了还在后台滚 idx）、也没清 paused。
+        收拢成一个出口，以后要加动作只改这一处。
+        drop_pending=True 是「退出」的口径：排队里剩下的那组也别再弹了。
+        """
+        try:
+            self.u.KillTimer(hwnd, 2)              # 整组停留
+            self.u.KillTimer(hwnd, 3)              # 逐条轮换
+            self.u.KillTimer(hwnd, 4)              # 「打开」后接着播的那次唤醒
+            self.u.KillTimer(hwnd, 5)              # 播报版式的动画节拍
+        except Exception:
+            pass
+        self.showing = False
+        self.hover = False
+        self.paused = False
+        self._tracking = False
+        self.playlist = []
+        self.idx = 0
+        self._btn_open = None
+        self._btn_close = None
+        try:
+            self.u.ShowWindow(hwnd, 0)             # SW_HIDE
+        except Exception:
+            pass
+        if drop_pending:
+            try:
+                with self.lock:
+                    del self.q[:]
+            except Exception:
+                pass
+
+    def _hide_and_resume(self, hwnd):
+        """点「打开」的收尾：刚点开的那条算看过，摘掉；这一组剩下的隔一会儿接着播。
+
+        【2026-10-28 用户反馈「打开，进入网页，轮播就停止了」】原来「打开」和「退出」一样
+        走整组收起：10 条播到第 3 条点进去看，剩下 7 条直接没了，一轮等于只看 3 条。
+
+        和「退出」（_dismiss）的差别只在"要不要继续"：
+          · 「退出」= 当前这组 + 排队里的下一组全丢掉；
+          · 「打开」= 只摘掉刚点开这条，showing **保持 True** —— 300 毫秒的队列轮询
+            （计时器 1）只在不 showing 时才取下一组，不然它会趁这 8 秒空档把下一组顶上来，
+            剩下的条目就被挤掉了。什么时候再播交给计时器 4。
+        点的正好是最后一条（剩下的空了）→ 老老实实整组收起，让下一组正常上来。
+        """
+        rest = self.playlist[self.idx + 1:]
+        if not rest:
+            self._dismiss(hwnd)
+            return
+        try:
+            self.u.KillTimer(hwnd, 2)
+            self.u.KillTimer(hwnd, 3)
+            self.u.KillTimer(hwnd, 4)               # 重复点也不许排两个唤醒
+            self.u.KillTimer(hwnd, 5)               # 动画节拍等重新亮出来时再架
+        except Exception:
+            pass
+        self.playlist = rest
+        self.idx = 0
+        self.hover = False
+        self.paused = False
+        self._tracking = False
+        self._btn_open = None
+        self._btn_close = None
+        try:
+            self.u.ShowWindow(hwnd, 0)              # 先把屏幕让给浏览器
+            self.u.SetTimer(hwnd, 4, BALLOON_RESUME_MS, None)
+        except Exception:
+            self._resume_rest(hwnd)                 # 计时器没架上也不能把剩下几条吞了
+
+    def _resume_rest(self, hwnd):
+        """计时器 4 到点：把这一组剩下的接着播（和一组刚开始时同一套动作）。"""
+        if not self.playlist:
+            self.showing = False
+            return
+        u = self.u
+        self._apply_current()
+        self._place()
+        try:
+            u.ShowWindow(hwnd, 4)                   # SW_SHOWNOACTIVATE
+            u.SetWindowPos(hwnd, -1, self.x, self.y, self.winW, self.winH,
+                           0x0010 | 0x0040)         # NOACTIVATE|SHOWWINDOW
+            u.InvalidateRect(hwnd, None, True)
+            u.SetTimer(hwnd, 2, BALLOON_PER_ITEM_MS * len(self.playlist), None)
+            if len(self.playlist) > 1:
+                u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)
+        except Exception:
+            pass
+        self.showing = True
 
     def start(self):
         if not self.ok:
@@ -4414,63 +6270,108 @@ class _Balloon:
             wc.hInstance = self.k.GetModuleHandleW(None)
             wc.lpszClassName = "HotNewsBalloonWnd"
             wc.lpfnWndProc = self._ref
+            wc.hCursor = self.cur_arrow            # 窗口默认光标：箭头（原来空着，靠系统兜底）
             u.RegisterClassW(ctypes.byref(wc))
             self.x, self.y = 0, 0
             self._place()
             hwnd = u.CreateWindowExW(
-                0x00000008 | 0x00000080 | 0x08000000,     # TOPMOST|TOOLWINDOW|NOACTIVATE
+                0x00000008 | 0x00000080 | 0x08000000 | 0x00080000,   # TOPMOST|TOOLWINDOW|NOACTIVATE|LAYERED
                 "HotNewsBalloonWnd", "热点新闻提醒",
                 0x80000000,                               # WS_POPUP
-                self.x, self.y, self.W, self.H,
+                self.x, self.y, self.winW, self.winH,
                 None, None, wc.hInstance, None)
             self.hwnd = hwnd
             s = self.scale
-            # GDI 资源建一次就复用，避免每次弹都泄漏。
-            # 配色跟程序网页的「明快浅色」一致：白卡片 + 浅灰描边 + 彩色强调条。
-            # （原来是 #1F2430 黑底，用户反馈"好丑"，已改掉。）
-            self.br_bg = g.CreateSolidBrush(0xFFFFFF)        # 纯白      #FFFFFF
-            self.br_bg_warn = g.CreateSolidBrush(0xF1F8FF)   # 暖白      #FFF8F1
-            self.br_info = g.CreateSolidBrush(0xB06C2B)      # 蓝        #2B6CB0
-            self.br_warn = g.CreateSolidBrush(0x206BDD)      # 橙        #DD6B20
-            # 【2026-10-09 头条醒目样式】浅红底 #FFF1F0 + 正红强调条 #E53E3E
-            self.br_bg_head = g.CreateSolidBrush(0xF0F1FF)   # 浅红      #FFF1F0
-            self.br_head = g.CreateSolidBrush(0x3E3EE5)      # 正红      #E53E3E
-            # 【2026-10-07 用户要求「鼠标指向显示打开/退出」】两个胶囊按钮的底色
-            self.br_btn_open = g.CreateSolidBrush(0xB06C2B)   # 蓝 #2B6CB0
-            self.br_btn_close = g.CreateSolidBrush(0xF0E8E2)  # 浅灰 #E2E8F0
-            self.pen_border = g.CreatePen(0, max(1, int(s)), 0xF0E8E2)   # 浅灰描边 #E2E8F0
+            # 【2026-10-28 用户：「这个样式应该和控制台的颜色同步」】
+            # 这里**不再**自带一套画刷（原来白卡 #FFFFFF / 蓝条 #2B6CB0 / 橙条 #DD6B20 /
+            # 浅红底 #FFF1F0…和网页那套令牌是两套色）。画刷改由 _brush() 按当前
+            # 配色表临建临用（_refresh_pal 换主题时整批删掉重建），字号则固定下来。
             self.null_brush = g.GetStockObject(5)            # NULL_BRUSH（只描边不填充）
-            # 字体：字体加粗（weight 700 走真粗体，不用 GDI 合成，避免发糊），
-            # 并用 CLEARTYPE_QUALITY(5) + OUT_TT_PRECIS(5) 开抗锯齿。
-            # 原来的 iQuality=0(DEFAULT) 在缩放屏上会出现锯齿/毛刺。
-            self.font_title = g.CreateFontW(-int(19 * s), 0, 0, 0, 700, 0, 0, 0,
-                                            134, 5, 0, 5, 0, "Microsoft YaHei UI")
-            # 【2026-10-09】头条专用：再大一号（21 vs 19），配合红色字与红色强调条
-            self.font_head = g.CreateFontW(-int(21 * s), 0, 0, 0, 700, 0, 0, 0,
-                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
-            self.font_btn = g.CreateFontW(-int(14 * s), 0, 0, 0, 700, 0, 0, 0,
-                                          134, 5, 0, 5, 0, "Microsoft YaHei UI")
-            # 4 倍字号：_draw_capsule 离屏绘制专用（缩回 1/4 后字边缘同样被抹平）
-            self.font_btn4 = g.CreateFontW(-int(14 * s) * 4, 0, 0, 0, 700, 0, 0, 0,
-                                           134, 5, 0, 5, 0, "Microsoft YaHei UI")
-            self.font_msg = g.CreateFontW(-int(16 * s), 0, 0, 0, 700, 0, 0, 0,
-                                          134, 5, 0, 5, 0, "Microsoft YaHei UI")
-            # 小图标（取不到就算了，标题会自动左移）
-            self.hicon16 = None
+            # 字体：加粗走真粗体（weight 700 那一档不让 GDI 合成，合成出来发糊）。
+            # 原来的 iQuality=0(DEFAULT) 在缩放屏上会出现锯齿/毛刺，所以一直显式给质量档。
+            # 【2026-10-28 第六轮 用户：「字体发虚」】iQuality 从 5(CLEARTYPE) 改成 4(ANTIALIASED)。
+            # 气泡是 WS_EX_LAYERED + UpdateLayeredWindow 的逐像素透明窗口：ClearType 把笔画
+            # 边缘的灰度藏在 R/G/B 三个子像素里，DWM 再拿 alpha 和桌面混一次，子像素排列就
+            # 被打散了 —— 实拍出来字边带橙/蓝毛边，看着就是"发虚"（亮色卡上尤其明显，
+            # 量过：中间调像素 100% 有 ≥12 的通道偏差）。灰度抗锯齿只动亮度不动色相，
+            # 混完还是干净的灰边。缩放比仍然按物理像素算，所以不会退回毛刺那一版。
+            # 字号阶梯照抄控制台 --fs-* 的相对比例（正文 13 / 小标题 14 / meta 12 / micro 11），
+            # 但整体放大一档：气泡是离着一臂远扫一眼的东西，页面是坐着凑近读的。
+            # 苹果风字阶（2026-10-28 第三轮）：标题 16/600，App 名 12.5/600，备注 11.5/500，
+            # 文字按钮 12.5/600。字重比上一版降一档（700 → 600/500），是"苹果"和"论坛加粗"
+            # 最直接的区别；字号阶梯仍按控制台 --fs-* 的相对比例整体放一档。
+            # 【2026-10-28 修 字体发虚】字号一律 `round()` 取整，不再 `int()` 截断。
+            # 125% 缩放下 19 * 1.25 = 23.75，`int` 砍成 23 —— 奇数像素高让微软雅黑的
+            # hinting 把笔画挤成不匀的宽度（横画尤其明显）；`round` 给 24，笔画落在整像素上。
+            # 12.5 * 1.25 = 15.625 原来被砍成 15，现在 16，小字立刻实一档。
+            self.font_msg = g.CreateFontW(-int(round(BALLOON_TITLE_PX * s)), 0, 0, 0, 600, 0, 0, 0,
+                                         134, 5, 0, 4, 0, "Microsoft YaHei UI")   # 兜底版式的标题（小一号保平安）
+            # 小字也各升一档：12.5 → 13.6（物理 16 → 17）、11.5 → 12.8（物理 14 → 16）。
+            # 聚光灯那一版的小字是压在**新闻原图**上的，14 物理像素本来就偏小，档位上到 16 之后
+            # 既好认又不至于跟标题抢戏。
+            self.font_app = g.CreateFontW(-int(round(13.6 * s)), 0, 0, 0, 600, 0, 0, 0,
+                                          134, 5, 0, 4, 0, "Microsoft YaHei UI")  # App 行「热点新闻」
+            self.font_link = g.CreateFontW(-int(round(13.6 * s)), 0, 0, 0, 600, 0, 0, 0,
+                                           134, 5, 0, 4, 0, "Microsoft YaHei UI")  # 打开 / 关闭
+            self.font_meta = g.CreateFontW(-int(round(12.8 * s)), 0, 0, 0, 500, 0, 0, 0,
+                                           134, 5, 0, 4, 0, "Microsoft YaHei UI")  # 来源/时间/栏目
+            self.font_icon = g.CreateFontW(-int(round(11 * s)), 0, 0, 0, 700, 0, 0, 0,
+                                           134, 5, 0, 4, 0, "Microsoft YaHei UI")  # 兜底图标的「热」
+            # 【2026-10-28 第五轮·播报版式】当年给几档版式各配过一支字：新闻条的 19/600 大标题、
+            # 速递的 18/600、「03 / 10」那种小字和滚动条里的 11.5 —— 别拿 16px 硬凑。
+            # 【2026-10-28 第七轮·标题加粗放大】别再靠猜，这里是量出来的：
+            #  同样 24 物理像素、拿「加配不加价 i6」统计"有墨"像素数 ——
+            #     weight 400 → 1099   weight 500 → 1099（两者完全相同，写 500 等于没写）
+            #     weight 600 → 1458   weight 700 → 1792（比 600 再厚 23%）
+            #     weight 800 → 1792（到顶，和 700 同形）
+            #  结论：这套雅黑只有 Regular / 一个中间档 / Bold 三级，600 不是"半粗"，700 才是
+            #  真正的 Bold。所以字重是有效杠杆，600 → 700 是肉眼看得出来的差异。
+            #  另外更正：上一轮把 int() 换 round() 后用户反馈「看着没啥变化」是**正常**的，
+            #  因为 19*1.25 = 23.75，int 得 23、round 得 24，本来就只差 1 个物理像素。
+            #  真正拉开差距的是字号 +1 档、字重 +1 档。
+            # 【2026-10-29 精简成三档】上面那支 19.2 的 font_hl 随新闻条(tv)一起删了 ——
+            # 它是"换样式=换字号"那个割裂感的唯一来源；现在标题只有 font_title 一支，
+            # 外加兜底版式那支小一号的 font_msg。
+            # 【2026-10-29 用户：「这个字体换成，聚光灯式的字体，包括卡片式字体，自动的字体」】
+            # 这一档原来是聚光灯专用的 font_spot。现在它是**共用的标题字体**，所以改名
+            # font_title：速递 / 自动 / 聚光灯（还有退居兜底的卡片版）的标题都是它
+            # （21.6 逻辑像素 = 物理 27，真粗体 700）。以前速递用 18/600、卡片用 16/600，
+            # 同一组新闻换一档样式标题就换一号字，用户读到的意思是"这几档不是一回事"。
+            # 撑得住的底气来自版式：标题带从「让出 84 给题图、两行 ×24」改成「整行 436、
+            # 两行 ×30」，加上 _fit_lines 那个单位 bug 修掉，本机 200 条真标题里两行装不下的
+            # 从 81 条（速递旧版 40.5%）降到 14 条（7%）—— 字变大，被砍掉的标题反而更少。
+            self.font_title = g.CreateFontW(-int(round(BALLOON_HEAD_PX * s)), 0, 0, 0, 700, 0, 0, 0,
+                                            134, 5, 0, 4, 0, "Microsoft YaHei UI")
+            self.font_num = g.CreateFontW(-int(round(11 * s)), 0, 0, 0, 500, 0, 0, 0,
+                                          134, 5, 0, 4, 0, "Microsoft YaHei UI")
+            self.font_badge = g.CreateFontW(-int(round(10.5 * s)), 0, 0, 0, 700, 0, 0, 0,
+                                            134, 5, 0, 4, 0, "Microsoft YaHei UI")
+            # 【2026-10-28 第四轮】不再用 SetWindowRgn 切直角圆角（那是台阶，不是抗锯齿）。
+            # 改成：画到 32 位 DIB，圆角/阴影由 GDI+ 按 alpha 画准，再 UpdateLayeredWindow 交给 DWM。
             try:
-                _p = _res("hotnews.ico")
-                if os.path.exists(_p):
-                    self.hicon16 = u.LoadImageW(None, _p, 1, int(18 * s), int(18 * s), 0x10)
-            except Exception:
-                pass
-            # 圆角：GDI 画出来是直角，用 window region 切成圆角
-            try:
-                _hrgn = g.CreateRoundRectRgn(0, 0, self.W + 1, self.H + 1,
-                                             int(16 * s), int(16 * s))
-                if _hrgn:
-                    u.SetWindowRgn(hwnd, _hrgn, True)
-            except Exception:
-                pass
+                _bmi = self.BMIH()
+                _bmi.biSize = ctypes.sizeof(self.BMIH)
+                _bmi.biWidth = self.winW
+                _bmi.biHeight = -self.winH          # 负数 = 自上而下，和 GDI 坐标系一致
+                _bmi.biPlanes = 1
+                _bmi.biBitCount = 32
+                _bmi.biCompression = 0              # BI_RGB（GDI+ 按预乘 alpha 写这个缓冲）
+                _bits = ctypes.c_void_p()
+                _sdc = u.GetDC(None)
+                self._dib = g.CreateDIBSection(_sdc, ctypes.byref(_bmi), 0,
+                                               ctypes.byref(_bits), None, 0)
+                u.ReleaseDC(None, _sdc)
+                if not self._dib:
+                    raise ctypes.WinError()
+                self._dib_bits = _bits
+                self._memdc = g.CreateCompatibleDC(None)
+                g.SelectObject(self._memdc, self._dib)
+                ctypes.memset(_bits, 0, self.winW * self.winH * 4)
+                print("[ok] 气泡画布 %dx%d（含 %dpx 投影留白，逐像素透明）"
+                      % (self.winW, self.winH, self.M))
+            except Exception as ex:
+                print(f"[warn] 气泡透明画布创建失败（退回不透明卡片）: {type(ex).__name__}: {ex}")
+                self._dib = None
             u.SetTimer(hwnd, 1, 300, None)                 # 每 300ms 看一次队列
             print("[ok] 自绘气泡就绪（右下角，不依赖系统通知）")
             msg = wintypes.MSG()
@@ -4487,20 +6388,28 @@ class _Balloon:
 BALLOON = _Balloon()
 
 
-def _show_toast_list(entries):
+def _show_toast_list(entries, replace=False):
     """一条气泡里滚动播放多条：entries = [(title, msg, warn[, link]), ...]。
 
     用户要求「滚动播放气泡新闻」：一组最多 BALLOON_PLAY_COUNT 条（2026-10-09 起为 10 条），
-    每条停留 BALLOON_PER_ITEM_MS（5600 毫秒），标题尾部带 (3/10) 这样的进度。
+    每条停留 BALLOON_PER_ITEM_MS（5600 毫秒），进度由底部那一排分页点表示
+    （2026-10-28 新版式：原来挂在标题尾巴上的 (3/10) 挪走了，标题整行留给新闻本身）。
     第一行 = 这条自己的栏目（见 _balloon_head），不再有与栏目无关的固定抬头。
+
+    replace=True 是「用户主动开口要现在看」的口径（托盘选播报样式 / 立即轮播一轮 / 双击图标）：
+    上一组还在播就把它掐掉，别让人等完这 56 秒（2026-10-28 用户：「切换样式模式，播报暂停了一分钟」）。
+    自动那一轮不传，照常排队 —— 正看着的东西被后台刷新顶掉，比等一分钟更烦人。
     """
-    # 统一成 4 元组 (title, msg, warn, link)；调用方可能只给 3 个元素
+    # 统一成 7 元组 (title, msg, warn, link, image, meta, time)；调用方可能只给 3/4 个元素
     norm = []
     for e in (entries or []):
         if not e or not (e[0] or e[1]):
             continue
         norm.append((e[0], e[1], bool(e[2]) if len(e) > 2 else False,
-                     e[3] if len(e) > 3 else ""))
+                     e[3] if len(e) > 3 else "",
+                     e[4] if len(e) > 4 else "",
+                     e[5] if len(e) > 5 else "",
+                     e[6] if len(e) > 6 else ""))
     entries = norm[:BALLOON_PLAY_COUNT]
     if not entries:
         return
@@ -4510,6 +6419,10 @@ def _show_toast_list(entries):
             # 队列最多压 2 组，避免刷新风暴时排队排到天边
             if len(BALLOON.q) > 2:
                 del BALLOON.q[:-2]
+            if replace:
+                BALLOON.interrupt = True
+        # 题图在后台先下（不等它，正文先播；图到位了下一帧就画出来）
+        _balloon_prefetch(entries)
         return
     # 自绘不可用时的兜底：系统气泡只能显示第一条
     title, msg, warn = entries[0][0], entries[0][1], entries[0][2]
@@ -4539,8 +6452,54 @@ NEWS_LAST_TOAST = 0.0
 # 【2026-10-25 抓取改成 5 分钟一轮后这里保持 10 分钟不变】用户要的是页面「常看常新」，
 # 不是通知更频繁 —— 抓取两轮里最多打扰一次，观感和以前一样，只是数据更新更快。
 # 注意：「新闻大事」和「我的软件发布」两条**不受这个节流限制**，仍然即时。
-NEWS_TOAST_MIN = 10 * 60        # 两次「更新提醒」气泡的最小间隔（秒）
+# 【2026-10-28 用户要求「设置轮播时间」】这个 10 分钟从写死改成能调：
+#   默认还是 10 分钟；托盘右键「轮播间隔」点一下就在 5 / 10 / 30 / 60 分钟之间换，
+#   存本机 config.local.json 的 notify 段（跟夜间免打扰、每日速览同一处，不进版本库、不上传）。
+#   取值只认这几档：手改配置文件改出 0、负数、字符串、或 7 这种中间值，
+#   一律回落默认或就近归到一档 —— 不能让一个坏值把气泡整个静音，或 1 分钟炸一次屏。
+TOAST_MIN_CHOICES = (5, 10, 30, 60)      # 托盘「轮播间隔」那几档，单位：分钟
+TOAST_MIN_DEFAULT = 10                   # 没设过 / 设坏了的时候用它
 NEWS_LOCK = threading.Lock()
+
+
+def _toast_min_sec():
+    """「多久允许自动弹一组」，返回秒 —— 本机设置 toast_min（分钟），坏值回落默认。"""
+    try:
+        m = int(_notify_cfg().get("toast_min"))
+    except (TypeError, ValueError):
+        m = TOAST_MIN_DEFAULT
+    if m < 1:
+        m = TOAST_MIN_DEFAULT
+    if m not in TOAST_MIN_CHOICES:
+        m = min(TOAST_MIN_CHOICES, key=lambda x: abs(x - m))
+    return m * 60
+
+
+def _toast_min_set(minutes):
+    """把「轮播间隔」写进本机设置，返回归好档的分钟数（托盘菜单用它）。"""
+    try:
+        m = int(minutes)
+    except (TypeError, ValueError):
+        m = TOAST_MIN_DEFAULT
+    if m not in TOAST_MIN_CHOICES:
+        m = min(TOAST_MIN_CHOICES, key=lambda x: abs(x - m))
+    _save_notify_cfg({"toast_min": m})
+    return m
+
+
+# 托盘右键菜单的命令号（TrackPopupMenu 用 TPM_RETURNCMD 直接把选中的这个数还回来）。
+# 2026-10-28 之前只有 1=打开、2=退出两个；加了「立即轮播」和「轮播间隔」四档以后
+# 退出挪到 9，避免和"立即轮播"撞号 —— _run_cmd 与 _build_menu 都读这张表，改一处就行。
+_TRAY_CMD_OPEN = 1
+_TRAY_CMD_PLAY = 2
+_TRAY_CMD_QUIT = 9
+_TRAY_CMD_TOAST_BASE = 20          # 20+i 对应 TOAST_MIN_CHOICES[i]：20=5 分 … 23=60 分
+_TRAY_CMD_STYLE_BASE = 30          # 30+i 对应 BALLOON_STYLES[i]：30=自动 31=速递 32=聚光灯
+
+
+def _tray_toast_label(minutes):
+    """「轮播间隔」子菜单里那一档的文字。60 分钟写成人话：1 小时。"""
+    return "1 小时" if minutes >= 60 else "%d 分钟" % minutes
 
 
 def _has_cjk(s):
@@ -4592,7 +6551,8 @@ def _balloon_head(it):
     """气泡第一行 = **这条自己的栏目**（2026-10-09 用户要求，取代原先那句与栏目无关的固定抬头）。
 
     三条细则：
-      · 头条 → `【头条】`（自绘气泡还会把它画成红字加粗 + 红色强调条，见 _wndproc）；
+      · 头条 → `【头条】`（自绘气泡把它画成红色「着色标签」，和页面 .tag.fresh 同一手法，
+        见 _wndproc；2026-10-28 起不再整卡变红底）；
       · 热榜 → `【热榜】<平台>热榜 第N`（用户点名「气泡里的热榜条目必须带出处」，
         例如 `【热榜】凤凰网热榜 第4`）；
       · 国际条目 → `国际·<栏目>`，与国内同栏目区分开（栏目名本身仍是该条的栏目）。
@@ -4621,13 +6581,51 @@ def _balloon_head(it):
     return (base + " · " + src) if src else base
 
 
+def _balloon_time_line(it):
+    """App 行右端那段时间：「刚刚 / N 分钟前 / N 小时前 / N 天前」。
+
+    超过 7 天的不显示 —— 那时候用户更关心名次，挂在右上角反而占地方。
+    """
+    try:
+        pub = float(it.get("published") or 0)
+        if pub > 0:
+            age = max(0.0, time.time() - pub)
+            if age < 90:
+                return "刚刚"
+            if age < 3600:
+                return "%d 分钟前" % int(age // 60)
+            if age < 86400:
+                return "%d 小时前" % int(age // 3600)
+            if age < 7 * 86400:
+                return "%d 天前" % int(age // 86400)
+    except Exception:
+        pass
+    return ""
+
+
+def _balloon_meta_line(it):
+    """标题下面那行小字：来源 · 热榜名次（没有就空着，不硬编）。"""
+    bits = []
+    src = (it.get("source") or it.get("label") or "").strip()
+    if src:
+        bits.append(src)
+    try:
+        r = int(it.get("rank") or 0)
+        if 0 < r < 1000:
+            bits.append("第 %d 位" % r)
+    except Exception:
+        pass
+    return " · ".join(bits)
+
+
 def _balloon_entry(it):
-    """把一条新闻转成气泡条目 (第一行, 正文, warn, 链接)。"""
+    """把一条新闻转成气泡条目 (第一行, 正文, warn, 链接, 题图, 来源行, 时间行)。"""
     # 国际条目优先用译文（_translate_items 是就地写回 title 的，英文留在 title_en）
     title = it.get("title") or ""
     if _is_intl_item(it) and not it.get("translated") and it.get("title_en"):
         title = it.get("title_en") or title
-    return (_balloon_head(it), title[:72], False, it.get("link") or "")
+    return (_balloon_head(it), title[:BALLOON_TITLE_MAX], False, it.get("link") or "",
+            it.get("image") or "", _balloon_meta_line(it), _balloon_time_line(it))
 
 
 def _balloon_cls_tally(picked):
@@ -5011,6 +7009,143 @@ def _annotate_cross_hot(pool):
     return pool
 
 
+# ============ 兴趣投放：点开什么，就多投什么（2026-10-28） ============
+# 用户原话：「比如，喜欢科技的就多投这方面的内容，喜欢社会的，就朝社会方面投放」。
+# 做法刻意保持"无感"：**不问用户喜欢什么**，只看他真点开了哪一类（气泡上点开、
+# 控制台上点开都算）。信号全在本机 %LOCALAPPDATA%\hotnews\interest.json，
+# 不联网、不上传、不建账号。
+#
+# 为什么不是"给每类打标签让用户勾选"：用户明确说过「用户不会去设置这些」；
+# 而且勾选出来的偏好是"我以为我喜欢"，点开的行为才是"我真的在看"。
+# 为什么不是"全按兴趣排"：头条/热榜/国际是新闻的骨架——只推科技，用户会漏掉
+# 真正的大事。所以兴趣**只在原来的配额上挪最多 2 席**（见 _interest_quota）：
+#   · 冷启动（没点开过几条）完全不改，默认配额原样；
+#   · 某一类明显偏多（≥1.8 倍）→ +1 席；非常偏（≥4 倍）→ +2 席；
+#   · 席位先从最冷门的兴趣类里挪，再动热榜（保 2 席）、国际/头条（保 1 席）。
+#   · 14 天半衰期：几个月前爱看娱乐，现在不看了，权重自己会淡下去。
+INTEREST_PATH = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "interest.json")
+INTEREST_CLASSES = ("科技", "财经", "娱乐", "体育", "软件")
+INTEREST_HALF_LIFE_DAYS = 14.0
+INTEREST_MIN_EVIDENCE = 3.0        # 至少点开过 3 次（折算后）才开始挪席位，防一次误点改版面
+INTEREST_MAX_SHIFT = 2             # 一轮最多挪 2 席，保证"还是新闻，不是兴趣专刊"
+_INTEREST_LOCK = threading.Lock()
+_INTEREST_CACHE = {"mtime": None, "raw": {}}
+_INTEREST_LOGGED = [None]          # 上一次打印过的配额，换了才再打一行（日志不刷屏）
+
+
+def _interest_class(name):
+    """把气泡抬头/栏目名归一成兴趣档的键：'【热榜】'→'热榜'、'国际·要闻'→'要闻'、'热点'→'头条'。"""
+    s = (name or "").replace("【", "").replace("】", "").strip()
+    if "·" in s:
+        s = s.split("·")[-1].strip()
+    return {"热点": "头条", "国际": "要闻", "热榜": "热榜"}.get(s, s)
+
+
+def _interest_weights(now=None):
+    """读本机兴趣档 → {栏目: 当前权重}（按 14 天半衰期折算）。坏文件当没有，绝不抛。"""
+    now = time.time() if now is None else now
+    try:
+        mtime = os.stat(INTEREST_PATH).st_mtime
+    except OSError:
+        return {}
+    try:
+        with _INTEREST_LOCK:
+            if _INTEREST_CACHE["mtime"] != mtime:
+                with open(INTEREST_PATH, "r", encoding="utf-8") as f:
+                    _INTEREST_CACHE["raw"] = (json.load(f) or {}).get("cls") or {}
+                _INTEREST_CACHE["mtime"] = mtime
+            raw = dict(_INTEREST_CACHE["raw"])
+    except Exception:
+        return {}
+    out = {}
+    for k, v in raw.items():
+        try:
+            w = float((v or {}).get("w") or 0)
+            at = float((v or {}).get("at") or now)
+        except Exception:
+            continue
+        days = max(0.0, (now - at) / 86400.0)
+        w *= 0.5 ** (days / INTEREST_HALF_LIFE_DAYS)
+        if w > 0.01:
+            out[str(k)] = w
+    return out
+
+
+def _interest_bump(name, gain=1.0):
+    """给某一类记一分（点开一条 = 1 分）。先折算旧权重再加，写盘用 .tmp + os.replace。"""
+    cls = _interest_class(name)
+    if not cls:
+        return None
+    now = time.time()
+    w = _interest_weights(now)
+    w[cls] = w.get(cls, 0.0) + float(gain)
+    data = {"v": 1, "cls": {k: {"w": round(v, 3), "at": now} for k, v in w.items()}}
+    try:
+        os.makedirs(os.path.dirname(INTEREST_PATH), exist_ok=True)
+        tmp = INTEREST_PATH + ".tmp"
+        with _INTEREST_LOCK:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, INTEREST_PATH)
+            _INTEREST_CACHE["mtime"] = os.stat(INTEREST_PATH).st_mtime
+            _INTEREST_CACHE["raw"] = data["cls"]
+        print("[ok] 兴趣 +1：%s（现在 %.1f 分）" % (cls, w[cls]))
+        return w[cls]
+    except Exception as ex:
+        print("[warn] 兴趣档写入失败: %s" % type(ex).__name__)
+        return None
+
+
+def _interest_quota(base=None, weights=None):
+    """在默认配额上按兴趣挪最多 2 席（纯函数，便于单测）。
+
+    返回形如 (("头条", 2), ("热榜", 2), ("国际", 2), ("科技", 3), ...)。
+    没有兴趣证据 / 兴趣不集中时原样返回 base —— 冷启动的行为与之前完全一致。
+    """
+    base = tuple(base or BALLOON_CLS_QUOTA)
+    w = dict(_interest_weights() if weights is None else weights)
+    total = sum(max(0.0, float(w.get(c) or 0)) for c in INTEREST_CLASSES)
+    if total < INTEREST_MIN_EVIDENCE:
+        return base
+    ranked = sorted(INTEREST_CLASSES,
+                    key=lambda c: (-float(w.get(c) or 0), INTEREST_CLASSES.index(c)))
+    top = ranked[0]
+    rest = [c for c in INTEREST_CLASSES if c != top]
+    mean_rest = sum(max(0.0, float(w.get(c) or 0)) for c in rest) / max(1, len(rest))
+    ratio = max(0.0, float(w.get(top) or 0)) / (mean_rest + 0.25)
+    bonus = INTEREST_MAX_SHIFT if ratio >= 4.0 else (1 if ratio >= 1.8 else 0)
+    if bonus <= 0:
+        return base
+    order = [c for c, _n in base]
+    q = {c: int(n) for c, n in base}
+    q[top] = q.get(top, 0) + bonus
+    # 轻度偏好（1.8~4 倍）只从热榜那 3 席里挪 1 席，**不砍**别的兴趣类 ——
+    # 用户只是"更爱科技"，不代表从此不看财经/娱乐，版面广度优先。
+    # 特别偏（≥4 倍）才先砍最不看的同类栏目，再动热榜/国际/头条（各有底线）。
+    if ratio >= 4.0:
+        donors = sorted((c for c in rest if q.get(c, 0) > 0),
+                        key=lambda c: (float(w.get(c) or 0), INTEREST_CLASSES.index(c)))
+    else:
+        donors = []
+    for d in donors:
+        if bonus <= 0:
+            break
+        take = min(bonus, q[d])
+        q[d] -= take
+        bonus -= take
+    for d, floor in (("热榜", 2), ("国际", 1), ("头条", 1)):
+        if bonus <= 0:
+            break
+        take = min(bonus, max(0, q.get(d, 0) - floor))
+        if take > 0:
+            q[d] = q.get(d, 0) - take
+        bonus -= take
+    if top not in order:
+        order.append(top)
+    return tuple((c, q[c]) for c in order if q.get(c, 0) > 0)
+
+
 def _pick_balloon_items(fresh, count=None):
     """按栏目配额挑一组气泡条目（纯函数：只读 fresh，不改任何外部状态，便于单测）。
 
@@ -5068,7 +7203,15 @@ def _pick_balloon_items(fresh, count=None):
 
     # ① 按配额先占位：头条 2 / 国内热榜 3 / 国际 2 / 科技 1 / 财经 1 / 娱乐 1
     #    （2026-10-25 用户「国内国际热点，头条新闻」的新口径，见 BALLOON_CLS_QUOTA 上面那段）
-    for _cls, _n in BALLOON_CLS_QUOTA:
+    #    【2026-10-28 兴趣投放】配额先过一遍 _interest_quota：用户点开得多的那一类
+    #    多拿 1~2 席，从最冷门的同类栏目里挪（热榜保 2、国际/头条保 1）。
+    #    没有任何兴趣证据时它原样返回 BALLOON_CLS_QUOTA —— 冷启动行为不变。
+    _quota = _interest_quota()
+    if _quota != BALLOON_CLS_QUOTA and _INTEREST_LOGGED[0] != _quota:
+        _INTEREST_LOGGED[0] = _quota
+        print("[ok] 兴趣投放：配额调整为 %s（默认 %s）"
+              % (dict(_quota), dict(BALLOON_CLS_QUOTA)))
+    for _cls, _n in _quota:
         if len(picked) >= cap:
             break
         take(order(cands(_cls)), _n)
@@ -5199,8 +7342,68 @@ NOTIFY_DEFAULTS = {
     "quiet_end": "07:30",
     "digest_on": True,              # 每日速览播报（默认开）
     "digest_times": DIGEST_TIMES_DEFAULT,
+    # 【2026-10-28】「多久允许自动弹一组」的间隔，单位分钟，取值只认 TOAST_MIN_CHOICES 那几档。
+    # 必须在这儿挂一份：_save_notify_cfg 落盘时只写 NOTIFY_DEFAULTS 里有的键，
+    # 没挂号的键存进去也会被抹掉。
+    "toast_min": 10,
 }
+# 【2026-10-28 用户：「这个样式应该和控制台的颜色同步」】
+# 控制台的主题/主色原本只存在浏览器的 localStorage 里，桌面气泡读不到，于是页面切了暗色、
+# 气泡还是浅色那套 —— 两边像两个产品。页面现在会把**生效值**回报到 /api/ui，存进本机配置的
+# ui 段（和 notify 段一样：config.local.json 只在本机，不进版本库、不上传）。
+# theme: auto=跟随 Windows 亮/暗（和控制台默认一致）/ light / dark；accent: default|blue|green|violet|amber。
+# 【2026-10-28 用户：「都好看，不行就让用户可以自行选择吧」】
+# balloon: auto|live|spot —— 气泡用哪种播报版式（2026-10-29 从五档精简成三档；老配置里的
+# card / tv 由 BALLOON_STYLE_LEGACY 归位，不会被当成脏值悄悄改成自动）。默认 auto
+# 不用用户先懂设置，
+# 想换的人在右下角托盘右键菜单的「播报样式」里挑（2026-10-28 用户：「样式选择的入口放在右下角菜单里吧」
+# —— 控制台那份下拉按这句撤掉了，两处入口会互相把对方的选择冲掉），选完立刻播一条给他看。
+UI_DEFAULTS = {"theme": "auto", "accent": "default", "balloon": "auto"}
 _WEEKDAY_CN = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+
+
+def _ui_cfg():
+    """读本机生效的界面偏好（config.local.json 的 ui 段），缺项按 UI_DEFAULTS 补齐。"""
+    sec = {}
+    try:
+        sec = dict((CONFIG.get("ui") or {}))
+    except Exception:
+        sec = {}
+    for k, v in UI_DEFAULTS.items():
+        sec.setdefault(k, v)
+    return sec
+
+
+def _save_ui_cfg(patch):
+    """把界面偏好写进 config.local.json 的 ui 段（只认 UI_DEFAULTS 里挂号的键）。
+
+    页面每次打开都会回报一次生效的主题/主色，值没变就别落盘 ——
+    不然光是开着网页就反复重写本机配置，mtime 一直跳，排查时也说不清到底改没改过。
+    """
+    try:
+        cur = {}
+        try:
+            with open(_LOCAL_CONFIG, "r", encoding="utf-8-sig") as f:
+                cur = json.load(f) or {}
+        except Exception:
+            cur = {}
+        if not isinstance(cur, dict):
+            cur = {}
+        sec = dict(UI_DEFAULTS)
+        sec.update(cur.get("ui") or {})
+        sec.update(patch or {})
+        new = {k: sec[k] for k in UI_DEFAULTS}
+        if dict(CONFIG.get("ui") or {}) == new and (cur.get("ui") or {}) == new:
+            return True            # 已经是这份值，不写
+        cur["ui"] = new
+        os.makedirs(os.path.dirname(_LOCAL_CONFIG), exist_ok=True)
+        with open(_LOCAL_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(cur, f, ensure_ascii=False, indent=2)
+        CONFIG.setdefault("ui", {}).update(cur["ui"])
+        return True
+    except Exception as ex:
+        print("[warn] 界面偏好写入失败: %s: %s" % (type(ex).__name__, ex))
+        return False
 
 
 def _notify_cfg():
@@ -5268,6 +7471,52 @@ def _in_quiet_hours(ts=None):
     return now >= a or now < b if a > b else a <= now < b
 
 
+# ============ 「别在工作时弹」：全屏 / 演示 / 系统静默（2026-10-28） ============
+# 用户这次的定位是「工作中，轻轻松松就把新闻看了」—— 那气泡就**不能**在开会投影、
+# 全屏打游戏/看片时冒出来（那会盖住画面、还会让全屏掉帧）。Windows 自己已经知道
+# 这些状态，别另发明判据：SHQueryUserNotificationState 就是系统给通知中心的那个答案。
+#   1 NOT_PRESENT（锁屏/休眠） 2 BUSY（全屏程序/勿扰） 3 RUNNING_D3D_FULL_SCREEN
+#   4 PRESENTATION_MODE（投影/演示） 5 ACCEPTS 6 QUIET_TIME 7 APP（单应用全屏）
+# 其中 1 也一并算"别弹"：锁屏时弹了也看不见，等下一轮。
+_QUNS_HOLD = {
+    1: "锁屏 / 休眠中",
+    2: "系统认为你正忙（勿扰 / 全屏程序）",
+    3: "全屏游戏或视频",
+    4: "演示 / 投影模式",
+    6: "系统静默时段",
+}
+
+
+def _hold_reason_from_state(st):
+    """QUNS 状态码 → 中文原因；该弹就返回空串（纯函数，单测直接喂状态码）。"""
+    try:
+        return _QUNS_HOLD.get(int(st or 0), "")
+    except Exception:
+        return ""
+
+
+def _quns_state():
+    """问 Windows 现在是什么状态；取不到（老系统/非 Windows）返回 0 = 不拦。"""
+    if sys.platform != "win32":
+        return 0
+    try:
+        import ctypes
+        st = ctypes.c_int(0)
+        fn = ctypes.windll.shell32.SHQueryUserNotificationState
+        fn.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        fn.restype = ctypes.c_long
+        if fn(ctypes.byref(st)) != 0:
+            return 0
+        return int(st.value)
+    except Exception:
+        return 0
+
+
+def _notify_hold_reason():
+    """现在不该自动弹气泡的原因（空串 = 可以弹）。手动「立即轮播」**不看**这个。"""
+    return _hold_reason_from_state(_quns_state())
+
+
 def _digest_pool():
     """日报的候选池：三个板块合并 + 就地标一次 cross_hot（与页面 /api/news 同一批字典）。"""
     pool = list(PRELOAD.get("cn") or []) + list(PRELOAD.get("hot") or []) \
@@ -5281,11 +7530,10 @@ def _daily_digest(n=DIGEST_COUNT, pool=None):
     pool = pool if pool is not None else _digest_pool()
     if not pool:
         return []
-    # 日报要"今天"的：热榜条目 published 恒为 0（榜接口不给时间），不能按时间筛掉；
-    # 普通条目只留 24 小时内的，避免把昨天的稿当今天的新闻推给用户。
-    cutoff = time.time() - 24 * 3600
-    pool = [x for x in pool
-            if int(x.get("published") or 0) == 0 or int(x.get("published") or 0) >= cutoff]
+    # 日报要"今天"的：和气泡共用「常看常新」那把尺子（见 _balloon_fresh_cut）——
+    # 只走 ① 硬上限 24 小时，不套 ② 的 6 小时优先档：早上 8 点那份要覆盖昨天夜里到
+    # 今天的稿子。热榜条目 published 恒为 0（榜接口不给时间），按"新"放行。
+    pool, _stale, _held = _balloon_fresh_cut(pool, prefer_hours=None)
     return _pick_balloon_items(pool, count=n)
 
 
@@ -5350,6 +7598,11 @@ def _notify_digest(force=False):
         print("[ok] 今日 60 秒：现在处于夜间免打扰时段，跳过播报")
         return False
     if not force:
+        _hold = _notify_hold_reason()
+        if _hold:
+            print("[ok] 今日 60 秒：%s，跳过（下一个时段/下一轮再说）" % _hold)
+            return False
+    if not force:
         # 刚弹过「更新提醒」/「大事提醒」就让一让，别连着炸两个气泡（同一块屏幕右下角）。
         try:
             if time.time() - max(NEWS_LAST_TOAST, _MAJOR_LAST_TOAST) < 240:
@@ -5382,10 +7635,85 @@ def _notify_digest(force=False):
 # 程序不删用户文件，也不上传）。界面与气泡的其余逻辑与此前一致：气泡仍按栏目配额挑 10 条。
 
 
-def _notify_news(items):
+# ============ 播报时效规则「常看常新」（2026-10-29 用户点名要一条规则）============
+# 用户原话：「自动这个样式，还在播报一天前的旧新闻，一定要定规则：常看常新」
+#
+# 为什么会播到一天前的：抓取那头的时效**是故意**按栏目放宽的（见 CLS_MAX_AGE_HOURS：
+# 科技 96h / 软件 120h / 娱乐 168h），那是 2026-10-07「娱乐新闻少的可怜」换来的 ——
+# 控制台页面要"每个栏目都有内容"，放宽没错。但播报这一路以前只看"这条播过没有"，
+# **从不看"这条多久了"**。2026-10-29 实测本机池子 200 条：>24h 的 46 条（23%）、
+# 最旧 45.7 小时，它们照样能挤进那一轮 10 条 —— 用户看到的就是"一天前的旧新闻"。
+#
+# 规则四条（页面那一侧一条都不动，页面仍按栏目配额给全）：
+#   ① 硬上限 24 小时：发布时间超过 24 小时的条目**一律不进播报候选**；
+#   ② 优先 6 小时：6 小时内够一轮（10 条）就只从这 6 小时里挑，凑不满才放宽到 ①；
+#   ③ 播过的记 26 小时、且跨重启保留（见 _BALLOON_SHOWN_TTL / _balloon_shown_load）
+#      —— 记的时长必须比 ① 长，否则早上播过的一条到夜里"过期"又能重播一遍；
+#   ④ 挑不出新鲜的就明说「没有新的可播」，绝不拿旧的凑数（见 _balloon_play_hint）。
+# 拿不到发布时间的条目（实时热榜、部分解析器 published=0）按"新"放行：榜单本身就是
+# 此刻的热度，一起挡掉等于把「热榜」那两三个配额档清空。「今日 60 秒」日报原来就有
+# 同一条 24 小时口径（见 _daily_digest），现在两边共用这一个函数，不会再各写一套。
+BALLOON_FRESH_HOURS = 24
+BALLOON_FRESH_PREFER_HOURS = 6
+
+# 「挑一组成员 → 当场记进播过名单」必须是一步。开机第一轮和刷新后的自动轮播是两条线程，
+# 它们各自挑各自的，中间只隔几毫秒 —— 没有这把锁时两边可能挑中同一批（排序是确定的），
+# 用户就会看到两遍同样的 10 条。锁只护挑选/记账，不护后面的窗口播放（那有 BALLOON.lock）。
+_BALLOON_PICK_LOCK = threading.Lock()
+
+
+def _balloon_age_h(it, now=None):
+    """这条新闻到现在多少小时了。拿不到发布时间返回 None（调用方按"新"处理）。"""
+    try:
+        pub = float(it.get("published") or 0)
+    except (TypeError, ValueError):
+        return None
+    if pub <= 0:
+        return None
+    return max(0.0, (time.time() if now is None else now) - pub) / 3600.0
+
+
+def _balloon_fresh_cut(items, now=None, prefer_hours=None, prefer_need=None):
+    """按上面那四条把候选裁一刀 → (可播的列表, 被 ① 挡掉的条数, 按 ② 让位的条数)。
+
+    `prefer_hours` / `prefer_need` 不给就只做 ①（日报那一套：早上 8 点要的是"昨天到今天
+    这一天"，不是"最近 6 小时"）。② 的门槛是"够一轮"：6 小时内的条数 ≥ prefer_need
+    才收紧，否则宁可放宽一档也别让气泡空着。
+    """
+    now = time.time() if now is None else now
+    keep, stale = [], 0
+    for it in items:
+        a = _balloon_age_h(it, now)
+        if a is not None and a > BALLOON_FRESH_HOURS:
+            stale += 1
+            continue
+        keep.append((a, it))
+    if prefer_hours is None:
+        return [it for _a, it in keep], stale, 0
+    need = max(1, int(prefer_need if prefer_need is not None else BALLOON_PLAY_COUNT))
+    _ph = float(prefer_hours)
+    prefer = [it for a, it in keep if a is None or a <= _ph]
+    if len(prefer) >= need:
+        return prefer, stale, len(keep) - len(prefer)
+    return [it for _a, it in keep], stale, 0
+
+
+def _notify_news(items, force=False):
     """刷新后调用：对比基线找出新增条目，若有则弹一条「新增 N 条」右下角通知。
-    首次调用只建立基线不弹；节流窗口内不重复弹。"""
+    首次调用只建立基线不弹；节流窗口内不重复弹。
+
+    force=True 是给托盘「立即轮播一轮」/双击图标用的（2026-10-28 用户要求）：
+    用户明确开口要看了，就把三道"只有自动才需要"的闸放开 ——
+    不看 10 分钟节流、不看夜间免打扰、没有新增就把整个池子当候选。
+    **不放开**的三条，手动自动一个样：
+      · 只播中文标题（用户 2026-10-07「还是有英文新闻播报」）；
+      · 仍按 _pick_balloon_items 的栏目配额挑，凑够 10 条也不许一个栏目占满；
+      · **不重复投放**（用户 2026-10-28 原话「每次请求手动轮播的时候，展示的新闻不能一样，
+        也不能重复，轮播轮播，就是不能重复，反复」）。轮播的意义是往前滚，不是把同一批
+        新闻来回播；手动那一轮播不到新条目就明说"没有新的可播"，绝不拿旧的凑数。
+    """
     global NEWS_BASELINE, NEWS_LAST_TOAST
+    _prev_toast = NEWS_LAST_TOAST        # 手动那一轮没播出东西时要把它退回去
     if not items:
         return
     new_ids = {it.get("id") for it in items if it.get("id")}
@@ -5394,20 +7722,32 @@ def _notify_news(items):
     with NEWS_LOCK:
         if not NEWS_BASELINE:
             NEWS_BASELINE.update(new_ids)
-            return
+            if not force:
+                return                  # 自动那一套：第一趟只建基线，不惊动用户
         added = new_ids - NEWS_BASELINE
         NEWS_BASELINE.update(new_ids)
         if len(NEWS_BASELINE) > 4000:
             NEWS_BASELINE = set(list(NEWS_BASELINE)[-2000:])
     if not added:
-        return
+        if not force:
+            return
+        added = new_ids                 # 手动：没有"新增"就把整池当候选
     now = time.time()
-    if now - NEWS_LAST_TOAST < NEWS_TOAST_MIN:
+    if not force and now - NEWS_LAST_TOAST < _toast_min_sec():
         return
     # 【2026-10-25 借鉴 TrendRadar 的时段调度】夜间免打扰：默认 22:30–07:30 不弹气泡。
     # 只挡"主动弹"的这几类提醒，页面本身照常刷新；开关在右侧「程序设置」里，随时可关。
-    if _in_quiet_hours(now):
+    # 手动那一轮不挡：深夜里主动双击托盘，就是要现在看。
+    if not force and _in_quiet_hours(now):
         return
+    # 【2026-10-28 工作中别打断】全屏游戏/视频、投影演示、系统勿扰时这一轮自动提醒跳过。
+    # 跳过不重置 NEWS_LAST_TOAST（下一轮还是按原来的节流窗口走），也不用补弹：
+    # 用户退出全屏后，下一轮刷新自然会带着新条目再来。
+    if not force:
+        _hold = _notify_hold_reason()
+        if _hold:
+            _balloon_trace("跳过：%s（自动气泡不打扰，手动轮播不受影响）" % _hold)
+            return
     NEWS_LAST_TOAST = now
     fresh = [it for it in items if it.get("id") in added]
     # 先给整池子标一遍「同一条新闻被几家实时热榜同时收录」（cross_hot），
@@ -5419,66 +7759,168 @@ def _notify_news(items):
     fresh = [x for x in fresh if _has_cjk(x.get("title"))]
     if not fresh:
         _balloon_trace("跳过：本轮新增 %d 条没有中文标题（气泡只播中文）" % len(added))
+        if force:
+            NEWS_LAST_TOAST = _prev_toast
+            _balloon_play_hint("没有能播的条目",
+                               "候选里没有中文标题的条目。等下一轮抓取好了再双击托盘。")
+        return
+    # 【2026-10-29 用户：「一定要定规则：常看常新」】规则 ①：先把超过 24 小时的一律挡掉。
+    # ②（6 小时优先）**不在这里做**：要先扣掉「播过的」「同一件事的」，再收紧到 6 小时。
+    # 反过来的话，6 小时里恰好凑够一批但全都播过时，会误判「没有新的可播」，
+    # 而 6~24 小时里明明还有没播过的 —— 手动双击托盘会一连几个小时都是同一句提示。
+    fresh, _stale, _ = _balloon_fresh_cut(fresh, prefer_hours=None)
+    if _stale:
+        _balloon_trace("挡掉 %d 条超过 %d 小时的旧闻（常看常新；页面照常留着，只是不播）"
+                       % (_stale, BALLOON_FRESH_HOURS))
+    if not fresh:
+        _balloon_trace("跳过：候选里没有 %d 小时内的新闻（常看常新，不播旧的凑数）"
+                       % BALLOON_FRESH_HOURS)
+        if force:
+            with NEWS_LOCK:
+                NEWS_LAST_TOAST = _prev_toast
+            _balloon_play_hint("没有新的可播",
+                               "池子里没有 %d 小时内的新闻了。常看常新：不拿旧闻凑数，"
+                               "等新稿抓进来再双击托盘。" % BALLOON_FRESH_HOURS)
         return
     # 【2026-10-25 用户要求「用户是看新闻的，不是来搜索的」】原来的「气泡只在命中时弹」
     # （按订阅词过滤）连同订阅功能一起取消了 —— 界面入口没了以后，这个过滤会变成
     # "用户没设过词却一直被静音"的暗坑，所以这里不再过滤，直接往下走。
     # 【2026-10-07 用户要求「轮播内容不能重复」】优先播没播过的条目。
-    # 【2026-10-25 待办 #65】"全都播过就整份清空重来"改成了**按条记 12 小时**：
+    # 【2026-10-25 待办 #65】"全都播过就整份清空重来"改成了**按条记 26 小时**：
     # 本轮新增的一条都没播过时才往下走，都播过就这一轮不弹（下一句留记录）。
     # 为什么不再清空：清空等于把几千条历史一起忘掉，隔几天又冒回新增列表的老新闻
     # 立刻能再投一次 —— 那是用户明确反对的"重复投放"，闸不能自己拆自己。
-    try:
-        _seen = _balloon_seen()
-        _unseen = [x for x in fresh if (x.get("id") or x.get("title")) not in _seen]
-    except Exception:
-        _unseen = list(fresh)
-    if not _unseen:
-        _balloon_trace("跳过：本轮新增 %d 条最近都播过（不重复投放）" % len(fresh))
-        return
-    fresh = _unseen
-    # 【2026-10-25 用户要求「不能几个网站的新闻重复投放」】跨轮"同一件事"闸。
-    # 上一轮气泡播过的那件事，这一轮别的网站的兄弟稿（标题措辞不同、id 也不同）
-    # 不能再占席位 —— 判据与本轮内部去重完全相同，只是把视野扩到最近 6 小时。
-    # 全被挡掉时**这一轮就不弹**：宁缺毋滥，用户要的是精准投放，不是每 10 分钟看一遍旧闻。
-    try:
-        _novel, _dupes = _balloon_event_filter(fresh)
-    except Exception:
-        _novel, _dupes = fresh, []
-    if _dupes:
-        _balloon_trace("去掉 %d 条「已播事件的别家稿」，本轮可播 %d 条"
-                       % (len(_dupes), len(_novel)))
-    if not _novel:
-        _balloon_trace("跳过：本轮新增 %d 条都是已播过的同一件事（不重复投放）" % len(fresh))
-        return
-    fresh = _novel
-    # 【2026-10-09 用户要求「增加 10 组新闻」「哪个栏目就是哪个栏目」】
-    # 挑选逻辑整段换成 _pick_balloon_items（按栏目配额：头条/科技/财经/娱乐 + 软件/热榜/国际补足），
-    # 第一行改成这条自己的栏目名（_balloon_head），热榜那条还带平台出处。
-    # 旧逻辑（国际/国内/热榜 三个板块平分 6 席）已删除：那样 10 席里科技/财经/娱乐 常常一条都轮不到。
-    picked = _pick_balloon_items(fresh)
-    if not picked:
-        _balloon_trace("跳过：%d 条候选按栏目配额没挑出可播的" % len(fresh))
-        return
+    # 【2026-10-28 用户点名】这道闸**手动那一轮同样生效**：
+    # "轮播轮播，就是不能重复，反复" —— 原来 force 会在这里放行旧的凑数，正好是他最烦的
+    # 那种"每次双击都是同几条"。改成播不出就明说播不出（见 _balloon_play_hint）。
+    # 【2026-10-29】从这一句起直到记账都在 _BALLOON_PICK_LOCK 里：开机第一轮和刷新后的
+    # 自动轮播是两条线程，各自挑各自的会挑中同一批（排序确定），用户就看到两遍。
+    with _BALLOON_PICK_LOCK:
+        try:
+            _seen = _balloon_seen()
+            _unseen = [x for x in fresh if (x.get("id") or x.get("title")) not in _seen]
+        except Exception:
+            _unseen = list(fresh)
+        if not _unseen:
+            _balloon_trace("跳过：%d 条最近都播过（不重复投放%s）"
+                           % (len(fresh), "，手动那一轮也不拿旧的凑" if force else ""))
+            if force:
+                with NEWS_LOCK:
+                    NEWS_LAST_TOAST = _prev_toast
+                _balloon_play_hint("没有新的可播",
+                                   "这 %d 条最近都播过了。轮播不重播旧的，等新新闻抓进来再双击托盘。"
+                                   % len(fresh))
+            return
+        fresh = _unseen
+        # 【2026-10-25 用户要求「不能几个网站的新闻重复投放」】跨轮"同一件事"闸。
+        # 上一轮气泡播过的那件事，这一轮别的网站的兄弟稿（标题措辞不同、id 也不同）
+        # 不能再占席位 —— 判据与本轮内部去重完全相同，只是把视野扩到最近 6 小时。
+        # 全被挡掉时**这一轮就不弹**：宁缺毋滥，用户要的是精准投放，不是每 10 分钟看一遍旧闻。
+        # 【2026-10-28】手动那一轮同样不放开，理由跟上面那道闸一样。
+        try:
+            _novel, _dupes = _balloon_event_filter(fresh)
+        except Exception:
+            _novel, _dupes = fresh, []
+        if _dupes:
+            _balloon_trace("去掉 %d 条「已播事件的别家稿」，本轮可播 %d 条"
+                           % (len(_dupes), len(_novel)))
+        if not _novel:
+            _balloon_trace("跳过：%d 条都是已播过的同一件事（不重复投放）" % len(fresh))
+            if force:
+                with NEWS_LOCK:
+                    NEWS_LAST_TOAST = _prev_toast
+                _balloon_play_hint("没有新的可播",
+                                   "这几条讲的都是播过的那件事。等新事件抓进来再双击托盘。")
+            return
+        fresh = _novel
+        # 规则 ②：在"24 小时内、没播过、也不是同一件事"的候选里，6 小时内够一轮就只播 6 小时。
+        fresh, _s2, _held = _balloon_fresh_cut(fresh, prefer_hours=BALLOON_FRESH_PREFER_HOURS,
+                                              prefer_need=BALLOON_PLAY_COUNT)
+        if _held:
+            _balloon_trace("这一轮只播 %d 小时内的：%d 条当天稍旧的自动让位"
+                           % (BALLOON_FRESH_PREFER_HOURS, _held))
+        # 【2026-10-09 用户要求「增加 10 组新闻」「哪个栏目就是哪个栏目」】
+        # 挑选逻辑整段换成 _pick_balloon_items（按栏目配额：头条/科技/财经/娱乐 + 软件/热榜/国际补足），
+        # 第一行改成这条自己的栏目名（_balloon_head），热榜那条还带平台出处。
+        # 旧逻辑（国际/国内/热榜 三个板块平分 6 席）已删除：那样 10 席里科技/财经/娱乐 常常一条都轮不到。
+        picked = _pick_balloon_items(fresh)
+        if not picked:
+            _balloon_trace("跳过：%d 条候选按栏目配额没挑出可播的" % len(fresh))
+            if force:
+                with NEWS_LOCK:
+                    NEWS_LAST_TOAST = _prev_toast
+                _balloon_play_hint("没有新的可播",
+                                   "%d 条候选按栏目配额没凑出能播的一轮。等新新闻抓进来再双击托盘。"
+                                   % len(fresh))
+            return
+        # 记录已播，保证"轮播内容不能重复"（按条记 26 小时、跨重启保留，见 _balloon_mark_shown）
+        # 【2026-10-29】手动那一轮 force 落盘：不等 60 秒节流，用户刚看到的这几条当场写进名单。
+        # 记账必须和挑选同在一把锁里：另一条线程紧跟着挑时，这批已经算"播过"。
+        try:
+            _balloon_mark_shown([_it.get("id") or _it.get("title") for _it in picked], force=force)
+        except Exception:
+            pass
+        # 【2026-10-25】同一批条目还要按"事件"记一笔：下一轮别的网站的兄弟稿才会被挡掉。
+        try:
+            _balloon_event_remember(picked)
+        except Exception:
+            pass
     entries = [_balloon_entry(it) for it in picked[:BALLOON_PLAY_COUNT]]
-    if len(added) > len(entries):
+    # 「本次共新增 N 条」这句只在自动那一套用：手动轮播的 added 是整个池子，
+    # 挂上去会变成"本次共新增 260 条"，用户会以为一分钟里真冒出来 260 条新闻。
+    if not force and len(added) > len(entries):
         _e = entries[-1]
         entries[-1] = (_e[0], _e[1] + f"　（本次共新增 {len(added)} 条）") + tuple(_e[2:])
-    # 记录已播，保证"轮播内容不能重复"（按条记 12 小时，见 _balloon_mark_shown）
-    try:
-        _balloon_mark_shown([_it.get("id") or _it.get("title") for _it in picked])
-    except Exception:
-        pass
-    # 【2026-10-25】同一批条目还要按"事件"记一笔：下一轮别的网站的兄弟稿才会被挡掉。
-    try:
-        _balloon_event_remember(picked)
-    except Exception:
-        pass
     # 【2026-10-09 用户要求】日志口径改成**按栏目报数**，形如
     #   滚动播放 10 条（头条2/科技2/财经2/娱乐2/软件1/热榜1）
     _balloon_trace("滚动播放 %d 条（%s）"
                    % (len(entries), _balloon_cls_tally(picked)))
-    _show_toast_list(entries)
+    _show_toast_list(entries, replace=force)
+
+
+def _balloon_play_hint(title, body):
+    """手动那一轮**播不出东西**时给的一条回执。
+
+    2026-10-28 用户原话：「每次请求手动轮播的时候，展示的新闻不能一样，也不能重复，
+    轮播轮播，就是不能重复，反复」。所以手动不许拿播过的旧的凑数；但用户点了托盘总得
+    有个反应，不然就成了"双击没反应 = 功能坏了"。这条回执就是那个反应：**说清楚为什么没有**。
+    """
+    try:
+        _show_toast(title, body)
+    except Exception as ex:
+        print("[warn] 轮播回执发不出去: %s: %s" % (type(ex).__name__, ex))
+
+
+def _balloon_play_now(source="托盘"):
+    """「立即轮播一轮」：不等下一轮刷新、不等节流，现在就把当前池子挑 10 条播出来。
+
+    入口只有托盘两处（2026-10-28 用户选的口径）：右键菜单「立即轮播一轮」、双击托盘图标。
+    为什么要另起线程 —— 这里是**被 Win32 消息线程调用的**（托盘那条回调），
+    而下面 `_notify_news(force=True)` 要对整个池子做 cross_hot 标注 + 相似度去重 + 配额挑选，
+    几百条量级要跑几百毫秒到几秒；卡在消息线程里就是"鼠标一直转"（今天刚修的那个 bug
+    同一个成因，别再犯第二次）。
+    抓取、去重、写已播记录这些一律复用自动那一套的函数，只是把三道"自动才需要"的闸放开。
+    """
+    try:
+        items = (list(PRELOAD.get("cn") or []) + list(PRELOAD.get("hot") or [])
+                 + list(PRELOAD.get("intl") or []))
+    except Exception:
+        items = []
+    if not items:
+        # 池子还空着：开机后第一轮没抓完（国内约 30 秒、国际约 40~49 秒实测），
+        # 或者程序一直在后台、页面从没打开过。这时候**必须给一句话**，
+        # 不然用户双击完什么都没发生，只会认定"这功能坏了"。
+        print("[ok] %s：立即轮播 —— 池子还空着，先去踢一轮抓取" % source)
+        _show_toast("新闻还在抓", "抓好第一轮会自动播出来，稍等半分钟。")
+        for _r in ("hot", "cn", "intl"):
+            try:
+                _kick_collect(_r)
+            except Exception:
+                pass
+        return
+    print("[ok] %s：立即轮播一轮（候选 %d 条）" % (source, len(items)))
+    threading.Thread(target=_notify_news, args=(items,),
+                     kwargs={"force": True}, daemon=True).start()
 
 
 # ============ 国内热榜的「国际新闻」过滤（2026-10-07 用户反馈） ============
@@ -6490,10 +8932,97 @@ _MY_SOFT_READY = [False]
 # 是常态），它就会被当成"没播过"再投一次，正是用户说的"不能重复投放"被自己拆了。
 # 现在改成**按条过期**：每条记 `_BALLOON_SHOWN_TTL` 小时，过期自然忘，
 # 名单长度还有硬顶（超了从最久没播的开始删），长跑不会把内存吃掉。
+# 【2026-10-29 用户：「一定要定规则：常看常新」】两处升级：
+#   · 记的时长 12h → **26h**：必须比「常看常新」① 的 24 小时硬上限长，否则早上播过的
+#     一条到夜里名单先把它忘了、它却还在 24 小时窗口里 → 同一件事播第二遍；
+#   · **跨重启保留**：原来这是纯内存字典，程序一重启（升级、开机自启、崩溃拉起）
+#     就等于"今天什么都没播过"，第一轮又能把上午那 10 条播一遍。
 _BALLOON_SHOWN = {}
-_BALLOON_SHOWN_TTL = 12 * 3600     # 一条新闻在"播过"名单里记 12 小时
+_BALLOON_SHOWN_TTL = (BALLOON_FRESH_HOURS + 2) * 3600     # 26 小时（见上面那条注释）
 _BALLOON_SHOWN_MAX = 3000          # 名单条数硬顶
 _BALLOON_SHOWN_LOCK = threading.Lock()
+# 写盘单独一把锁 + 每次一个不重名的临时文件。原来固定写 `balloon_shown.json.tmp`：
+# 开机强制落盘、双击托盘强制落盘、退出前 flush 是三条线程，同时写同一个 tmp 时
+# 内容会交织，`os.replace` 也可能撞上对方还开着的句柄 —— 坏掉的那份 JSON 读回来当
+# "没播过"，26 小时内又整批重播一遍，正好把规则 ③ 作废。
+_BALLOON_SHOWN_IO_LOCK = threading.Lock()
+# 本机私有数据，和控制台兴趣档 interest.json 同一个目录、同一套写法（.tmp + os.replace）
+_BALLOON_SHOWN_PATH = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "balloon_shown.json")
+_BALLOON_SHOWN_SAVE_GAP = 60.0     # 落盘节流：一分钟最多写一次（一轮播报也就写一次）
+_BALLOON_SHOWN_SAVED_AT = [0.0]
+
+
+def _balloon_shown_load():
+    """开机把上次播过的名单读回来（常看常新 ③：重启不该把"播过"这件事忘掉）。
+
+    读不到 / 读坏了都当没有：宁可多播一条旧的，也不许因为一个缓存文件起不来。
+    """
+    try:
+        with open(_BALLOON_SHOWN_PATH, "r", encoding="utf-8") as f:
+            raw = (json.load(f) or {}).get("shown") or {}
+    except FileNotFoundError:
+        return 0
+    except Exception as ex:
+        print("[warn] 播过名单读取失败（当没播过，不影响播报）: %s: %s"
+              % (type(ex).__name__, ex))
+        return 0
+    now = time.time()
+    n = 0
+    with _BALLOON_SHOWN_LOCK:
+        for k, v in raw.items():
+            try:
+                t = float(v)
+            except (TypeError, ValueError):
+                continue
+            if k and now - t <= _BALLOON_SHOWN_TTL:
+                _BALLOON_SHOWN[str(k)] = t
+                n += 1
+    if n:
+        print("[ok] 播过名单已读回 %d 条（常看常新：重启不重播上午播过的那几条）" % n)
+    return n
+
+
+def _balloon_shown_save(force=False):
+    """整份名单写盘。失败只吼一声，绝不影响播报。
+
+    【2026-10-29 实机验证时发现的漏网】force= True 时跳过 60 秒节流，只给两个场合用：
+      · 用户**手动**双击托盘那一轮 —— 他刚看到的这几条必须当场落盘，
+        否则"退出程序"正好落在节流窗口里，下一次开机又会把同一批播第二遍（规则 ③ 破功）；
+      · 退出前那一次 flush（见 _quit_app_now / api_quit）。
+    """
+    now = time.time()
+    if not force and now - _BALLOON_SHOWN_SAVED_AT[0] < _BALLOON_SHOWN_SAVE_GAP:
+        return False
+    try:
+        with _BALLOON_SHOWN_IO_LOCK:
+            with _BALLOON_SHOWN_LOCK:
+                snap = dict(_BALLOON_SHOWN)
+            d = os.path.dirname(_BALLOON_SHOWN_PATH) or "."
+            os.makedirs(d, exist_ok=True)
+            # 不重名的临时文件（pid + 线程号）：开机 / 手动 / 退出 flush 是三条线程，
+            # 同时 force 也不会写串同一个 tmp。写盘本身由 _BALLOON_SHOWN_IO_LOCK 串行。
+            tmp = "%s.%d.%d.tmp" % (_BALLOON_SHOWN_PATH, os.getpid(), threading.get_ident())
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"saved_at": now, "shown": snap}, f, ensure_ascii=False)
+                os.replace(tmp, _BALLOON_SHOWN_PATH)
+            except Exception:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            _BALLOON_SHOWN_SAVED_AT[0] = now
+            return True
+    except Exception as ex:
+        print("[warn] 播过名单写盘失败（不影响播报）: %s: %s" % (type(ex).__name__, ex))
+        return False
+
+
+# 开机就把上次播过的名单读热。放模块级和 `TOKEN = _load_local_token()` 同一套路：
+# 托盘线程、自动轮播都可能在服务一起来就播第一轮，名单晚一步就等于"今天没播过"。
+_BALLOON_SHOWN_LOADED = _balloon_shown_load()
 
 
 def _balloon_seen():
@@ -6505,8 +9034,8 @@ def _balloon_seen():
         return set(_BALLOON_SHOWN.keys())
 
 
-def _balloon_mark_shown(keys):
-    """把真播出去的条目记进名单；超上限就从"最久没播"的那头删。"""
+def _balloon_mark_shown(keys, force=False):
+    """把真播出去的条目记进名单；超上限就从"最久没播"的那头删；顺手落盘（有节流）。"""
     now = time.time()
     with _BALLOON_SHOWN_LOCK:
         for k in keys:
@@ -6516,6 +9045,15 @@ def _balloon_mark_shown(keys):
         if over > 0:
             for k in sorted(_BALLOON_SHOWN, key=lambda x: _BALLOON_SHOWN[x])[:over]:
                 _BALLOON_SHOWN.pop(k, None)
+    _balloon_shown_save(force=force)
+
+
+def _balloon_shown_flush():
+    """退出前把内存里的播过名单强行写盘（见 _balloon_shown_save 的 force 说明）。"""
+    try:
+        _balloon_shown_save(force=True)
+    except Exception as ex:
+        print("[warn] 退出前写播过名单失败: %s" % type(ex).__name__)
 
 
 # 【2026-10-25 待办 #65】气泡这一轮为什么弹 / 为什么不弹，留一份可查的记录。
@@ -6638,6 +9176,10 @@ def _notify_major(items):
     # 大事本身不会因为晚上不弹就消失：早上解除免打扰后，它仍在页面热榜/头条里。
     if _in_quiet_hours(now):
         return
+    _hold = _notify_hold_reason()       # 全屏/演示/勿扰：大事也等一等，别盖住画面
+    if _hold:
+        print("[ok] 大事提醒：%s，跳过本轮" % _hold)
+        return
     _MAJOR_LAST_TOAST = now
     sample = fresh[:BALLOON_PLAY_COUNT]
     entries = []
@@ -6712,7 +9254,9 @@ def _check_update_once():
             # 后台静默实例（开机自启那种，没有页面在看）→ 立刻替换并重启，用户完全无感
             print("[update] 当前是后台静默运行，立即替换并重启")
             if updater.trigger_replace():
-                threading.Timer(0.2, lambda: os._exit(0)).start()
+                # 升级重启是"播过名单"最容易丢的一条路（os._exit 不走 atexit）。
+                # 不 flush 的话，最近 60 秒里播过的那一批在新版起来后会被当成没播过。
+                threading.Timer(0.2, lambda: (_balloon_shown_flush(), os._exit(0))).start()
             else:
                 _show_toast("升级没装成，已继续使用当前版本",
                             f"{updater.last_message()}。可以稍后再点「检查更新」。")
@@ -6740,6 +9284,24 @@ def _warmup():
     def run():
         # —— 以下三件事与首屏无关，一律放在后台线程里做 ——
         _load_trans_cache()      # 载入历史译文缓存，避免重复消耗免费翻译额度
+        # 【2026-10-28 新增】开源热榜：先把上次抓的从磁盘读回来（断网/重启首屏也有这一栏），
+        # 再 kick 一轮后台抓取。它排在新闻抓取之前，是因为它只有一个请求、
+        # 一两秒就回来，不跟三十多个新闻源抢时间。
+        try:
+            _n, _ = _oss_load_disk()
+            if _n:
+                print("[ok] 开源热榜: 本机缓存载入 %d 条" % _n)
+                # 读盘也算"这一栏活着"，得记一笔健康度：它 6 小时才抓一批，开机只读盘的话
+                # 右栏「源健康度」里 GitHub 那行会一直是 idle / 0 条，而页面上明明摆着 20 条。
+                _note_src_health(_oss_meta(), True, _n)
+                # 缓存里只有数据、没有题图：GitHub 的分享卡是站方现画的，冷启动不预热的话
+                # 首屏那 6 张每张要等 1~10 秒（2026-10-28 本机重启后第一次 /img 实测 10.7 秒），
+                # 满栏白框看着就像坏了。_oss_refresh 那条路已经预热过，但「读到本机缓存」
+                # 时 6 小时内不会再抓，所以这一步得补在这里。
+                _oss_prewarm(_oss_snapshot()[0])
+            _kick_oss()
+        except Exception as ex:
+            print("[warn] 开源热榜预热失败: %s" % type(ex).__name__)
         # 【2026-10-09 修 中-4】cleanup_leftovers 现在会**返回上一次替换脚本留下的回执**
         # （成功 / 失败 / 失败原因）。失败说明"上次升级没落地"，要在日志与气泡里说清楚，
         # 不能再像以前那样静默什么都不做。
@@ -6827,14 +9389,27 @@ def _warmup():
                     def _boot_balloon():
                         # 【2026-10-07】不能只等"国际有数据"就弹 —— 快速阶段抓的是外媒（英文），
                         # 中文的"国内媒体报的国际新闻"要等完整抓取才进来。
-                        # 所以等到**出现中文国际条目**再弹，最多等 120 秒。
-                        for _ in range(120):
+                        # 所以等到**出现中文国际条目**再弹。
+                        # 【2026-10-28 用户「自动精准投放到桌面，不需要看手机」】最长只等 20 秒：
+                        # 原来等 120 秒，开机后两分钟屏幕角落什么都没有，用户以为气泡坏了。
+                        # 20 秒内国际还没中文稿就先播国内+热榜（国际那几席由配额自动让给别的栏目），
+                        # 下一轮刷新再补；"先看到"比"凑齐国际"重要。
+                        for _ in range(20):
                             time.sleep(1)
                             _it = PRELOAD.get("intl") or []
                             if any(_has_cjk(x.get("title"))
                                    and str(x.get("channel") or "").startswith("cn-intl")
                                    for x in _it):
                                 break
+                        # 工作时不打扰：夜间免打扰 / 全屏 / 演示 / 系统勿扰 → 这次不弹，
+                        # 交给下一轮刷新（新条目自然会再触发一次）。
+                        if _in_quiet_hours():
+                            print("[ok] 启动气泡：夜间免打扰时段，跳过")
+                            return
+                        _hold = _notify_hold_reason()
+                        if _hold:
+                            print("[ok] 启动气泡：%s，跳过" % _hold)
+                            return
                         try:
                             _all = [x for x in (list(PRELOAD.get("cn") or [])
                                                 + list(PRELOAD.get("intl") or []))
@@ -6855,18 +9430,58 @@ def _warmup():
                             # 配额顺序仍是国际媒体优先（用户看得懂中文），再交给统一的挑选器。
                             _ordered = (_intl + _hot + _cn)
                             _annotate_cross_hot(_ordered)   # 启动播报也按"几家榜同上榜"优先
-                            _pick = _pick_balloon_items(_ordered)[:BALLOON_PLAY_COUNT]
-                            if not _pick:
-                                print("[warn] 启动气泡：没有可用条目，跳过")
-                                return
+                            # 【2026-10-29 用户：「一定要定规则：常看常新」】启动这一路以前
+                            # 漏了两条闸：它从不看"这条多久了"，也没把播过的记进名单。
+                            # 于是"关机一天再开机"正好是最容易播到昨天新闻的场合，而且开机播完
+                            # 的这 10 条几分钟后还能被「更新提醒」再播一遍。现在和自动/手动同一口径：
+                            # ① 超过 24 小时的一律不进候选；② 6 小时内够一轮就只取 6 小时；
+                            # ③ 26 小时内播过的**开机也不再播**（只记不查的话，重启一次就原样重播）；
+                            # 挑不出新鲜的就跳过（开机那一下没人等着看"没有新的可播"，日志留一句就够）。
+                            _ordered, _stale, _ = _balloon_fresh_cut(_ordered, prefer_hours=None)
+                            if _stale:
+                                _balloon_trace("启动播报：挡掉 %d 条超过 %d 小时的旧闻"
+                                               % (_stale, BALLOON_FRESH_HOURS))
+                            # 挑选 + 记账同一把锁（与刷新后的自动轮播互斥，见 _BALLOON_PICK_LOCK）：
+                            # 两边同时挑会挑中同一批，用户开机就看到两遍同样的 10 条。
+                            with _BALLOON_PICK_LOCK:
+                                try:
+                                    _seen_boot = _balloon_seen()
+                                except Exception:
+                                    _seen_boot = set()
+                                if _seen_boot:
+                                    _ordered = [x for x in _ordered
+                                                if (x.get("id") or x.get("title")) not in _seen_boot]
+                                if not _ordered:
+                                    print("[ok] 启动气泡：候选都播过或没有 %d 小时内的新闻，跳过"
+                                          "（常看常新：不拿旧闻凑数）" % BALLOON_FRESH_HOURS)
+                                    return
+                                _ordered, _s2, _held = _balloon_fresh_cut(
+                                    _ordered, prefer_hours=BALLOON_FRESH_PREFER_HOURS,
+                                    prefer_need=BALLOON_PLAY_COUNT)
+                                if _held:
+                                    _balloon_trace("启动播报：这一轮只播 %d 小时内的，"
+                                                   "%d 条稍旧的让位"
+                                                   % (BALLOON_FRESH_PREFER_HOURS, _held))
+                                _pick = _pick_balloon_items(_ordered)[:BALLOON_PLAY_COUNT]
+                                if not _pick:
+                                    print("[warn] 启动气泡：没有可用条目，跳过")
+                                    return
+                                # 【2026-10-25 用户「不能几个网站的新闻重复投放」】
+                                # 启动播报播过的这件事也得进"已播事件"记忆 —— 否则几分钟后
+                                # 第一波「更新提醒」会把同一条新闻的别家稿再播一遍。
+                                try:
+                                    _balloon_event_remember(_pick)
+                                except Exception:
+                                    pass
+                                # 【2026-10-29 常看常新 ③】开机这 10 条也是"播过的"：不记进名单，
+                                # 下一轮刷新就会把它们当新条目再投一遍（用户：「轮播轮播，就是不能重复，反复」）。
+                                # force 落盘：万一用户看完第一轮就退出程序，这份名单不能丢在 60 秒节流里。
+                                try:
+                                    _balloon_mark_shown([x.get("id") or x.get("title")
+                                                         for x in _pick], force=True)
+                                except Exception:
+                                    pass
                             _ents = [_balloon_entry(x) for x in _pick]
-                            # 【2026-10-25 用户「不能几个网站的新闻重复投放」】
-                            # 启动播报播过的这件事也得进"已播事件"记忆 —— 否则几分钟后
-                            # 第一波「更新提醒」会把同一条新闻的别家稿再播一遍。
-                            try:
-                                _balloon_event_remember(_pick)
-                            except Exception:
-                                pass
                             _n_intl = sum(1 for x in _pick if x.get("region") == "intl")
                             print("[ok] 启动气泡：播报 %d 条（%s；含国际 %d 条）"
                                   % (len(_ents), _balloon_cls_tally(_pick), _n_intl))
@@ -6905,7 +9520,7 @@ def _warmup():
     def refresh_loop():
         # 【2026-10-25 用户要求「热榜和头条的新闻条数太多，版面太大，把刷新频率缩短了，
         #  常看常新的原则」】抓取周期 10 分钟 → **5 分钟**一轮。
-        #  气泡不受影响：「更新提醒」的 NEWS_TOAST_MIN 仍是 10 分钟，也就是两轮里最多打扰一次，
+        #  气泡不受影响：「更新提醒」的间隔默认仍是 10 分钟（_toast_min_sec，托盘里可调 5/10/30/60），
         #  用户要的「及时」是页面及时，不是通知及时。
         # 一轮内重建 热榜 + 国内源 + 国际源，刷新后弹气泡（更新提醒 / 大事提醒）。
         # 【2026-10-09 修 中-7】改走 _collect_exclusive：与页面按需抓取（_kick_collect）
@@ -6913,6 +9528,13 @@ def _warmup():
         # 已被占着就跳过本轮（下一轮 5 分钟后再来），绝不并发跑两轮。
         while True:
             time.sleep(300)          # 5 分钟一轮
+            # 【2026-10-28 新增】开源热榜跟着每一轮敲门，但它自己有 6 小时的闸
+            # （OSS_TTL）与失败节流（OSS_FAIL_TTL），所以绝大多数轮次这里直接跳过、
+            # 不发请求。效果是：这一栏最长 6 小时换一次，程序重启/断网期间也不会空着。
+            try:
+                _kick_oss()
+            except Exception:
+                pass
             try:
                 _collect_exclusive("hot")
             except Exception:
@@ -7526,8 +10148,24 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
         all_items = backfill
         print("[ok] %s: 内存池空，首屏回落本机归档（%s）" % (region, backfill_note))
     # 去重（同标题）
+    # 【2026-10-28 修 热榜退回单源 · 真正卡住的那一道】
+    # 热榜条目的 published 恒为 0，`_select_fresh` 按时间倒序一排，它们必然全落在列表最末；
+    # 而澎湃这类平台的 RSS 稿和自家榜单是**同一批标题**，RSS 排在前面 —— 按原顺序去重，
+    # 热榜条目被自家 RSS 抢先挡掉。实测：池子热榜 27 条/2 家进这道，出去只剩 12 条/1 家，
+    # 消失的正是澎湃全部 15 条（凤凰没有 RSS 源进 cn，所以它毫发无损）。
+    # 热榜是独立榜单块（前端 hotlistHTML 单独渲染），同一条稿子既上榜单又发 RSS 时**保榜单**。
+    # 所以先让热榜把标题占进 seen，再让新闻流去重。
     seen, items = set(), []
     for it in all_items:
+        if it.get("cls") != "热榜":
+            continue
+        if it["title"] in seen:
+            continue
+        seen.add(it["title"])
+        items.append(it)
+    for it in all_items:
+        if it.get("cls") == "热榜":
+            continue
         if it["title"] in seen:
             continue
         seen.add(it["title"])
@@ -7540,7 +10178,29 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     # 【2026-10-25 新增】`with_also=True`：被合掉的兄弟稿挂到这条上（`also` / `also_n`），
     # 页面上就是「同一件事，几家在报」那个可展开的标记 —— 合并照旧，但不再"悄悄地少了一条"。
     if not (q or "").strip():
-        items = _dedup_same_event(items, with_also=True)
+        # 【2026-10-28 修 热榜退回单源】热榜是各平台**各自的榜单**，本来就在报同一批热点。
+        # 走②「同一事件不同措辞」的跨源合并，会把澎湃/红星的榜单整批折进凤凰，最后只剩一家
+        # —— 这正是用户反复反馈的「热榜只有凤凰」的最终根因（不在聚合层，在出口去重层）。
+        # 实测（本机 2026-10-28 21:4x，同一份池子）：
+        #   带 q（跳过 dedup）→ 热榜 2 家（凤凰 3 + 澎湃 4）
+        #   不带 q（走 dedup）→ 热榜 1 家（凤凰 9）
+        # 所以热榜只做①确定性副本折叠（同 id / link / 归一化标题），不做②跨源同事件合并；
+        # 新闻流（头条/科技/财经…）照旧走完整去重，重复报道仍然只留一条。
+        # 【2026-10-28 实测定论】这一支**完全不能过去重**，一次都不能。
+        # 同一份池子实测过三版：
+        #   ① 走完整去重                → 27条/2家 变 12条/1家（澎湃 15 条全没）
+        #   ② 改成 `same_wording_only=True`（只跳第②档）
+        #                               → 仍然 12条/1家：第①档「确定性折叠」照样折
+        #   ③ 完全不去重                → 27条/2家 完整保留 ✅
+        # 原因：热榜是各平台**各自的榜单**（凤凰榜、澎湃榜），多家报同一批热点是常态、
+        # 不是重复；把它折叠成一家，用户看到的就是"热榜只有凤凰"。
+        # 真正重复的那层（同一条稿子的副本）进门处的「同标题去重」已经抹过了，
+        # 这里再折一次纯属误杀。
+        _hot_part = [it for it in items if it.get("cls") == "热榜"]
+        _rest_part = _dedup_same_event(
+            [it for it in items if it.get("cls") != "热榜"],
+            with_also=True)
+        items = _hot_part + _rest_part
     # 【2026-10-15 用户口径】国际栏出口再兜一道：
     # 收集那一刻 CGTN 这类英文源的标题**还是英文**，判据可能判不出"中国主体"；
     # 后台翻译把中文标题写回来之后才看得出来（真机实例：「习近平、博科出席北京合作文件签字仪式」
@@ -7654,6 +10314,397 @@ def api_sources():
     }, media_type="application/json; charset=utf-8")
 
 
+# ============ 开源热榜（GitHub 近 30 天新锐榜，2026-10-28 用户点名新增） ============
+# 【数据源怎么定的】GitHub 官方**没有 trending 接口**，本机也打不开 github.com 的网页版
+#   热门页（这条卡了两天，见 projects\功能待办.md 的「GitHub 热榜栏目」）。能按星标排序的
+#   只有 search，所以这一栏的口径是 `created:><30 天前的日期>` + `sort=stars` + `order=desc`
+#   —— 近 30 天新建、按累计星标降序。实测本机直连 api.github.com：HTTP 200 / 0.9~1.6 秒。
+#   为什么不用全站累计榜（stars:>100000）：那份常年几乎不动，一天刷十次是同一批，
+#   放在按「常看常新」组织的页面里就是一块死展板；新锐榜每天都在变，才配叫一栏。
+# 【为什么不并进新闻池】这一栏不是新闻：条目跨度 30 天、没有站方发布时间、不该参与
+#   国内/国际分流。要是写成 SOURCES 里的一家源，就得同时改五处已经踩过坑定下来的口径
+#   —— 时效收口 _select_fresh、无图剔除、_split_cn_scope 分流、气泡投放、本机归档。
+#   所以它单独一条链路：自己抓、自己缓存（内存 + 磁盘各一份）、自己一个 /api/oss 接口，
+#   前端把它挂成左栏的一个栏目 tab。抓不到就整块不出现，一条新闻都不会被它带崩。
+# 【题图哪来的】用户定过「每条新闻必须有高清大图，没图的不要上」。仓库本身没有题图，
+#   但 GitHub 官方会给每个仓库现生成一张 1200x600 的分享卡
+#   （opengraph.githubassets.com/1/<owner>/<repo>），短边 600 过得了
+#   MIN_IMG_SHORT_SIDE=300 那道门槛；实测本机直连 image/png / 1.0~3.9 秒（首次生成慢一些）。
+#   图上只有仓库名与站方自己写的那句简介，本程序不抓 README、不下代码。
+# 【合规】这一栏只有三样公开信息：仓库全名、站方自己写的一句话简介、仓库地址。
+#   不复制正文、不做站内阅读页、每条都直达 github.com 原页面；权利人可按
+#   docs/COMPLIANCE.md 第 1 节的 Issue 通道要求移除，核实后立即下线。
+#   境外来源的例外登记在 docs/COMPLIANCE.md 第 7 节（章程 §9.1「默认只用境内来源」）。
+# 【题材闸门】本程序不做时政与敏感内容的二次传播（章程 §9.1），命中 _OSS_BLOCK_RX 的
+#   仓库一条都不展示 —— 宁可这一栏少几条，也不让它变成敏感内容的入口。
+OSS_ENABLED = True
+OSS_CLS = "开源热榜"
+OSS_SOURCE_ID = "oss-github-stars"
+OSS_SOURCE_LABEL = "GitHub"
+OSS_WINDOW_DAYS = 30       # 「近 30 天新建」这个窗口本身是榜单定义，不是时效妥协
+OSS_LIMIT = 20             # 一屏能扫完的量；再多没人看
+OSS_TTL = 6 * 3600         # 榜单一天挪不了几次，6 小时抓一次足够（省境外接口额度）
+OSS_FAIL_TTL = 600         # 抓不到时 10 分钟内不再撞（境内直连不通时别每轮都试一遍）
+OSS_TIMEOUT = 12           # 实测 0.9~1.6 秒，给到 12 秒兜抖动；比它长的抖动就当失败
+OSS_SEARCH_URL = "https://api.github.com/search/repositories"
+OSS_IMAGE_BASE = "https://opengraph.githubassets.com/1/"
+# 仓库全名必须是 owner/repo 这两段安全字符：它要拼进图片地址，放开了就能改写请求路径，
+# 也挡不住站方返回一个畸形 full_name 把 /img 当成跳转入口。
+OSS_NAME_RX = re.compile(r"^[\w.\-]{1,100}/[\w.\-]{1,100}$")
+_OSS_BLOCK_RX = re.compile(
+    "|".join(re.escape(w) for w in (
+        "政治", "政府", "党政", "选举", "投票系统", "抗议", "示威", "游行", "舆情", "监控",
+        "军事", "军工", "武器", "弹药", "导弹", "情报", "间谍", "无人机打击",
+        "色情", "成人网站", "porn", "nsfw",
+        "漏洞利用", "exploit", "0day", "zero-day", "botnet", "malware", "ransomware",
+        "keylogger", "钓鱼", "phishing", "scam",
+    )), re.I)
+_OSS_CACHE_FILE = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "oss_cache.json")
+_OSS = {"ts": 0.0, "items": [], "note": "", "next_try": 0.0}
+_OSS_LOCK = threading.Lock()
+_OSS_BUSY = [False]
+
+
+def _oss_window_date(days=OSS_WINDOW_DAYS, today=None):
+    """`created:>` 后面那个日期。
+
+    单独拆出来、并把「今天」做成可传的参数，是为了让单测能钉一个假日期来断言窗口口径 ——
+    测试绝不拿真实时钟当判据（时钟一跨天，测试就假绿或假红，见 tests/test_oss_board.py）。
+    """
+    base = today or datetime.now(CST)
+    return (base - timedelta(days=max(1, int(days)))).strftime("%Y-%m-%d")
+
+
+def _oss_search_url(days=OSS_WINDOW_DAYS, limit=OSS_LIMIT, today=None):
+    """search 地址。`>` 必须转义成 %3E，GitHub 那边对裸 `>` 的容忍度不稳定，别赌。"""
+    q = "created:>%s" % _oss_window_date(days, today)
+    return OSS_SEARCH_URL + "?" + urllib.parse.urlencode(
+        {"q": q, "sort": "stars", "order": "desc",
+         "per_page": max(1, min(100, int(limit)))})
+
+
+def _oss_created_ts(s):
+    """GitHub 的 created_at 是 UTC ISO8601（2026-10-05T09:12:33Z）→ epoch 秒；解析不出给 0。"""
+    t = (s or "").strip()
+    if not t:
+        return 0
+    try:
+        if t.endswith("Z"):
+            t = t[:-1] + "+00:00"
+        return int(datetime.fromisoformat(t).timestamp())
+    except Exception:
+        return 0
+
+
+def _oss_link(u):
+    """只认 github.com 上的仓库地址；其它协议、其它域名一律当「没有链接」。
+
+    前端的 safeLink() 只挡 javascript:/data:，这一层再按**域名**收一次：
+    站方返回什么就展示什么，等于把榜单的跳转权交给了返回数据的那台服务。
+    """
+    try:
+        p = urllib.parse.urlsplit((u or "").strip())
+    except Exception:
+        return ""
+    if p.scheme not in ("http", "https"):
+        return ""
+    if (p.hostname or "").lower() not in ("github.com", "www.github.com"):
+        return ""
+    if p.username or p.password or p.port not in (None, 80, 443):
+        return ""
+    try:
+        ipaddress.ip_address(p.hostname or "")
+        return ""                     # 裸 IP 的"github.com"不是 github.com
+    except ValueError:
+        pass
+    return "%s://%s%s" % (p.scheme, p.netloc.lower(), p.path)
+
+
+def _oss_desc(r, days=OSS_WINDOW_DAYS, zh=""):
+    """卡片摘要：**中文打头**，英文简介只做补充。
+
+    用户 2026-10-07 定过一次口径（「删除不易读的英文 GitHub 仓库，改用国内源」），
+    所以这一栏不能整屏是英文：先用一句中文说清"这是什么榜、什么语言"，
+    然后有译文就上译文；翻译没开（config.json 里 translate.enabled 默认 false）
+    就附站方原文、并标明「简介原文」，绝不把英文裸摆在中文页面上冒充正文。
+    """
+    lang = (r.get("language") or "").strip()
+    bits = ["GitHub 近 %d 天新建" % max(1, int(days))]
+    if lang:
+        bits.append(lang)
+    head = " · ".join(bits)
+    base = _clean(r.get("description") or "")[:200]
+    zh = (zh or "").strip()
+    if zh:
+        return (head + "｜" + zh)[:240]
+    if base:
+        return (head + "｜简介原文：" + base)[:240]
+    return head
+
+
+def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
+                            today=None, translate=None):
+    """search 响应 → 卡片条目。
+
+    **纯函数**：不发网络请求、不读真实时钟（`today` 可注入）、翻译器由调用方注入
+    （生产传 `_translate_text`，测试传一张假词典）。这样"口径"能测，"网络"不背测。
+    字段沿用新闻卡片那一套（title/desc/link/image/published/heat/rank/label/cls），
+    前端 cardHTML() 不用为这一栏另写一套渲染；额外只多 `stars` / `lang` / `created_text`
+    三个字段，用来把星标数、语言、创建日期显示成中文卡片上看得懂的徽章。
+    """
+    rows = (payload or {}).get("items") or []
+    keep = []
+    seen, blocked, badlink = set(), 0, 0
+    for r in rows:
+        if not isinstance(r, dict) or r.get("archived"):
+            continue
+        name = (r.get("full_name") or "").strip()
+        if not OSS_NAME_RX.match(name):
+            badlink += 1
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        link = _oss_link(r.get("html_url"))
+        if not link:
+            badlink += 1
+            continue
+        base = _clean(r.get("description") or "")
+        # 闸门看的是"这条会以什么面目出现"的所有字段：仓库名、简介、站方打的标签、
+        # 还有语言分类 —— GitHub 的语言桶里就有 Porn/NSFW 这类，只查简介会漏过去。
+        hay = " ".join([(r.get("language") or "").strip(), name, base,
+                        " ".join(r.get("topics") or [])])
+        if _OSS_BLOCK_RX.search(hay):
+            blocked += 1
+            continue
+        try:
+            stars = max(0, int(r.get("stargazers_count") or 0))
+        except Exception:
+            stars = 0
+        try:
+            forks = max(0, int(r.get("forks_count") or 0))
+        except Exception:
+            forks = 0
+        lang = (r.get("language") or "").strip()[:40]
+        ts = _oss_created_ts(r.get("created_at"))
+        zh = ""
+        if base and translate is not None:
+            try:
+                zh = (translate(base) or "").strip()
+            except Exception:
+                zh = ""
+        seen.add(key)
+        keep.append({
+            "id": hashlib.md5(("oss-" + key).encode("utf-8")).hexdigest()[:12],
+            "region": "cn",
+            "channel": OSS_SOURCE_ID,
+            "label": OSS_SOURCE_LABEL,
+            "cls": OSS_CLS,
+            "title": name[:120],
+            "desc": _oss_desc(r, days, zh),
+            "desc_en": base[:240],
+            "link": link,
+            "image": OSS_IMAGE_BASE + name,
+            "published": ts,
+            "created_text": (datetime.fromtimestamp(ts, CST).strftime("%Y-%m-%d")
+                             if ts else ""),
+            "heat": stars,
+            "stars": stars,
+            "forks": forks,
+            "lang": lang,
+            "source": "%s 开源热榜" % OSS_SOURCE_LABEL,
+            "translated": bool(zh),
+        })
+    # 接口说按星标排，但闸门剔除过条目、也防它哪天改口 —— 这里自己再按星标定一次序，
+    # 同数按仓库名，保证 rank 稳定可复现（测试就靠这一条断言名次连续）。
+    keep.sort(key=lambda x: (-x["stars"], x["title"].lower()))
+    out = keep[:max(1, int(limit))]
+    for i, it in enumerate(out, 1):
+        it["rank"] = i
+    if blocked or badlink:
+        print("[ok] %s: 闸门剔除 敏感题材 %d 条、地址不合规 %d 条" % (OSS_CLS, blocked, badlink))
+    return out
+
+
+def _oss_load_disk():
+    """把上次抓到的榜从磁盘读回来（断网、重启后首屏照样有内容）。"""
+    try:
+        if not os.path.exists(_OSS_CACHE_FILE):
+            return 0, ""
+        with open(_OSS_CACHE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        items = d.get("items") or []
+        if not isinstance(items, list) or not items:
+            return 0, ""
+        with _OSS_LOCK:
+            _OSS["items"] = items
+            _OSS["ts"] = float(d.get("ts") or 0)
+            _OSS["note"] = "本机缓存"
+        return len(items), d.get("window") or ""
+    except Exception:
+        return 0, ""
+
+
+def _oss_save_disk():
+    try:
+        os.makedirs(os.path.dirname(_OSS_CACHE_FILE), exist_ok=True)
+        with _OSS_LOCK:
+            blob = {"ts": _OSS["ts"], "window": OSS_WINDOW_DAYS, "items": _OSS["items"]}
+        with open(_OSS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(blob, f, ensure_ascii=False)
+    except Exception as ex:
+        print("[warn] 开源热榜缓存写盘失败: %s" % type(ex).__name__)
+
+
+def _oss_snapshot():
+    with _OSS_LOCK:
+        return list(_OSS["items"]), float(_OSS["ts"]), _OSS["note"]
+
+
+def _oss_prewarm(items, n=8):
+    """把首屏要用的那几张分享卡提前取回**图片缓存**（前端一发请求就命中，不用排队画图）。
+
+    为什么值得多做这一步：GitHub 的 og 卡是站方**现画**的，首次访问实测 1~4 秒；
+    再赶上新闻那一轮正在批量补图（连接池就那么几个口子），浏览器能排到 20 秒以上 ——
+    2026-10-28 本机实测就是这个样子，看着像"这一栏全是白框、坏了"。
+    只预热前 n 张（「全部」视图露 6 张，点进这一栏看全的再等下一轮缓存），
+    放在后台线程里做，取不到也不当回事：图片本来就允许失败，一条新闻都不该被它拖住。
+    """
+    rows = (items or [])[:max(0, int(n))]
+    ok = 0
+    for it in rows:
+        u = (it or {}).get("image") or ""
+        if not u.startswith("https://"):
+            continue
+        try:
+            # timeout 给到 20 秒而不是默认的 10 秒：站方现画一张卡实测最慢的一张 10.4 秒
+            # （榜首那个仓库），默认 10 秒正好卡在超时线上 —— 预热自己超时了，
+            # 浏览器那一路就还得再等一遍 10 秒。预热在后台线程里，多等几秒没人看见，
+            # 但 /img 的默认超时是 10 秒，卡在超时线上就会时不时给前端一个失败。
+            res = _fetch(u, timeout=20)
+            if isinstance(res, tuple):
+                if res[0]:
+                    ok += 1
+            elif res:
+                ok += 1
+        except Exception:
+            pass
+    if rows:
+        print("[ok] %s: 题图预热 %d/%d 张（浏览器那边就不用等站方现画）" % (OSS_CLS, ok, len(rows)))
+
+
+def _oss_meta():
+    """这一栏在「源健康度」面板里那一行的身份（伪源字典，跟热榜那套一个写法）。"""
+    return {"id": OSS_SOURCE_ID, "label": OSS_SOURCE_LABEL,
+            "region": "cn", "cls": OSS_CLS}
+
+
+def _oss_refresh():
+    """抓一轮开源热榜。
+
+    成功 → 换掉内存与磁盘那两份，返回条数；
+    失败 → **保留上一批**（旧榜继续显示，比整栏消失好），记 next_try 节流，返回 -1。
+    这里不抛异常：这一栏再难看也不该把抓取线程带崩。
+    """
+    url = _oss_search_url()
+    _meta = _oss_meta()
+    try:
+        raw = _fetch(url, timeout=OSS_TIMEOUT,
+                     extra_headers={"Accept": "application/vnd.github+json"})
+    except Exception as ex:
+        raw = None
+        print("[warn] 开源热榜抓取异常: %s" % type(ex).__name__)
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        with _OSS_LOCK:
+            _OSS["next_try"] = time.time() + OSS_FAIL_TTL
+            _OSS["note"] = "抓取失败，显示上一批"
+        _note_src_health(_meta, False, 0, "抓取失败（接口不可达或额度用尽）")
+        print("[warn] 开源热榜: 本轮没抓到，保留上一批（%d 条）" % len(_oss_snapshot()[0]))
+        return -1
+    try:
+        payload = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception as ex:
+        with _OSS_LOCK:
+            _OSS["next_try"] = time.time() + OSS_FAIL_TTL
+            _OSS["note"] = "响应解析失败"
+        _note_src_health(_meta, False, 0, "响应解析失败")
+        print("[warn] 开源热榜: 响应不是合法 JSON（%s）" % type(ex).__name__)
+        return -1
+    use_tr = bool(CONFIG.get("translate", {}).get("enabled", False))
+    items = _oss_items_from_payload(
+        payload, today=datetime.now(CST),
+        translate=(_translate_text if use_tr else None))
+    if not items:
+        with _OSS_LOCK:
+            _OSS["next_try"] = time.time() + OSS_FAIL_TTL
+            _OSS["note"] = "抓到 0 条（题材闸门全滤掉了？）"
+        _note_src_health(_meta, True, 0, "抓到 0 条")
+        print("[warn] 开源热榜: 抓到 0 条，这一栏先收起")
+        return 0
+    with _OSS_LOCK:
+        _OSS["items"] = items
+        _OSS["ts"] = time.time()
+        _OSS["note"] = "实时"
+        _OSS["next_try"] = 0.0
+    _note_item_hosts(items)       # 图片域名（opengraph.githubassets.com）登记进 /img 白名单
+    _oss_save_disk()
+    _note_src_health(_meta, True, len(items))
+    print("[ok] %s: %d 条（窗口 近 %d 天新建 · 星标降序）" % (OSS_CLS, len(items), OSS_WINDOW_DAYS))
+    _oss_prewarm(items)           # 后台把首屏那几张题图先取回来（见函数里的实测理由）
+    return len(items)
+
+
+def _kick_oss(force=False):
+    """后台补一轮开源热榜（单飞 + 过期判定 + 失败节流）。抢不到闸就什么都不做。"""
+    if not OSS_ENABLED:
+        return False
+    now = time.time()
+    with _OSS_LOCK:
+        if _OSS_BUSY[0]:
+            return False
+        if not force and (now - _OSS["ts"] < OSS_TTL or now < _OSS["next_try"]):
+            return False
+        _OSS_BUSY[0] = True
+
+    def _bg():
+        try:
+            _oss_refresh()
+        except Exception as ex:
+            print("[warn] 开源热榜后台异常: %s" % type(ex).__name__)
+        finally:
+            with _OSS_LOCK:
+                _OSS_BUSY[0] = False
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return True
+
+
+@app.get("/api/oss")
+def api_oss():
+    """开源热榜接口。**只读缓存优先**：缓存没过期就直接回，一条网络请求都不发；
+    过期或还空着才 kick 后台一轮，本轮先回旧榜（旧榜也没有就是 loading + 空数组）。
+
+    前端拿不到条目就把这一栏整块收起 —— 这一栏是加料，不该在任何情况下报错。
+    """
+    _kick_oss()
+    items, ts, note = _oss_snapshot()
+    _note_item_hosts(items)
+    return JSONResponse({
+        "version": VERSION,
+        "cls": OSS_CLS,
+        "window_days": OSS_WINDOW_DAYS,
+        "count": len(items),
+        "updatedAt": int(ts),
+        "source": note or ("本机缓存" if items else "等待抓取"),
+        "loading": bool(OSS_ENABLED) and not items,
+        "enabled": bool(OSS_ENABLED),
+        "items": items,
+    }, media_type="application/json; charset=utf-8")
+
+
 @app.get("/api/version")
 def api_version():
     # 【2026-10-09 修 中-5 / 中-6】多带三个诊断字段（只增不减，不影响老调用方）：
@@ -7718,6 +10769,7 @@ def api_update_install(request: Request):
     # 端口马上释放，新进程等待重试后就能接管。
     def _die():
         print("[ok] 进程即将退出（为升级让出端口）")
+        _balloon_shown_flush()      # 同上：升级重启也别把最近 60 秒播过的名单丢掉
         sys.stdout.flush()
         os._exit(0)
     threading.Timer(0.15, _die).start()
@@ -7825,6 +10877,96 @@ async def api_notify_set(request: Request, payload: dict = None):
     return JSONResponse(cur, media_type="application/json; charset=utf-8")
 
 
+@app.get("/api/ui")
+def api_ui_get(request: Request):
+    """读界面偏好，并回一份"气泡实际会用的配色"，页面和排查都能对上（本机校验同 /api/notify）。"""
+    _deny = _guard_mutating(request)
+    if _deny is not None:
+        return _deny
+    pal = _balloon_palette()
+
+    def _hx(ref):
+        r, g, b = _rgb_of(ref)
+        return "#%02x%02x%02x" % (r, g, b)
+
+    # 这一刻气泡实际会用的版式（auto 已按有没有图分流完），
+    # 排查"选了聚光灯怎么出速递"时一眼能看出来。
+    _cur = getattr(BALLOON, "cur", None) or ()
+    _has_img = bool(len(_cur) > 4 and _balloon_img_local(_cur[4] or ""))
+    return JSONResponse({**_ui_cfg(),
+                         "resolved": {"theme": pal["theme"], "accent": pal["accent_name"],
+                                      "balloon": _balloon_pick_style(has_img=_has_img),
+                                      "card": _hx(pal["card"]), "txt": _hx(pal["txt"]),
+                                      "accent_hex": _hx(pal["accent"])}},
+                        media_type="application/json; charset=utf-8")
+
+
+@app.post("/api/ui")
+async def api_ui_set(request: Request, payload: dict = None):
+    """控制台把它**当前生效**的主题/主色回报给本机，桌面气泡据此同步配色。
+
+    只认页面那几档取值，别的一律忽略（不写脏值）；没写过就保持 "auto"，
+    表现和控制台「跟随系统」的默认口径一致。
+    """
+    _deny = _guard_mutating(request)
+    if _deny:
+        print("[warn] /api/ui 被拒绝：来源未通过本机校验")
+        return _deny
+    body = payload or {}
+    patch = {}
+    t = str(body.get("theme") or "").strip().lower()
+    if t in ("auto", "light", "dark"):
+        patch["theme"] = t
+    a = str(body.get("accent") or "").strip().lower()
+    if a in ("default", "blue", "green", "violet", "amber"):
+        patch["accent"] = a
+    # 播报样式：页面和托盘菜单都写这一个键；脏值忽略，不让一键盘配置把气泡搞成白卡。
+    b = str(body.get("balloon") or "").strip().lower()
+    if b in BALLOON_STYLES:
+        patch["balloon"] = b
+    if patch:
+        _save_ui_cfg(patch)
+        print("[ok] 界面偏好已同步：%s" % json.dumps(patch, ensure_ascii=False))
+    return JSONResponse(_ui_cfg(), media_type="application/json; charset=utf-8")
+
+
+@app.get("/api/interest")
+def api_interest_get():
+    """本机兴趣档（只读）：各类权重 + 这一轮实际用的栏目配额。
+
+    放在接口上是为了**可验证**：用户在控制台点开几条科技稿后，这里能直接看到
+    科技权重上去、配额从 1 席变成 2~3 席 —— 不必去翻 %LOCALAPPDATA% 的 json。
+    只回本机内存/本机文件里的数字，不联网、不上传。
+    """
+    w = _interest_weights()
+    return {"weights": {k: round(v, 2) for k, v in
+                        sorted(w.items(), key=lambda kv: -kv[1])},
+            "quota": [[c, n] for c, n in _interest_quota()],
+            "default": [[c, n] for c, n in BALLOON_CLS_QUOTA],
+            "half_life_days": INTEREST_HALF_LIFE_DAYS}
+
+
+@app.post("/api/interest")
+async def api_interest_add(request: Request, payload: dict = None):
+    """控制台里点开一条新闻 → 给它的栏目记一分（气泡点开走同一条内部函数）。
+
+    有副作用（写本机文件），所以照样过令牌 + 同源 + 回环三道闸；
+    页面那边是"点开就发、不等回包"（keepalive），发失败也不影响打开原文。
+    """
+    _deny = _guard_mutating(request)
+    if _deny:
+        print("[warn] /api/interest 被拒绝：来源未通过本机校验")
+        return _deny
+    cls = _interest_class((payload or {}).get("cls"))
+    if not cls:
+        return JSONResponse({"ok": False, "message": "缺少 cls"},
+                            status_code=400, media_type="application/json; charset=utf-8")
+    _interest_bump(cls, 1.0)
+    return JSONResponse({"ok": True, "cls": cls,
+                         "weights": {k: round(v, 2) for k, v in _interest_weights().items()}},
+                        media_type="application/json; charset=utf-8")
+
+
 @app.post("/api/quit")
 def api_quit(request: Request):
     """
@@ -7839,6 +10981,7 @@ def api_quit(request: Request):
 
     # 【2026-10-09 升级体验口径】退出即自动安装已就绪的新版本（不弹确认框、不要求用户点确定）
     _installing = _install_ready_update()
+    _balloon_shown_flush()      # 常看常新 ③：os._exit 不走 atexit，播过名单在退出前落盘
 
     def _die():
         time.sleep(0.6)
@@ -8144,6 +11287,11 @@ def index(request: Request):
             # 兜底：这条路径挂了也不能让首屏空着，退回原来的原始预热表
             print("[warn] 首屏 SSR 复用 /api/news 失败，退回预热表前 %d 条: %s" % (60, _e))
             _items = PRELOAD.get("cn", [])[:60]
+        # 【2026-10-28】开源热榜：只读内存/磁盘缓存的快照，首屏这一步不产生任何外部请求
+        try:
+            _oss_snap = _oss_snapshot()
+        except Exception:
+            _oss_snap = ([], 0.0, "")
         payload = {
             "version": VERSION,
             "region": "cn",
@@ -8154,9 +11302,16 @@ def index(request: Request):
             # 来源上色表：模块级常量，和 /api/news 回带的是同一份，
             # 首屏那批卡片一次就染对颜色，不会"先灰一下再上色"
             "src_hues": SRC_HUES,
+            # 【2026-10-28 新增】开源热榜：首屏直接给内存里那一批（**只读快照，不发请求**，
+            # 抓取由 _warmup / /api/oss 的后台线程负责）。没有就是空数组，前端收起这一栏。
+            # oss_win / oss_at 一起带：窗口天数只有服务端一个常量说了算，别让前端硬写 30，
+            # 改了 OSS_WINDOW_DAYS 首屏那句「近 N 天新建」才跟得上。
+            "oss": _oss_snap[0], "oss_win": OSS_WINDOW_DAYS, "oss_at": int(_oss_snap[1]),
         }
         # 【修 高-1】首屏这几条的图片域名也登记进 /img 白名单
         _note_item_hosts(payload["items"])
+        # 【2026-10-28】开源热榜的题图在 opengraph.githubassets.com 上，同样要登记
+        _note_item_hosts(payload["oss"])
         blob = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
         ssr = tpl.replace("__SSR_DATA__", blob)
         ssr = ssr.replace('__SSR_REGION__', "cn")
