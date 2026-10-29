@@ -392,8 +392,12 @@ def _git_raw(args):
     if args and args[0] == 'git':
         args[0] = GIT_EXE.replace('/', os.sep)
     print('   $', ' '.join(args))
-    r = subprocess.run(args, cwd=str(REPO_DIR), env=e,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # 加个总超时：凭据弹窗/网络黑洞时别再像 1.5.9 那样静默卡二十分钟（本机踩过）
+    try:
+        r = subprocess.run(args, cwd=str(REPO_DIR), env=e,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+    except subprocess.TimeoutExpired as exc:
+        return 1, '超时 900 s: %s' % ' '.join(args)
     return r.returncode, r.stdout.decode('utf-8', 'replace')
 
 
@@ -445,12 +449,21 @@ def _push(remote, ref):
                               'push', remote, ref])
         if code != 0:
             print('   带代理也失败:', out.strip()[-200:])
-    remote_sha = (_git_raw(['git', 'ls-remote', remote, ref])[1].split() or ['', ''])[1:2]
-    if remote_sha and remote_sha[0] == want:
-        print('   pushed %s -> %s（远端 sha %s… 与本地一致）' % (ref, remote, want[:10]))
-        return True
+    # ls-remote 每行是「sha<TAB>refs/...」—— 取第 0 列才是 sha。
+    # 2026-10-29 修：这里原来写的是 [1:2]（拿到的是 ref 名），于是每次推完都判"没生效"，
+    # 1.5.9 发版就卡在这句假警报上。另外刚推完 GitCode 偶尔只读节点还没同步，
+    # 所以给它三次、隔 3 秒再看，别把"还没同步"当成"没推上去"。
+    remote_sha = ''
+    for attempt in range(3):
+        line = (_git_raw(['git', 'ls-remote', remote, ref])[1] or '').strip().splitlines()
+        remote_sha = line[0].split()[0] if line and line[0].split() else ''
+        if remote_sha == want:
+            print('   pushed %s -> %s（远端 sha %s… 与本地一致）' % (ref, remote, want[:10]))
+            return True
+        if attempt < 2:
+            time.sleep(3)
     raise RuntimeError('推送 %s -> %s 没生效：本地 %s，远端 %s'
-                       % (ref, remote, want[:10], (remote_sha or ['(取不到)'])[0][:10]))
+                       % (ref, remote, want[:10], remote_sha[:10] or '(取不到)'))
 
 
 def git_commit_and_tag(ver):
