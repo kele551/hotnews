@@ -3937,6 +3937,12 @@ class _Tray:
                 u.CheckMenuItem(hsty, cid, 0x00000008, 0x00000000)
             items[cid] = lab
         u.AppendMenuW(hmenu, 0x00000010, hsty, "播报样式")
+        # 【2026-10-30】「工作时不打扰」做成一个可勾的条目：这一条闸门以前只有代码知道，
+        # 用户看到的现象是「气泡一整天不响」。给它一个看得见、点得动的地方，就在样式下面。
+        _hold_on = bool(_notify_cfg().get("hold_on", True))
+        u.AppendMenuW(hmenu, 0x00000000 | (0x00000008 if _hold_on else 0),
+                      _TRAY_CMD_HOLD, "工作时不打扰（锁屏 / 投影演示时让路）")
+        items[_TRAY_CMD_HOLD] = "工作时不打扰（锁屏 / 投影演示时让路）"
         u.AppendMenuW(hmenu, 0x00000800, 0, None)
         u.AppendMenuW(hmenu, 0x00000000, _TRAY_CMD_QUIT, "退出程序")
         items[_TRAY_CMD_QUIT] = "退出程序"
@@ -3967,6 +3973,14 @@ class _Tray:
             # 直接播一条新样式的：样式是给人看的，不看见就等于没选。
             # 这里另起线程（_balloon_play_now 自己会），菜单消息线程不干重活。
             _balloon_play_now("播报样式")
+        elif cmd == _TRAY_CMD_HOLD:
+            # 勾选态就是当前值，点一下取反 —— 和页面那个开关写的是同一个键（notify.hold_on）。
+            new = not bool(_notify_cfg().get("hold_on", True))
+            _save_notify_cfg({"hold_on": new})
+            print("[ok] 托盘菜单：工作时不打扰 = %s" % ("开" if new else "关"))
+            _show_toast("工作时不打扰已%s" % ("开启" if new else "关闭"),
+                        ("锁屏、投影演示时自动让路；全屏看片/游戏照播。"
+                         if new else "任何时候都照播，包括锁屏和投影演示。"))
         elif cmd == _TRAY_CMD_QUIT:
             print("[ok] 托盘菜单：退出程序")
             _quit_app_now()
@@ -6495,6 +6509,7 @@ _TRAY_CMD_PLAY = 2
 _TRAY_CMD_QUIT = 9
 _TRAY_CMD_TOAST_BASE = 20          # 20+i 对应 TOAST_MIN_CHOICES[i]：20=5 分 … 23=60 分
 _TRAY_CMD_STYLE_BASE = 30          # 30+i 对应 BALLOON_STYLES[i]：30=自动 31=速递 32=聚光灯
+_TRAY_CMD_HOLD = 40                # 「工作时不打扰」开关（勾选=开）：2026-10-30 加的
 
 
 def _tray_toast_label(minutes):
@@ -7351,6 +7366,10 @@ NOTIFY_DEFAULTS = {
     # 必须在这儿挂一份：_save_notify_cfg 落盘时只写 NOTIFY_DEFAULTS 里有的键，
     # 没挂号的键存进去也会被抹掉。
     "toast_min": 10,
+    # 【2026-10-30】「工作时不打扰」总开关（见下面 _QUNS_HOLD 那段）。
+    # 默认开：锁屏 / 投影演示时自动让路。关掉就是「任何时候照播」——
+    # 这一条闸门以前没有任何开关，用户只能翻日志才发现气泡被系统状态静音了一小时。
+    "hold_on": True,
 }
 # 【2026-10-28 用户：「这个样式应该和控制台的颜色同步」】
 # 控制台的主题/主色原本只存在浏览器的 localStorage 里，桌面气泡读不到，于是页面切了暗色、
@@ -7476,19 +7495,36 @@ def _in_quiet_hours(ts=None):
     return now >= a or now < b if a > b else a <= now < b
 
 
-# ============ 「别在工作时弹」：全屏 / 演示 / 系统静默（2026-10-28） ============
+# ============ 「别在工作时弹」：锁屏 / 投影演示（2026-10-28 立，2026-10-30 收窄） ============
 # 用户这次的定位是「工作中，轻轻松松就把新闻看了」—— 那气泡就**不能**在开会投影、
-# 全屏打游戏/看片时冒出来（那会盖住画面、还会让全屏掉帧）。Windows 自己已经知道
-# 这些状态，别另发明判据：SHQueryUserNotificationState 就是系统给通知中心的那个答案。
+# 锁屏走开时冒出来。Windows 自己已经知道这些状态，别另发明判据：
+# SHQueryUserNotificationState 就是系统给通知中心的那个答案。
 #   1 NOT_PRESENT（锁屏/休眠） 2 BUSY（全屏程序/勿扰） 3 RUNNING_D3D_FULL_SCREEN
 #   4 PRESENTATION_MODE（投影/演示） 5 ACCEPTS 6 QUIET_TIME 7 APP（单应用全屏）
-# 其中 1 也一并算"别弹"：锁屏时弹了也看不见，等下一轮。
+# 【2026-10-30 用户：「热点新闻，怎么不自动播报了？」】原来 2/3/6 也在这里挡。本机实测：
+# 系统报一次 2（BUSY）就把自动播报连挡 8 轮 —— 10:21 到 11:01 **整整 56 分钟一声不响**，
+# 而「长时间全屏干活」正是这个程序的主用法；上一份日志里同样的跳过已经攒了 15 次。
+# 所以挡的范围按「弹了有没有用」重切一刀，只留两条：
+#   · 1 锁屏/休眠 —— 弹了没人看见；
+#   · 4 演示/投影 —— 弹了真会盖住画面，这是唯一会得罪人的。
+# 2/3（全屏程序、D3D 全屏游戏）和 6（系统静默时段）不再挡：气泡是**自绘**在右下角的
+# 一块 600×220，不抢焦点也不进系统通知中心，全屏看片时它冒出来并不影响画面（用户 2026-10-28
+# 原话是「轻轻松松就把新闻看了」，不是「别看」）。真嫌吵的人给一个开关：托盘「工作时不打扰」
+# / 控制台同名设置，键 = notify.hold_on。
 _QUNS_HOLD = {
     1: "锁屏 / 休眠中",
-    2: "系统认为你正忙（勿扰 / 全屏程序）",
-    3: "全屏游戏或视频",
     4: "演示 / 投影模式",
-    6: "系统静默时段",
+}
+# 状态码的完整对照表留着不删：挡不挡由 _QUNS_HOLD 说了算，但「为什么没播」要说得出是哪一种。
+_QUNS_LABEL = {
+    0: "取不到状态",
+    1: "NOT_PRESENT 锁屏/休眠",
+    2: "BUSY 勿扰/全屏程序",
+    3: "D3D 全屏游戏或视频",
+    4: "PRESENTATION 演示/投影",
+    5: "ACCEPTS 正常可弹",
+    6: "QUIET_TIME 系统静默时段",
+    7: "FULL_SCREEN_APP 单应用全屏",
 }
 
 
@@ -7517,9 +7553,55 @@ def _quns_state():
         return 0
 
 
+def _foreground_hint():
+    """一句「当时屏幕上是谁」：前台窗口标题 + 类名 + 尺寸，铺满整块屏的再标一下。
+    闸门只说「系统认为你正忙」是说不清楚的 —— 谁把它判成正忙、是不是一直是它，
+    得靠这一句现场线索。取不到就返回空串，**绝不影响播报**。"""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return "前台=无"
+        n = u.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(n + 1)
+        u.GetWindowTextW(hwnd, buf, n + 1)
+        cls = ctypes.create_unicode_buffer(64)
+        u.GetClassNameW(hwnd, cls, 64)
+        rc = wintypes.RECT()
+        u.GetWindowRect(hwnd, ctypes.byref(rc))
+        w = max(0, int(rc.right) - int(rc.left))
+        h = max(0, int(rc.bottom) - int(rc.top))
+        full = "·铺满屏" if (w >= u.GetSystemMetrics(0) and h >= u.GetSystemMetrics(1)) else ""
+        title = " ".join((buf.value or "").split())[:40] or "(无标题)"
+        return "前台=%s｜类=%s｜%dx%d%s" % (title, cls.value or "?", w, h, full)
+    except Exception:
+        return ""
+
+
 def _notify_hold_reason():
-    """现在不该自动弹气泡的原因（空串 = 可以弹）。手动「立即轮播」**不看**这个。"""
+    """现在不该自动弹气泡的原因（空串 = 可以弹）。手动「立即轮播」**不看**这个。
+    开关 = notify.hold_on（托盘「工作时不打扰」/ 控制台同名项），关掉就是一律照播。"""
+    if not _notify_cfg().get("hold_on", True):
+        return ""
     return _hold_reason_from_state(_quns_state())
+
+
+def _hold_note(reason=None):
+    """把「为什么这一轮没播」说全：原因 + 系统状态码 + 当时前台窗口是谁。
+    决定链（GET /api/notify 的 balloon 数组）和日志都吃这一句，用户不用翻文件就能看懂。"""
+    r = reason if reason is not None else _notify_hold_reason()
+    if not r:
+        return ""
+    st = _quns_state()
+    bits = ["系统状态 %d=%s" % (st, _QUNS_LABEL.get(st, "未知"))]
+    hint = _foreground_hint()
+    if hint:
+        bits.append(hint)
+    return "%s（%s）" % (r, "；".join(bits))
 
 
 def _digest_pool():
@@ -7605,7 +7687,7 @@ def _notify_digest(force=False):
     if not force:
         _hold = _notify_hold_reason()
         if _hold:
-            print("[ok] 今日 60 秒：%s，跳过（下一个时段/下一轮再说）" % _hold)
+            print("[ok] 今日 60 秒：%s，跳过（下一个时段/下一轮再说）" % _hold_note(_hold))
             return False
     if not force:
         # 刚弹过「更新提醒」/「大事提醒」就让一让，别连着炸两个气泡（同一块屏幕右下角）。
@@ -7756,13 +7838,16 @@ def _notify_news(items, force=False):
     # 手动那一轮不挡：深夜里主动双击托盘，就是要现在看。
     if not force and _in_quiet_hours(now):
         return
-    # 【2026-10-28 工作中别打断】全屏游戏/视频、投影演示、系统勿扰时这一轮自动提醒跳过。
+    # 【2026-10-28 工作中别打断 → 2026-10-30 收窄】现在只有**锁屏**（弹了没人看见）和
+    # **投影/演示**（真会盖住画面）挡这一轮；全屏程序、系统勿扰、静默时段都照播。
     # 跳过不重置 NEWS_LAST_TOAST（下一轮还是按原来的节流窗口走），也不用补弹：
-    # 用户退出全屏后，下一轮刷新自然会带着新条目再来。
+    # 下一轮刷新自然会带着新条目再来，条目不会因为让路而丢掉。
+    # 决定链里带上「系统状态码 + 当时前台窗口是谁」—— 只写一句「系统认为你正忙」，
+    # 用户下次还是不知道该找谁（2026-10-30 那次哑了 56 分钟就是这么查的）。
     if not force:
         _hold = _notify_hold_reason()
         if _hold:
-            _balloon_trace("跳过：%s（自动气泡不打扰，手动轮播不受影响）" % _hold)
+            _balloon_trace("跳过：%s｜自动气泡不打扰，手动轮播不受影响" % _hold_note(_hold))
             return
     NEWS_LAST_TOAST = now
     fresh = [it for it in items if it.get("id") in _cand_ids]
@@ -9192,9 +9277,9 @@ def _notify_major(items):
     # 大事本身不会因为晚上不弹就消失：早上解除免打扰后，它仍在页面热榜/头条里。
     if _in_quiet_hours(now):
         return
-    _hold = _notify_hold_reason()       # 全屏/演示/勿扰：大事也等一等，别盖住画面
+    _hold = _notify_hold_reason()       # 锁屏/演示：大事也等一等，别盖住画面、别弹给没人看
     if _hold:
-        print("[ok] 大事提醒：%s，跳过本轮" % _hold)
+        print("[ok] 大事提醒：跳过本轮 —— %s" % _hold_note(_hold))
         return
     _MAJOR_LAST_TOAST = now
     sample = fresh[:BALLOON_PLAY_COUNT]
@@ -9417,14 +9502,14 @@ def _warmup():
                                    and str(x.get("channel") or "").startswith("cn-intl")
                                    for x in _it):
                                 break
-                        # 工作时不打扰：夜间免打扰 / 全屏 / 演示 / 系统勿扰 → 这次不弹，
-                        # 交给下一轮刷新（新条目自然会再触发一次）。
+                        # 工作时不打扰（2026-10-30 收窄）：夜间免打扰 / 锁屏 / 投影演示 → 这次不弹，
+                        # 交给下一轮刷新（新条目自然会再触发一次）。全屏程序不再挡。
                         if _in_quiet_hours():
                             print("[ok] 启动气泡：夜间免打扰时段，跳过")
                             return
                         _hold = _notify_hold_reason()
                         if _hold:
-                            print("[ok] 启动气泡：%s，跳过" % _hold)
+                            print("[ok] 启动气泡：跳过 —— %s" % _hold_note(_hold))
                             return
                         try:
                             _all = [x for x in (list(PRELOAD.get("cn") or [])
@@ -10872,7 +10957,7 @@ async def api_notify_set(request: Request, payload: dict = None):
     cur = _notify_cfg()
     patch = {}
     body = payload or {}
-    for k in ("quiet_on", "digest_on"):
+    for k in ("quiet_on", "digest_on", "hold_on"):
         if k in body:
             patch[k] = bool(body[k])
     for k in ("quiet_start", "quiet_end"):

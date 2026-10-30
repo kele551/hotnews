@@ -37,7 +37,8 @@ WANT_FUNCS = ("_ref", "_rgb_of", "_hex_ref", "_hsl_ref", "_mix_ref",
               "_balloon_split_head", "_balloon_rects",
               "_ui_cfg", "_is_intl_item", "_balloon_head", "_balloon_entry",
               "_balloon_meta_line", "_balloon_time_line", "_balloon_img_local",
-              "_interest_class", "_interest_quota", "_hold_reason_from_state")
+              "_interest_class", "_interest_quota", "_hold_reason_from_state",
+              "_notify_hold_reason", "_hold_note", "_foreground_hint", "_quns_state")
 WANT_CONSTS = ("BALLOON_W", "BALLOON_H", "BALLOON_PAD_X",
                "BALLOON_APP_TOP", "BALLOON_APP_H",
                "BALLOON_TEXT_TOP", "BALLOON_TEXT_LINES", "BALLOON_LINE_H", "BALLOON_TEXT_BOTTOM",
@@ -53,8 +54,10 @@ WANT_CONSTS = ("BALLOON_W", "BALLOON_H", "BALLOON_PAD_X",
                "BALLOON_PER_ITEM_MS", "BALLOON_PLAY_COUNT",
                "BALLOON_HEADLINE_TAG",
                "BALLOON_CLS_QUOTA", "INTEREST_CLASSES", "INTEREST_HALF_LIFE_DAYS",
-               "INTEREST_MIN_EVIDENCE", "INTEREST_MAX_SHIFT", "_QUNS_HOLD",
-               "CONSOLE_TOKENS", "CONSOLE_ACCENTS", "UI_DEFAULTS")
+               "INTEREST_MIN_EVIDENCE", "INTEREST_MAX_SHIFT", "_QUNS_HOLD", "_QUNS_LABEL",
+               "CONSOLE_TOKENS", "CONSOLE_ACCENTS", "UI_DEFAULTS",
+               # NOTIFY_DEFAULTS 的字面量里引用了 DIGEST_TIMES_DEFAULT，摘它就得先摘被引用的那个
+               "DIGEST_TIMES_DEFAULT", "NOTIFY_DEFAULTS")
 
 # 控制台令牌名 → CONSOLE_TOKENS 的键（CSS 用连字符，Python 用下划线）
 COLOR_VARS = {"card": "card", "card-2": "card2", "line": "line", "line-2": "line2",
@@ -714,18 +717,43 @@ def main():
     check("瘦配额（表里没有国际/头条）不会 KeyError，也不凭空加栏目",
           set(floor_q) == {"热榜", "科技"}, str(floor_q))
 
-    # ══ 8. 自动投放：启动就播 + 全屏/演示/勿扰让路 ══
+    # ══ 8. 自动投放：启动就播 + 只让路给「弹了也没用」的状态（2026-10-30 收窄） ══
     print("── 8. 自动投放")
     HOLD = ns["_hold_reason_from_state"]
     check("锁屏 / 休眠 → 不弹（弹了也看不见）", "锁屏" in HOLD(1), HOLD(1))
-    check("系统勿扰 / 全屏程序 → 不弹", "勿扰" in HOLD(2), HOLD(2))
-    check("全屏游戏或视频 → 不弹", "全屏" in HOLD(3), HOLD(3))
-    check("演示 / 投影模式 → 不弹", "演示" in HOLD(4), HOLD(4))
-    check("系统静默时段 → 不弹", "静默" in HOLD(6), HOLD(6))
+    check("演示 / 投影模式 → 不弹（真会盖住画面）", "演示" in HOLD(4), HOLD(4))
+    # 【2026-10-30 用户：「怎么不自动播报了？」】系统报一次 BUSY 就把播报连挡 8 轮、
+    # 56 分钟一声不响，而长时间全屏干活正是这个程序的主用法 —— 这三种状态不再让路。
+    check("全屏程序 / 系统勿扰 → 照播（2026-10-30 从闸门里摘掉）",
+          HOLD(2) == "" and HOLD(3) == "" and HOLD(6) == "", "%r %r %r" % (HOLD(2), HOLD(3), HOLD(6)))
     check("正常 / 单应用全屏 / 取不到状态 → 照常弹",
           HOLD(5) == "" and HOLD(0) == "" and HOLD(7) == "" and HOLD(None) == "" and HOLD("abc") == "",
           "%r %r %r" % (HOLD(5), HOLD(0), HOLD(None)))
-    check("状态码是字符串也认（注册表/JSON 回读时常见）", HOLD("2") == HOLD(2), "")
+    check("状态码是字符串也认（注册表/JSON 回读时常见）", HOLD("1") == HOLD(1), "")
+    check("对照表还是全的（挡不挡看 _QUNS_HOLD，「为什么没播」要报得出状态名）",
+          set(ns["_QUNS_LABEL"]) >= {1, 2, 3, 4, 5, 6, 7}, str(sorted(ns["_QUNS_LABEL"])))
+    # 「工作时不打扰」开关：关掉就是一律照播；没在 NOTIFY_DEFAULTS 挂号会被落盘时抹掉。
+    check("hold_on 在 NOTIFY_DEFAULTS 挂号且默认开",
+          "hold_on" in ns["NOTIFY_DEFAULTS"] and ns["NOTIFY_DEFAULTS"]["hold_on"] is True,
+          str(ns["NOTIFY_DEFAULTS"].get("hold_on")))
+    _quns_real = ns["_quns_state"]
+    ns["_quns_state"] = lambda: 1                      # 桩：单测不去读本机 Windows 状态
+    ns["_foreground_hint"] = lambda: "前台=测试窗口｜类=Test｜1920x1080·铺满屏"
+    ns["_notify_cfg"] = lambda: {"hold_on": True}
+    check("闸门开着 + 锁屏 → 报出原因", "锁屏" in ns["_notify_hold_reason"](),
+          ns["_notify_hold_reason"]())
+    ns["_notify_cfg"] = lambda: {"hold_on": False}
+    check("开关一关 → 连锁屏也照播（用户想要的那条退路）",
+          ns["_notify_hold_reason"]() == "", ns["_notify_hold_reason"]())
+    ns["_notify_cfg"] = lambda: {}                     # 老配置没这个键：按 True 走，不能因为缺键静音
+    check("配置里缺 hold_on（老本机配置）→ 按默认开走，不静音",
+          "锁屏" in ns["_notify_hold_reason"](), ns["_notify_hold_reason"]())
+    ns["_notify_cfg"] = lambda: {"hold_on": True}
+    _note = ns["_hold_note"]()
+    check("「为什么没播」报得出现场：状态码 + 当时前台窗口是谁",
+          "系统状态 1" in _note and "前台=测试窗口" in _note, _note)
+    check("可以弹的时候不产生噪音（空原因 = 空串）", ns["_hold_note"]("") == "", repr(ns["_hold_note"]("")))
+    ns["_quns_state"] = _quns_real
 
     news_src = func_seg(server_src, "_notify_news")
     check("更新提醒：自动那一轮先问「现在能不能打扰」",
@@ -736,19 +764,37 @@ def main():
     check("手动轮播（force）不看免打扰（用户主动要看就给看）",
           "if not force:" in news_src[max(0, news_src.find("_notify_hold_reason()") - 200):
                                       news_src.find("_notify_hold_reason()")], "")
-    check("大事提醒同样让路（全屏/演示不盖画面）",
+    check("跳过那一轮把原因写进决定链（GET /api/notify 看得见，不用翻日志）",
+          '_balloon_trace("跳过：%s' in news_src and "_hold_note(_hold)" in news_src, "")
+    check("大事提醒同样让路（锁屏/演示才等）",
           "_notify_hold_reason()" in func_seg(server_src, "_notify_major"), "")
     check("今日 60 秒同样让路", "_notify_hold_reason()" in func_seg(server_src, "_notify_digest"), "")
 
     boot = segment(server_src, "def _boot_balloon")
     check("启动播报最长等 20 秒（原来 120 秒，开机两分钟什么都没有）",
           "range(20)" in boot and "range(120)" not in boot, "%d 字符" % len(boot))
-    check("启动播报也过夜间免打扰 / 全屏 / 演示两道闸",
+    check("启动播报也过夜间免打扰 / 锁屏 / 演示两道闸",
           "_in_quiet_hours()" in boot and "_notify_hold_reason()" in boot, "")
     check("启动播报和更新提醒用同一个挑选器（配额不分叉）",
           "_pick_balloon_items(" in boot, "")
     check("挑选器把配额过一遍兴趣表（默认原样）",
           "_interest_quota()" in func_seg(server_src, "_pick_balloon_items"), "")
+
+    # 开关得有两个看得见的手：托盘那一条 + 控制台同名项（用户 2026-10-30：「直接改」）
+    check("托盘菜单挂了「工作时不打扰」并带上当前勾选态",
+          "_TRAY_CMD_HOLD" in segment(server_src, "    def _build_menu(self):")
+          and "工作时不打扰" in segment(server_src, "    def _build_menu(self):"), "")
+    _rc = segment(server_src, "    def _run_cmd(self, cmd):")
+    check("托盘点它是取反 + 落盘 + 给一条回执气泡（不回执等于没改成）",
+          'not bool(_notify_cfg().get("hold_on"' in _rc
+          and '_save_notify_cfg({"hold_on": new})' in _rc and "_show_toast(" in _rc, "")
+    # func_seg 只认顶格 `def`，这个路由是 `async def`，所以自己框一段
+    _ai = server_src.find("async def api_notify_set")
+    check("POST /api/notify 认 hold_on（页面的开关和托盘写同一个键）",
+          _ai >= 0 and '"hold_on"' in server_src[_ai:_ai + 1500], "找不到 async def api_notify_set")
+    check("index.html 有第三个设置项 setHold 并回显/保存 hold_on",
+          'id="setHold"' in page_src and "j.hold_on" in page_src
+          and "saveNotify({hold_on:" in page_src, "")
 
     # 控制台也得上报"点开了哪一类"，否则开了网页的程序永远学不到兴趣
     check("index.html 点开卡片就上报栏目（/api/interest）",

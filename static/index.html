@@ -500,6 +500,12 @@
         <div class="txt"><b>夜间免打扰</b><span>22:30–07:30 不弹气泡，新闻仍在页面里</span></div>
         <span class="ctl"><input type="checkbox" id="setQuiet"></span>
       </label>
+      <!-- 2026-10-30 新增：这道闸门以前只写在代码里，用户看到的现象是「气泡一整天不响」。
+           现在收窄成只让路给「弹了也没人看见 / 真会盖住画面」的两种状态，并且给了开关。 -->
+      <label class="set">
+        <div class="txt"><b>工作时不打扰</b><span>锁屏、投影演示时不弹气泡；全屏看片、打游戏照播</span></div>
+        <span class="ctl"><input type="checkbox" id="setHold"></span>
+      </label>
     </div>
 
     <div class="card">
@@ -1456,9 +1462,10 @@ async function refreshNotify(){
   try{
     const r = await fetch("/api/notify", {headers: POST_HEADERS});
     const j = await r.json();
-    const a = $("setDigest"), b = $("setQuiet");
+    const a = $("setDigest"), b = $("setQuiet"), c = $("setHold");
     if(a) a.checked = !!j.digest_on;
     if(b) b.checked = !!j.quiet_on;
+    if(c) c.checked = !!j.hold_on;
     if(b) b.title = "免打扰时段 " + (j.quiet_start || "22:30") + "–" + (j.quiet_end || "07:30");
   }catch(e){}
 }
@@ -1468,16 +1475,18 @@ async function saveNotify(patch){
       headers: Object.assign({}, POST_HEADERS, {"Content-Type":"application/json"}),
       body: JSON.stringify(patch)});
     const j = await r.json();
-    const a = $("setDigest"), b = $("setQuiet");
+    const a = $("setDigest"), b = $("setQuiet"), c = $("setHold");
     if(a) a.checked = !!j.digest_on;
     if(b) b.checked = !!j.quiet_on;
+    if(c) c.checked = !!j.hold_on;
   }catch(e){}
 }
 document.addEventListener("DOMContentLoaded", () => {
   refreshNotify();
-  const a = $("setDigest"), b = $("setQuiet");
+  const a = $("setDigest"), b = $("setQuiet"), c = $("setHold");
   if(a) a.onchange = () => { a.disabled = true; saveNotify({digest_on: a.checked}).finally(()=>a.disabled=false); };
   if(b) b.onchange = () => { b.disabled = true; saveNotify({quiet_on: b.checked}).finally(()=>b.disabled=false); };
+  if(c) c.onchange = () => { c.disabled = true; saveNotify({hold_on: c.checked}).finally(()=>c.disabled=false); };
 });
 
 /* ================= 今日 60 秒（2026-10-25 新增） =================
