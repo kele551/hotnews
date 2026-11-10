@@ -42,20 +42,85 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 无窗口打包（--noconsole）时没有控制台可写：sys.stdout 可能是 None，
-# 也可能是被丢弃的无效流。打包态统一把标准输出接到 exe 同级的 hotnews.log，
-# 既不会因 print 崩溃，也留下排查线索。
+# 也可能是被丢弃的无效流。打包态统一把标准输出接到 exe 同级的 hotnews.log。
+# 【2026-11-10 修】原来只在**启动时**检查一次是否超过 1MB，之后整天运行都不再轮转
+# —— 实测日志一小时涨约 150KB，长期挂着会一直涨到下次重启。改成写入时检查大小，
+# 超过阈值当场轮转（只保留一份 .old）。
 LOG_PATH = os.path.join(BASE_DIR, "hotnews.log")
+LOG_MAX_BYTES = 1024 * 1024
+
+
+class _RotatingLog:
+    """给 sys.stdout / sys.stderr 用的线程安全日志流：超过 LOG_MAX_BYTES 就地轮转。
+
+    抓取、翻译、气泡都在各自线程里 print，所以 write 必须加锁；
+    否则轮转时可能有别的线程正往已关闭的文件里写。
+    """
+
+    def __init__(self, path, max_bytes=LOG_MAX_BYTES):
+        self.path = path
+        self.max_bytes = max_bytes
+        self.encoding = "utf-8"
+        self._lock = threading.Lock()
+        # 启动时先收一次：上次运行留下的大文件不要继续往上堆
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > max_bytes:
+                os.replace(path, path + ".old")
+        except Exception:
+            pass
+        self._fp = self._open()
+
+    def _open(self):
+        try:
+            return open(self.path, "a", encoding="utf-8", buffering=1)
+        except Exception:
+            return open(os.devnull, "w", encoding="utf-8")
+
+    def _rotate(self):
+        try:
+            self._fp.flush()
+            self._fp.close()
+            # os.replace 覆盖同名 .old，只留一份旧日志，不无限堆积
+            os.replace(self.path, self.path + ".old")
+        except Exception:
+            pass
+        self._fp = self._open()
+
+    def write(self, s):
+        if not s:
+            return 0
+        with self._lock:
+            try:
+                n = self._fp.write(s)
+                self._fp.flush()
+                if os.path.getsize(self.path) >= self.max_bytes:
+                    self._rotate()
+                return n
+            except Exception:
+                return 0
+
+    def flush(self):
+        with self._lock:
+            try:
+                self._fp.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        return False
+
+    def writable(self):
+        return True
+
+    def reconfigure(self, **kwargs):
+        return None
+
+    def fileno(self):
+        return self._fp.fileno()
+
+
 if getattr(sys, "frozen", False):
-    try:
-        # 超过 1MB 就滚动一次，避免长期运行把盘占满
-        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 1024 * 1024:
-            os.replace(LOG_PATH, LOG_PATH + ".old")
-    except Exception:
-        pass
-    try:
-        _LOG_FP = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
-    except Exception:
-        _LOG_FP = open(os.devnull, "w", encoding="utf-8")
+    _LOG_FP = _RotatingLog(LOG_PATH)
     sys.stdout = _LOG_FP
     sys.stderr = _LOG_FP
 
@@ -738,10 +803,13 @@ def _fetch(url, timeout=10, max_bytes=None, extra_headers=None):
             print(f"[warn] 连接池排队超时（非源站故障，第 {attempt + 1}/3 次尝试）: {url[:110]}")
         except Exception:
             out, transient = None, True
-        # 【2026-10-09 修 高-3】偶发抖动（超时/连接错误/5xx）给一次带退避的重试：
+        # 【2026-10-09 修 高-3】偶发抖动（超时/连接错误/5xx）给带退避的重试：
         # 以前源抓取、_article_meta、_measure_image 全是单次尝试，抖一下这轮就没了。
-        # 【修 中-6】池排队超时多给一次机会（共 3 次），它比网络抖动更容易靠等待恢复。
-        _tries = 2 if pool_wait else 1
+        # 【2026-11-10 修】原来普通瞬态只给 1 次重试（共 2 次尝试），池排队超时给 2 次。
+        # 运行日志里 8 次 mefcl ConnectError、9 次「RSS 抓取失败: leiphone.com/feed」，
+        # 而该源实测 0.6~1.1s 就稳定返回 200 —— 属于直连抖动，多一次退避能救回来。
+        # 现在统一给 3 次尝试；4xx 等非瞬态错误不在此列（transient 为 False 直接 break）。
+        _tries = 2
         if transient and attempt < _tries:
             time.sleep(RETRY_BACKOFF * (attempt + 1))
             continue
@@ -1270,7 +1338,90 @@ _SRC_HEALTH_LOCK = threading.Lock()
 # 热榜不是 RSS 源，走 _parse_hot 里的三个平台函数；这里给它们起稳定的伪源 id。
 HOT_SRC_LIST = (("hot-thepaper", "澎湃新闻热榜", "_hot_thepaper"),
                 ("hot-cdsb", "红星新闻热榜", "_hot_cdsb"),
-                ("hot-ifeng", "凤凰网热榜", "_hot_ifeng"))
+                ("hot-ifeng", "凤凰网热榜", "_hot_ifeng"),
+                # 【2026-11-10 扩容 3→6】借鉴 imsyy/DailyHotApi 多平台思路，
+                # 但全部直连官方接口（2026-11-10 17:20 逐一实测 200），不接第三方聚合 API。
+                ("hot-bili", "哔哩哔哩热榜", "_hot_bilibili"),
+                ("hot-toutiao", "今日头条热榜", "_hot_toutiao"),
+                ("hot-baidu", "百度热搜", "_hot_baidu"))
+
+
+# ============ 源级自适应抓取调度（2026-11-10 借鉴 newsnext/newsnow） ============
+# 为什么做：refresh_loop 固定 300s 全量重建 31 个源，而 _SRC_HEALTH.failStreak 只是
+#   纯观测、不参与调度 —— 长期不更新的源和连挂的源每轮照样发请求，白耗带宽还容易被限流。
+#   newsnow 的做法是按源更新频率自适应抓取间隔，这里按用户「常看常新」口径收紧：
+#     · 有新增的源永远保持 5 分钟（页面及时性一点不让）；
+#     · 连续 3/6/10 轮无新增才逐级降到 10/15/30 分钟，30 分钟封顶；
+#     · 连续失败的源指数退避 10/20/30 分钟，成功即归零；
+#     · 任何一轮抓到新条目，立刻回到 5 分钟。
+# 关键：跳过本轮时**复用该源上一轮的解析结果**（浅拷贝），页面不会出现「刷新后整栏
+#   空一帧」；被降频的前提本来就是「连续多轮没有新内容」，复用不损失及时性。
+BASE_FETCH_SEC = 300
+_SLOW_STEPS = (300, 600, 900, 1800)      # 连续无新增 0/3/6/10 轮对应间隔
+_SLOW_AT = (3, 6, 10)
+_FAIL_BACKOFF = (600, 1200, 1800)        # 连续失败 1/2/3+ 轮（不用 300：失败别马上重来）
+_SRC_SCHED = {}                          # sid -> 调度状态 + 上轮结果缓存
+_SRC_SCHED_LOCK = threading.Lock()
+
+
+def _src_due(sid, force=False):
+    """本轮是否真发请求。首次一律抓；force 留给以后接「强制刷新」按钮。"""
+    if force:
+        return True
+    now = time.time()
+    with _SRC_SCHED_LOCK:
+        e = _SRC_SCHED.get(sid)
+        if not e or not e.get("lastTs"):
+            return True
+        return now - e["lastTs"] >= int(e.get("interval") or BASE_FETCH_SEC)
+
+
+def _src_cached(sid):
+    """取该源上一轮的条目（浅拷贝，防止后续补图/打分 in-place 改回缓存）。"""
+    with _SRC_SCHED_LOCK:
+        e = _SRC_SCHED.get(sid)
+        return [dict(x) for x in (e.get("items") or [])] if e else []
+
+
+def _src_settle(sid, items, ok):
+    """一轮真实抓取结束后更新调度状态。纯旁路，绝不抛异常影响主链路。"""
+    try:
+        now = time.time()
+        titles = frozenset((x.get("title") or "") for x in (items or []))
+        with _SRC_SCHED_LOCK:
+            e = _SRC_SCHED.setdefault(sid, {
+                "lastTs": 0, "interval": BASE_FETCH_SEC, "noChange": 0,
+                "failStreak": 0, "items": [], "lastTitles": frozenset()})
+            prev = e.get("lastTitles") or frozenset()
+            e["lastTs"] = now
+            if not ok:
+                e["failStreak"] = int(e.get("failStreak") or 0) + 1
+                k = min(e["failStreak"], len(_FAIL_BACKOFF)) - 1
+                e["interval"] = _FAIL_BACKOFF[max(0, k)]
+                return
+            e["failStreak"] = 0
+            e["items"] = [dict(x) for x in (items or [])][:60]
+            # 「有没有新标题」而不是「集合是否完全相同」：旧条目滚出列表也算源在更新
+            new_titles = titles - prev
+            e["noChange"] = 0 if new_titles else int(e.get("noChange") or 0) + 1
+            n = e["noChange"]
+            step = 0 if n < _SLOW_AT[0] else (1 if n < _SLOW_AT[1]
+                                              else (2 if n < _SLOW_AT[2] else 3))
+            e["interval"] = _SLOW_STEPS[step]
+            e["lastTitles"] = titles
+    except Exception:
+        pass
+
+
+def _src_sched_snapshot():
+    """只读快照，供 /api/sources 展示与实测脚本核对。"""
+    with _SRC_SCHED_LOCK:
+        return {k: {"interval": int(v.get("interval") or BASE_FETCH_SEC),
+                    "noChange": int(v.get("noChange") or 0),
+                    "failStreak": int(v.get("failStreak") or 0),
+                    "lastTs": int(v.get("lastTs") or 0),
+                    "cached": len(v.get("items") or [])}
+                for k, v in _SRC_SCHED.items()}
 
 
 def _note_src_health(src, ok, count=0, error=""):
@@ -1336,6 +1487,9 @@ def _parse_one(src):
     `_collect` 用 `ex.map(_parse_one, ...)` 迭代结果，任何一个源抛异常都会中断整栏。
     现在这里兜一层：**某个源坏了只丢它自己**，日志写清是哪个源、什么异常。
     """
+    _sid = src.get("id") or src.get("url") or "?"
+    if not _src_due(_sid):
+        return _src_cached(_sid)
     try:
         _items = _parse_one_raw(src)
     except Exception as ex:
@@ -1343,6 +1497,7 @@ def _parse_one(src):
               f"{type(ex).__name__}: {ex}")
         # 【2026-10-24】健康度：这个源本轮失败（连续失败次数 +1，右栏会标红）
         _note_src_health(src, False, 0, f"{type(ex).__name__}: {ex}")
+        _src_settle(_sid, [], False)
         return []
     # 【2026-10-09 用户要求「国际，娱乐栏目还是有国内新闻，你怎么不归纳到国内版里」】
     # 国际频道的娱乐/文化条目里，凡属**国内题材**（上海时装周、毛泽东故居、中国国庆…）
@@ -1356,6 +1511,7 @@ def _parse_one(src):
         _items = _keep
     # 【2026-10-24】健康度：这个源本轮抓到了多少条（0 条会在右栏标成「降级」，可能改版）
     _note_src_health(src, True, len(_items))
+    _src_settle(_sid, _items, True)
     return _items
 
 
@@ -1834,6 +1990,206 @@ def _hot_ifeng():
     return out
 
 
+# ============ 热榜扩容（2026-11-10 借鉴 imsyy/DailyHotApi 的多平台思路） ============
+# 【为什么选这三家】2026-11-10 17:20 实测直连可用性：B站热门 JSON、今日头条热榜 JSON、
+#   百度热搜 SSR 内嵌 JSON 都 **无需登录/签名** 一次拿到；微博 /ajax/side/hotSearch 403、
+#   知乎 hot-lists 401（要 cookie/签名），不引入。与已有澎湃/红星/凤凰合起来 6 家，
+#   「全网热榜 ×N」(cross_hot) 的统计才有意义。
+# 【合规】百度/头条属于综合时政热搜，与澎湃/凤凰同属正规持牌媒体榜单，仍按站方返回
+#   原样收录；B站是垂类视频热榜。三条都过 _hot_title_ok 过滤敏感时政词。
+# 【为什么不用热榜绝对值混排】与 _parse_hot 里已验证的结论一致：各家口径不同
+#   （B站播放数 / 头条 HotValue / 百度 hotScore），统一走平台内百分位。
+
+
+def _hot_title_ok(title):
+    """标题合规过滤：综合时政热搜里的敏感人物/议题不进热榜池。
+    只拦标题明显命中的（与归档/搜索链路的 data/keywords.txt 无关，刻意独立，
+    避免热榜被历史关键词误伤）。纯旁路，绝不抛异常。"""
+    try:
+        if not title:
+            return False
+        # 命中即弃：这类条目即便抓到也不适合在桌面轮播
+        _bad = ("习近平", "李克强", "中南海", "政治局", "中央军委", "白皮书",
+                "六四", "法轮功", "台独", "港独", "藏独", "疆独", "政变", "颜色革命",
+                "领导人", "总书记", "国家主席", "国务院总理", "台湾代表处", "台湾问题",
+                "武统", "独立公投", "修宪")
+        for w in _bad:
+            if w in title:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _hot_bilibili():
+    """B站热门榜：官方接口 api.bilibili.com/x/web-interface/popular。
+    每条带 pubdate（秒级时间戳）、pic、bvid；stat.view 可当 heat 展示。
+    【时效】只留 24h 内发布的，B站热门榜整体偏娱乐/垂类，旧稿容易混。
+    【2026-11-10 实测】不带 Referer 会被风控软拦截（code=0 但 data 为空，
+    或直接 code=-352 风控页），必须带 www.bilibili.com 的 Referer。"""
+    raw = _fetch("https://api.bilibili.com/x/web-interface/popular?ps=20&pn=1",
+                 timeout=10,
+                 extra_headers={"Referer": "https://www.bilibili.com/",
+                                "Origin": "https://www.bilibili.com"})
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] B站热门抓取失败")
+        return []
+    try:
+        d = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception as ex:
+        print(f"[warn] B站热门 JSON 解析失败: {type(ex).__name__}")
+        return []
+    # 【2026-11-10 修】原写法 `d.get("code") or -1` 有个 Python 坑：code==0（成功）
+    # 是假值，`0 or -1` 求值为 -1，把成功当失败——实测每次都打出 "code=0" 然后返回空。
+    if d.get("code") != 0:
+        print(f"[warn] B站热门返回 code={d.get('code')} message={d.get('message')}")
+        return []
+    # 【2026-11-10 修】不带 Referer 时 B站偶尔仍回 code=0 但 data 为空（风控软拦截），
+    # 与 code!=0 区分开，别把「风控空数据」当成「解析成功 0 条」——那样调度层会
+    # 误记「抓通但无新增」，触发降频。
+    if not (d.get("data") or {}).get("list"):
+        print("[warn] B站热门返回空列表（疑似风控软拦截）")
+        return []
+    cutoff = datetime.now(CST).timestamp() - CLS_MAX_AGE_HOURS.get("热榜", 24) * 3600
+    out = []
+    for it in ((d.get("data") or {}).get("list") or [])[:30]:
+        try:
+            title = _clean(str(it.get("title") or ""))
+            bvid = (it.get("bvid") or "").strip()
+            if not title or not bvid or not _hot_title_ok(title):
+                continue
+            pub = int(it.get("pubdate") or 0)
+            if pub and pub < cutoff:
+                continue
+            stat = it.get("stat") or {}
+            try:
+                heat = int(stat.get("view") or 0)
+            except Exception:
+                heat = 0
+            out.append({
+                "id": hashlib.md5(("hot-bili-" + bvid).encode("utf-8")).hexdigest()[:12],
+                "region": "hot", "channel": "bili-hot", "label": "哔哩哔哩",
+                "cls": "热榜", "title": title,
+                "desc": _clean(str(it.get("desc") or ""))[:160],
+                "link": "https://www.bilibili.com/video/" + bvid,
+                "image": (it.get("pic") or "").replace("http://", "https://"),
+                "published": pub, "heat": heat, "rank": len(out) + 1,
+                "translated": False,
+            })
+        except Exception:
+            continue
+    print(f"[ok] hot/哔哩哔哩: {len(out)} 条")
+    return out
+
+
+def _hot_toutiao():
+    """今日头条热榜：官方接口 toutiao.com/hot-event/hot-board/。
+    字段 Title/Url/HotValue/ClusterIdStr/Image.url（2026-11-10 实测）。"""
+    raw = _fetch("https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+                 timeout=10)
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 今日头条热榜抓取失败")
+        return []
+    try:
+        d = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception as ex:
+        print(f"[warn] 今日头条热榜 JSON 解析失败: {type(ex).__name__}")
+        return []
+    out = []
+    for it in (d.get("data") or [])[:50]:
+        try:
+            if not isinstance(it, dict):
+                continue
+            title = _clean(str(it.get("Title") or ""))
+            url = (it.get("Url") or "").strip()
+            cid = (it.get("ClusterIdStr") or it.get("ClusterId") or "")
+            if not title or not url or not _hot_title_ok(title):
+                continue
+            try:
+                heat = int(it.get("HotValue") or 0)
+            except Exception:
+                heat = 0
+            img = ""
+            _im = it.get("Image")
+            if isinstance(_im, dict):
+                img = (_im.get("url") or "").strip()
+            out.append({
+                "id": hashlib.md5(("hot-tt-" + str(cid)).encode("utf-8")).hexdigest()[:12],
+                "region": "hot", "channel": "toutiao-hot", "label": "今日头条",
+                "cls": "热榜", "title": title, "desc": "",
+                "link": url, "image": img,
+                # 【2026-11-10 修】榜单接口不给发布时间；链接是 trending 聚合页
+                # 而非文章页，_fill_missing_images 补不到时间，published=0 会被
+                # _select_fresh 整条丢掉（实测 49 条一条不剩）。这里记的是
+                # **入榜时刻**：每轮抓的都是当前实时榜，不存在旧闻，也不冒充
+                # 文章的真实发布时间；语义与新闻源的 published 不同，见
+                # BOARD_TIME_CHANNELS 的注释。
+                "published": int(time.time()),
+                "heat": heat, "rank": len(out) + 1, "translated": False,
+            })
+        except Exception:
+            continue
+    print(f"[ok] hot/今日头条: {len(out)} 条")
+    return out
+
+
+def _hot_baidu():
+    """百度热搜：top.baidu.com/board?tab=realtime，SSR 直出 <!--s-data:{JSON}-->。
+    字段 word/url/hotScore/img/desc（2026-11-10 实测）。isTop 的置顶卡跳过。"""
+    raw = _fetch("https://top.baidu.com/board?tab=realtime", timeout=10)
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 百度热搜抓取失败")
+        return []
+    page = raw.decode("utf-8", "ignore")
+    m = re.search(r"<!--s-data:(.*?)-->", page, re.S)
+    if not m:
+        print("[warn] 百度热搜：未找到 s-data 内嵌 JSON（站方改版？）")
+        return []
+    try:
+        o = json.loads(html.unescape(m.group(1)))
+    except Exception as ex:
+        print(f"[warn] 百度热搜 s-data 解析失败: {type(ex).__name__}")
+        return []
+    out, seen = [], set()
+    for card in ((o.get("data") or {}).get("cards") or []):
+        for it in (card.get("content") or [])[:40]:
+            try:
+                if not isinstance(it, dict) or it.get("isTop"):
+                    continue
+                title = _clean(str(it.get("word") or it.get("query") or ""))
+                url = (it.get("rawUrl") or it.get("url") or it.get("appUrl") or "").strip()
+                if not title or not url or url in seen or not _hot_title_ok(title):
+                    continue
+                seen.add(url)
+                try:
+                    heat = int(float(it.get("hotScore") or 0))
+                except Exception:
+                    heat = 0
+                out.append({
+                    "id": hashlib.md5(("hot-bd-" + title).encode("utf-8")).hexdigest()[:12],
+                    "region": "hot", "channel": "baidu-hot", "label": "百度热搜",
+                    "cls": "热榜", "title": title,
+                    "desc": _clean(str(it.get("desc") or ""))[:160],
+                    "link": url, "image": (it.get("img") or "").strip(),
+                    # 同 _hot_toutiao：实时榜单无发布时间，以「入榜时刻」计时，
+                    # 避免 published=0 被 _select_fresh 整批丢掉。
+                    "published": int(time.time()), "heat": heat,
+                    "rank": len(out) + 1, "translated": False,
+                })
+            except Exception:
+                continue
+        if len(out) >= 30:
+            break
+    print(f"[ok] hot/百度热搜: {len(out)} 条")
+    return out
+
+
 def _hot_source_of(label):
     """热榜条目的「来源出处」文案（2026-10-09 用户点名：「热榜必须有来源出处」）。
 
@@ -1852,7 +2208,7 @@ def _hot_source_of(label):
 
 
 def _parse_hot():
-    """实时热榜：聚合 {澎湃新闻, 红星新闻, 凤凰网} 三家（用户指定）。
+    """实时热榜：聚合 6 家（澎湃/红星/凤凰 + 2026-11-10 新增 哔哩哔哩/今日头条/百度热搜）。
     每条带平台标签（label），按「平台内归一化热度」跨平台混合排序。任一平台失败不影响其它。"""
     parts = []
     # 【2026-10-24 UI 整改】顺手把每个热榜平台的健康度记一笔（纯观测，不影响取数）。
@@ -1860,15 +2216,20 @@ def _parse_hot():
         fn = globals().get(fn_name)
         if fn is None:
             continue
+        if not _src_due(sid):
+            parts.extend(_src_cached(sid))
+            continue
         try:
             _got = fn() or []
         except Exception as ex:
             print(f"[warn] 热榜子源异常: {type(ex).__name__}")
             _note_src_health({"id": sid, "label": label, "region": "hot", "cls": "热榜"},
                              False, 0, type(ex).__name__)
+            _src_settle(sid, [], False)
             continue
         _note_src_health({"id": sid, "label": label, "region": "hot", "cls": "热榜"},
                          True, len(_got))
+        _src_settle(sid, _got, True)
         parts.extend(_got)
     print(f"[ok] hot: 多平台聚合共 {len(parts)} 条")
     if not parts:
@@ -1903,63 +2264,78 @@ def _parse_hot():
         if not it.get("source"):
             it["source"] = _hot_source_of(it.get("label"))
     return parts
+def _mefcl_get(url, cookie=None, tries=3):
+    """抓 mefcl 页面：连接抖动带退避重试，返回 (原始字节 或 None, 失败原因)。
+
+    【2026-11-10 修】_parse_mefcl 原来用裸 httpx.Client 单次请求，完全绕过 _fetch
+    的重试机制，日志里因此留下 8 次 ConnectError「回退上次结果」。这里补齐重试。
+    """
+    hdrs = {"User-Agent": UA}
+    if cookie:
+        hdrs["Cookie"] = "ge_js_validator_63=" + cookie
+    why = ""
+    for i in range(tries):
+        try:
+            with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
+                              headers=hdrs) as c:
+                r = c.get(url)
+            if r.status_code == 200:
+                return r.content, ""
+            why = "HTTP%d" % r.status_code
+        except Exception as ex:
+            why = type(ex).__name__
+        if i + 1 < tries:
+            time.sleep(RETRY_BACKOFF * (i + 1))
+    return None, why
+
+
 def _parse_mefcl(src):
     """mefcl.com（用户投稿站点）：站方用 ge_js_validator 的 JS cookie 校验来访者身份。
 
     访问流程（已实测，按站方校验流程走）：
-      1. 先抓首页 → 若拿到 278B 的校验页，正则取到站方动态生成的合法 cookie 值
+      1. 抓首页 → 若拿到约 278B 的校验页，正则取到站方动态生成的合法 cookie 值
          （形如 1791287062@63@<32位hex>，max-age=1800，30 分钟内有效）；
-      2. 带合法 Cookie: ge_js_validator_63=<值> 重新请求首页 → 返回 102KB 真内容；
+      2. 带合法 Cookie: ge_js_validator_63=<值> 重新请求首页 → 返回约 109KB 真内容；
       3. 解析 <article class="excerpt ..."> 块：标题取 <h2><a> 文本，链接取 <a href>，
          题图取 <img data-src>（src 只是占位 thumbnail.png），摘要取 <p class="note">。
 
-    /feed/ 仍返回 403，故改抓首页 HTML。解析失败 / 拿不到内容时返回 []，不影响其它源。"""
-    global _MEFCL_LAST          # 2026-10-26 修: 下面要写这个模块级台账, 少了 global
-    # 就会让 :1894 :1906 :1917 :1920 :1926 五条「回退上次结果」全抛 UnboundLocalError
-    import time as _t
-    now = _t.time()
-    # 先直接抓首页：站方若已不再返回校验页，正文（含 article.excerpt）直接返回，
-    # 这时无需 cookie，直接解析即可——否则会误判「没有校验字段」而整源消失。
-    try:
-        with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
-                          headers={"User-Agent": UA}) as c:
-            r0 = c.get(src["url"])
-        raw0 = r0.content if r0.status_code == 200 else b""
-    except Exception as ex:
-        print(f"[warn] mefcl 首页抓取异常: {type(ex).__name__}（回退上次结果）")
+    /feed/ 仍返回 403，故改抓首页 HTML。抓取失败时回退上次成功结果，不影响其它源。
+    """
+    global _MEFCL_LAST
+    now = time.time()
+    raw0, why = _mefcl_get(src["url"])
+    if raw0 is None:
+        print(f"[warn] mefcl 首页抓取失败（{why}，已重试 3 次；回退上次结果 {len(_MEFCL_LAST)} 条）")
         return _MEFCL_LAST
     html0 = raw0.decode("utf-8", "ignore")
     if "excerpt" in html0:
-        # 正常返回正文，直接解析
+        # 站方若已不再返回校验页，正文直接解析，无需 cookie
         html = html0
     else:
-        # 拿到站方校验页 → 取合法 cookie 后重新请求（按站方校验流程访问）
-        cookie = _MEFCL_COOKIE.get("value")
-        if not cookie or (now - _MEFCL_COOKIE.get("ts", 0)) > 1500:
-            m = re.search(r'ge_js_validator_63=([^";\s]+)', html0)
+        # 【2026-11-10 修】原来带 cookie 仍拿到校验页时，只把 ts 清零就回退旧数据，
+        # 要等下一轮（cookie 缓存 1500 秒）才重新取 —— 日志里反复出现
+        # 「cookie 失效需重试」并连续播旧数据。现在同一轮立刻换一个新 cookie 再试一次。
+        html = ""
+        for attempt in (0, 1):
+            page = html0 if attempt == 0 else (html or html0)
+            m = re.search(r'ge_js_validator_63=([^";\s]+)', page)
             if not m:
                 print("[warn] mefcl 无文章块也无校验 cookie 字段，可能被改版（回退上次结果）")
                 return _MEFCL_LAST
             cookie = m.group(1)
             _MEFCL_COOKIE["value"] = cookie
             _MEFCL_COOKIE["ts"] = now
-        try:
-            with httpx.Client(follow_redirects=True, timeout=10, trust_env=False,
-                              headers={"User-Agent": UA, "Cookie": "ge_js_validator_63=" + cookie}) as c:
-                r = c.get(src["url"])
-            raw = r.content if r.status_code == 200 else None
-        except Exception as ex:
-            print(f"[warn] mefcl 抓取异常: {type(ex).__name__}（回退上次结果）")
-            return _MEFCL_LAST
-        if not raw:
-            print("[warn] mefcl 抓取失败（可能未通过站方校验，回退上次结果）")
-            return _MEFCL_LAST
-        html = raw.decode("utf-8", "ignore")
-        # 仍是校验页（有 cookie 字段但无文章块）→ cookie 失效，下次重取
-        if "ge_js_validator" in html and "excerpt" not in html:
+            raw, why = _mefcl_get(src["url"], cookie=cookie)
+            if raw is None:
+                print(f"[warn] mefcl 带 cookie 抓取失败（{why}；回退上次结果）")
+                return _MEFCL_LAST
+            html = raw.decode("utf-8", "ignore")
+            if "excerpt" in html:
+                break
             _MEFCL_COOKIE["ts"] = 0
-            print("[warn] mefcl 仍返回校验页，cookie 失效需重试（回退上次结果）")
-            return _MEFCL_LAST
+            if attempt == 1:
+                print("[warn] mefcl 换 cookie 重试后仍返回校验页（回退上次结果）")
+                return _MEFCL_LAST
     items = []
     # 【2026-10-26 修】原来写 `MAX_AGE_HOURS.get("cn", 72)` = 24 小时，把「软件」栏目
     # 本该按 CLS_MAX_AGE_HOURS["软件"]=120 小时的窗口砍到一天；站方又只给日期(按当天 00:00 计)，
@@ -2190,6 +2566,14 @@ MIN_IMG_EXEMPT_CHANNELS = {"cn-mefcl"}
 # 得不偿失，用户 2026-10-07 决定移除。机制保留，以后有需要再往里加。
 TIME_FIX_CHANNELS = set()
 
+# 【2026-11-10 新增】「榜单型接口」源：官方只给实时榜单，不给发布时间，
+# 且条目的 link 是榜单聚合页 / 搜索页（不是文章页），_fill_missing_images
+# 去补时间一定补不到，published 会一直是 0；而 _select_fresh 对热榜严格
+# 要求 24h 内的真实时间，于是这两家会被整批丢掉（实测 49+39 条全灭，
+# 页面只剩 4 家）。这两家在解析器里以「入榜时刻」计时，见下方注释；
+# 这里登记白名单，保证补图那一步不拿文章页的图/时间去覆盖官方榜单数据。
+BOARD_TIME_CHANNELS = {"toutiao-hot", "baidu-hot"}
+
 
 def _day_start_cutoff():
     """今天 00:00（东八区）的时间戳。"""
@@ -2227,7 +2611,15 @@ def _select_fresh(items, region):
 
     kept = [it for it in items if (it.get("published") or 0) >= cutoff(it)]
     dropped = len(items) - len(kept)
-    kept.sort(key=lambda x: x.get("published") or 0, reverse=True)
+    # 【2026-11-10 修】热榜要按 _parse_hot 算好的 score（平台内百分位）跨平台混排，
+    # 不能按 published 重排：新增的两家「榜单型接口」用入榜时刻计时（=当前时刻），
+    # 时间上必然比所有真实新闻都新，一按时间排就会把 /api/news 的前 48 条名额
+    # 全占满（实测只剩头条+百度 2 家，其余 4 家被挤出首屏）。按 score 排则
+    # 各平台头部交错出现，符合「多平台聚合、信源分散」的既定设计。
+    if region == "hot":
+        kept.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    else:
+        kept.sort(key=lambda x: x.get("published") or 0, reverse=True)
     # 各栏目的条数与来源数，方便一眼看出哪个栏目被饿死了
     _stat = {}
     for it in kept:
@@ -3294,7 +3686,11 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14, force_all=Fals
         # **不要用文章页的图覆盖已有的图** —— 网易号文章页的 og:image 是站方
         # 自己的「下载App」横幅（common_nav/topapp.jpg，150x178，每篇都一样），
         # 会把首页那张改写放大得到的 660x440 好图顶掉。
-        _time_only = it.get("channel") in TIME_FIX_CHANNELS and it.get("image")
+        # 【2026-11-10 修】榜单型源自带官方榜单图，其 link 是聚合页/搜索页，
+        # 抓回来的 og:image 常是站方横幅，不能拿来覆盖官方图。
+        _time_only = ((it.get("channel") in TIME_FIX_CHANNELS
+                       or it.get("channel") in BOARD_TIME_CHANNELS)
+                      and it.get("image"))
         if img and img != it.get("image") and not _time_only:
             it["image"] = img
             filled += 1
@@ -3302,7 +3698,10 @@ def _fill_missing_images(items, region, max_fetch=24, workers=14, force_all=Fals
         #   · 没有时间（红星首页那批没有尾巴的锚）→ 补上
         #   · 热榜条目 → 一律以文章页为准（实测红星首页尾巴会把 10-05 写成 10-06，
         #     不覆盖的话旧闻还是会漏进「只留当天」的列表）
-        if ts:
+        # 【2026-11-10 修】榜单型源的 published 是「入榜时刻」，聚合页里
+        # 偶尔能解析到某个无关日期（搜索结果页里的旧文章日期等），拿它覆盖
+        # 会把刚上的实时榜条目变成旧闻、再被时效收口丢掉，所以一律不覆盖。
+        if ts and it.get("channel") not in BOARD_TIME_CHANNELS:
             old = it.get("published") or 0
             if not old or it.get("cls") == "热榜":
                 if old != ts:
@@ -3397,6 +3796,8 @@ def _collect(region):
         PRELOAD_ALL["hot"] = list(dom)
         _note_item_hosts(dom)     # 【2026-10-09 修 高-1】发布前登记图片域名（/img 白名单）
         _hist_record("hot", dom)  # 【2026-10-25 归档】见 _hist_record
+        # 【2026-11-10 新增】热榜快照落库 + 补 streak/prev_rank（见 _hot_snap_record）
+        _hot_snap_record(dom)
         return _select_fresh(dom, "hot")
     out = []
     with ThreadPoolExecutor(max_workers=16) as ex:
@@ -9628,6 +10029,8 @@ def _warmup():
         # 共用同一把「正在抓取」的闸，保证同一 region 同一时刻只有一轮。
         # 已被占着就跳过本轮（下一轮 5 分钟后再来），绝不并发跑两轮。
         while True:
+            # 【2026-11-10 借鉴 newsnext/newsnow】轮次仍是 5 分钟，但**每个源自己**
+            # 按更新频率 / 失败退避决定这一轮要不要真发请求（见 _src_due / _src_settle）。
             time.sleep(300)          # 5 分钟一轮
             # 【2026-10-28 新增】开源热榜跟着每一轮敲门，但它自己有 6 小时的闸
             # （OSS_TTL）与失败节流（OSS_FAIL_TTL），所以绝大多数轮次这里直接跳过、
@@ -9823,6 +10226,159 @@ _HIST_UPSERT = (
 
 # 查询时一次最多取回这么多行（搜索与趋势各自用各自的 limit，都夹在 HIST_SCAN_MAX 以内）
 HIST_SCAN_MAX = 2000
+
+
+# ============ 热榜快照落库（2026-11-10 借鉴 HelTi/daily-hot-api） ============
+# 【为什么做】热榜 rank/heat 一直是"这一轮"的瞬时值，跨轮就丢：
+#   「连着上榜一整天的事」和「刚冒头 5 分钟的事」对气泡投放完全不是一回事。
+#   每轮 _collect("hot") 后把快照落进同目录 hot_snapshot.db，两条用途：
+#     ① 给热榜条目补 `streak`（连续上榜轮数）与 `prev_rank`（上轮名次），
+#        前端/气泡可以拿它标「连续上榜 N 轮」「↑/↓ N 名」；
+#     ② 供以后做"上榜时长榜"之类的查询（先只读接口，不铺 UI）。
+# 【硬约束】与 news 归档同款：标准库 sqlite3、只写本机、绝不拖垮抓取、
+#   30 天清理、行数硬顶（每轮 6 家 × 30 条 ≈ 180 行，30 天约 3 万行，可控）。
+_HOT_SNAP_PATH = os.path.join(_HIST_DIR, "hot_snapshot.db")
+_HOT_SNAP_KEEP_DAYS = 30
+_HOT_SNAP_MAX_ROWS = 120000
+_HOT_SNAP_LOCK = threading.Lock()
+_HOT_SNAP_CONN = None
+_HOT_SNAP_PRUNE_UNTIL = 0.0
+
+_HOT_SNAP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS snap (
+  key    TEXT,          -- 平台 + 标题指纹
+  label  TEXT,          -- 平台名（哔哩哔哩 / 百度热搜 / 澎湃新闻…）
+  title  TEXT,
+  link   TEXT,
+  heat   INTEGER,
+  rank   INTEGER,
+  ts     INTEGER,
+  PRIMARY KEY (key, ts)
+);
+CREATE INDEX IF NOT EXISTS ix_snap_key ON snap(key, ts);
+CREATE INDEX IF NOT EXISTS ix_snap_ts  ON snap(ts);
+"""
+
+
+def _hot_snap_conn():
+    global _HOT_SNAP_CONN
+    if _HOT_SNAP_CONN is not None:
+        return _HOT_SNAP_CONN
+    try:
+        os.makedirs(_HIST_DIR, exist_ok=True)
+        c = sqlite3.connect(_HOT_SNAP_PATH, check_same_thread=False)
+        c.execute("PRAGMA busy_timeout=1500")
+        c.executescript(_HOT_SNAP_SCHEMA)
+        c.commit()
+        _HOT_SNAP_CONN = c
+        return c
+    except Exception as ex:
+        _HOT_SNAP_CONN = None
+        print(f"[warn] 热榜快照库打不开（不影响热榜主链路）: {type(ex).__name__}")
+        return None
+
+
+def _hot_snap_key(label, title):
+    """跨轮同一条的指纹：平台 + 归一化标题。标题微调（站方改字）算新条，可接受。"""
+    base = re.sub(r"\s+", "", (title or "")).lower()
+    return ((label or "") + "|" + hashlib.md5(base.encode("utf-8")).hexdigest()[:12])[:60]
+
+
+def _hot_snap_record(items):
+    """一轮热榜解析结果落快照 + 给条目补 streak/prev_rank。绝不抛异常。"""
+    try:
+        if not items:
+            return
+        now = int(time.time())
+        c = _hot_snap_conn()
+        if c is None:
+            return
+        with _HOT_SNAP_LOCK:
+            rows = []
+            for it in items:
+                try:
+                    label = it.get("label") or ""
+                    title = (it.get("title") or "").strip()
+                    if not title:
+                        continue
+                    k = _hot_snap_key(label, title)
+                    rows.append((k, label[:40], title[:300],
+                                 (it.get("link") or "")[:600],
+                                 int(it.get("heat") or 0),
+                                 int(it.get("rank") or 0), now))
+                except Exception:
+                    continue
+            if rows:
+                c.executemany(
+                    "INSERT OR REPLACE INTO snap (key,label,title,link,heat,rank,ts) "
+                    "VALUES (?,?,?,?,?,?,?)", rows)
+                c.commit()
+            # 清旧：与 news 归档一样最多 6 小时扫一次
+            global _HOT_SNAP_PRUNE_UNTIL
+            if now >= _HOT_SNAP_PRUNE_UNTIL:
+                _HOT_SNAP_PRUNE_UNTIL = now + 6 * 3600
+                cut = now - _HOT_SNAP_KEEP_DAYS * 86400
+                c.execute("DELETE FROM snap WHERE ts < ?", (cut,))
+                over = (c.execute("SELECT COUNT(*) FROM snap").fetchone()[0] or 0)                     - _HOT_SNAP_MAX_ROWS
+                if over > 0:
+                    c.execute("DELETE FROM snap WHERE rowid IN ("
+                              "SELECT rowid FROM snap ORDER BY ts ASC LIMIT ?)", (over,))
+                c.commit()
+            # 给本轮条目补 streak / prev_rank：查每条 key 的上一轮与总连续轮数
+            for it in items:
+                try:
+                    title = (it.get("title") or "").strip()
+                    if not title:
+                        continue
+                    k = _hot_snap_key(it.get("label") or "", title)
+                    row = c.execute(
+                        "SELECT rank, ts FROM snap WHERE key=? AND ts<? "
+                        "ORDER BY ts DESC LIMIT 1", (k, now)).fetchone()
+                    if row:
+                        it["prev_rank"] = int(row[0] or 0)
+                        gap_min = (now - int(row[1] or now)) / 60.0
+                        # 上一轮在 35 分钟内（正常 5 分钟一轮的容错）才算"连续"
+                        it["streak_cont"] = 1 if gap_min <= 35 else 0
+                    else:
+                        it["prev_rank"] = 0
+                        it["streak_cont"] = 0
+                    # 连续轮数：连续出现过的轮数按 (最近 ts - 首次 ts) / 轮距 估算太飘，
+                    # 直接数"最近 24h 内出现过的不同 ts 个数"最准也最便宜
+                    n = c.execute(
+                        "SELECT COUNT(DISTINCT ts) FROM snap "
+                        "WHERE key=? AND ts>=?", (k, now - 86400)).fetchone()[0]
+                    it["streak"] = int(n or 1)
+                except Exception:
+                    continue
+    except Exception as ex:
+        print(f"[warn] 热榜快照写入失败（不影响热榜）: {type(ex).__name__}")
+
+
+def _hot_snap_query(label="", title="", hours=24, limit=200):
+    """只读查询：某个平台/标题的最近上榜记录（先给接口，UI 以后再说）。"""
+    try:
+        c = _hot_snap_conn()
+        if c is None:
+            return []
+        now = int(time.time())
+        sql = "SELECT key,label,title,link,heat,rank,ts FROM snap WHERE ts>=?"
+        args = [now - max(1, int(hours or 24)) * 3600]
+        if label:
+            sql += " AND label=?"
+            args.append(label[:40])
+        if title:
+            sql += " AND title LIKE ?"
+            args.append("%" + title[:80] + "%")
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(max(1, min(int(limit or 200), 1000)))
+        out = []
+        for k, lb, ti, lk, h, r, ts in c.execute(sql, args).fetchall():
+            out.append({"key": k, "label": lb, "title": ti, "link": lk,
+                        "heat": h, "rank": r, "ts": ts})
+        return out
+    except Exception:
+        return []
+
 
 
 def _hist_day(ts):
@@ -10323,6 +10879,12 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     #（热榜接口不提供时间），一旦统一按 published 排就会被甩到最末，"混合榜"就没意义了。
     hot = [it for it in items if it.get("cls") == "热榜"]
     rest = [it for it in items if it.get("cls") != "热榜"]
+    # 【2026-11-10 修】cn 池子的热榜条目是 _collect("hot") 合并进来的，
+    # _select_fresh(cn) 会按 published 重排一遍；新增的两家用「入榜时刻」计时
+    # （=当前时刻）必然最新，于是首页前 48 条被这两家占满（实测 25+23）。
+    # 这里按 _parse_hot 算好的 score 恢复跨平台混排，与「热榜按归一化热度排」
+    # 的既定设计一致；新闻流（rest）仍按真实发布时间倒序，不受影响。
+    hot.sort(key=lambda x: x.get("score") or 0, reverse=True)
     rest.sort(key=lambda x: x["published"], reverse=True)
     items = hot + rest
     if q.strip():
@@ -10344,6 +10906,21 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
                          "cached": from_archive,
                          "cached_note": backfill_note if from_archive else "",
                          "items": items[:limit]},
+                        media_type="application/json; charset=utf-8")
+
+
+@app.get("/api/hot-snapshot")
+def api_hot_snapshot(label: str = Query(""), title: str = Query(""),
+                     hours: int = Query(24, ge=1, le=168),
+                     limit: int = Query(100, ge=1, le=1000)):
+    """【2026-11-10 新增，只读】热榜上榜历史快照查询。
+
+    例：/api/hot-snapshot?hours=24&label=百度热搜 → 百度热搜最近 24h 全部上榜记录；
+        /api/hot-snapshot?title=泡面 → 按标题模糊查。
+    只读本地 hot_snapshot.db，不发任何网络请求；库打不开返回空数组。
+    """
+    rows = _hot_snap_query(label=label, title=title, hours=hours, limit=limit)
+    return JSONResponse({"version": VERSION, "count": len(rows), "items": rows},
                         media_type="application/json; charset=utf-8")
 
 
@@ -10397,6 +10974,13 @@ def api_sources():
             "failCount": int(ent.get("failCount") or 0),
             "error": ent.get("error") or "",
         })
+    # 【2026-11-10】只增不减：把自适应调度的当前间隔一并露出，便于核对降频是否生效
+    _sched = _src_sched_snapshot()
+    for s in sources:
+        _e = _sched.get(s["id"]) or {}
+        s["intervalSec"] = int(_e.get("interval") or BASE_FETCH_SEC)
+        s["slowRounds"] = int(_e.get("noChange") or 0)
+        s["schedFailStreak"] = int(_e.get("failStreak") or 0)
     totals = {"total": len(sources), "ok": 0, "warn": 0, "fail": 0, "idle": 0}
     for s in sources:
         st = s.get("status")
