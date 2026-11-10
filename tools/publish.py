@@ -10,7 +10,8 @@ r"""热点新闻 hotnews —— 一键发布流水线（GitCode 主 + GitHub 镜
 GitHub 侧走本机登录态的 gh.exe（它自己会挑线路，比手搓 REST 稳）；路径可用
 环境变量 HOTNEWS_GH 或 ~/.hotnews-publish.json 的 "gh" 覆盖。
 
-【2026-10-26 换目标】Gitee 那份老仓库已停更、客户端也不再去取（老地址一律不出现），
+【2026-10-26 换目标】Gitee 那份老仓库已停更、且平台早已禁止上传（451；严禁 push /
+传附件 / 发 Release），客户端也不再去取（老地址一律不出现），
 所以本脚本的发布目标改成：GitCode（国内主源）+ GitHub（国外镜像）。
 AtomGit 不用推 —— 它按分钟级自动镜像 GitHub，连发行版附件一起镜像（当天实测过）。
 

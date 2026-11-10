@@ -42,6 +42,9 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 7. **行尾**：入库/检出一律 **LF**（`.gitattributes` 已固定），**只有 `说明.txt` 保持 CRLF**；不要整文件重写行尾。
 8. **署名与产品名不要改**：`海风（kele551）`；产品名「热点新闻 hotnews」。
 9. **仓库里不许出现本机路径、私人邮箱、令牌**（`tools/preflight_release.py` 的 ⑥ 节会拦，且已把 `tools/*.py` 一起纳入扫描）。
+10. **严禁向 Gitee 推送任何内容**（代码 / tag / Release 附件）：该仓库早已被平台禁止上传（内容审查返回 451），
+    `git push gitee ...` 一律不许执行，上传附件、重发 Release 同样不许。本机 remote 里留着 `gitee`
+    只为历史对照，不是可推目标；发布只走下面「平台」一节列出的三个。
 
 ## 提交与验收
 
@@ -57,10 +60,11 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 一起镜像过去（2026-10-26 实测；早期"AtomGit 没有附件上传接口、只能发源码"的说法已过期）。
 
 ```powershell
-# 远端名字按本机 config 为准：gitcode=主源、github=镜像、atomgit=代码镜像
-# 注意：老仓库（gitee）2026-10-17 起停更，别再往它推，也别在对外文案里写它的地址。
+# 远端名字按本机 config 为准：gitcode=主源、origin=GitHub 镜像、atomgit=代码镜像
+# ⛔ Gitee 早已禁止上传（451），严禁 `git push gitee ...`，也严禁往它传附件 / 发 Release；
+#    本机 remote 里留着这个名字只为历史对照，不是可推目标，更别在对外文案里写它的地址。
 git push gitcode main --tags                    # GitCode（主源，升级源就从这里读）
-git push github main --tags                     # GitHub（镜像；git 端口不通时借狐径的本地代理重试）
+git push origin main --tags                     # GitHub（镜像；本机 remote 名叫 origin）
 git push atomgit main --tags                    # AtomGit（令牌走 GIT_ASKPASS，不会出现在命令行）
 ```
 
@@ -83,6 +87,8 @@ GitHub Issues 里带 `good first issue` / `help wanted` 标签的条目，每条
 - **Never**:
   - **don't hand-edit `version.json` before building** — `launcher.url/sha256/size` are written
     *after* the exe is final (the exe bundles this file, so writing its own hash first is a loop);
+  - **never push anything to Gitee** (code / tags / release assets): that repo is banned from uploads (451);
+    `git push gitee ...` is forbidden — only gitcode / origin (GitHub) / atomgit are valid targets;
   - **never force-push** (`git push -f`) any remote/branch: the full signed `version.json` (+`.sig`)
     on `main` is the update data every installed client reads;
   - write `hotnews_update.vbs` as **UTF-16** (UTF-8 with BOM makes Windows Script Host fail and breaks updates);

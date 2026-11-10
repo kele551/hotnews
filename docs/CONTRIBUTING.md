@@ -327,6 +327,10 @@ sha256/size → GitHub 镜像同一个附件再比一遍 → 版本比较），�
 
 **发布新版本的注意事项**（都是踩过的坑）：
 
+> ⛔ **Gitee 禁止上传**：该仓库早已被平台封禁（内容审查返回 451），严禁
+> `git push gitee ...`、上传附件或在该平台发 Release。代码只推 GitCode（主源）/
+> GitHub（镜像）/ AtomGit（代码镜像）三处，见 `AGENTS.md` 禁区第 10 条。
+
 1. `version.json` 的 `notes` 字段**不要写具体事件/地区/机构名** —— 老仓库（gitee）的内容审查
    会整份文件拦下（raw 地址返回 **451** "The content may contain violation information"），
    升级源当场变哑弹。GitCode / GitHub 目前没这条限制，但写成中性、简短的功能说明本来就更稳：
