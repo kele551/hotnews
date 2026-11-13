@@ -12362,14 +12362,18 @@ _OSS_BUSY = [False]
 #   两个窗口各自一份内存 + 磁盘缓存、各自的抓取间隔：谁失败都不影响另一个，
 #   30 天榜那条链路（口径 / 6 小时 / 20 条）一个字不改。
 OSS_WEEK_DAYS = 7
-OSS_WEEK_LIMIT = 20
+OSS_WEEK_LIMIT = 40              # 【2026-11-13 廿三修】20 → 40：播报频次高于池子容量时必然循环重复，
+                                 # 先把候选池扩大，再配合 24h 硬去重与降频（见下）
 OSS_WEEK_TTL = 3600              # 周榜 1 小时一批；30 天榜仍是 6 小时
 OSS_WEEK_MIN_VELOCITY = 100      # 日均涨星低于这个不触发桌面播报，免得刷屏
 OSS_WEEK_TOAST_GAP = 10 * 60    # 两条周榜气泡（换批播报）之间的最小间隔
-# 【2026-11-12 用户定】暴涨播报每 10 分钟一组、最多 3 条，**按暴涨速度降序依次推**，不随机。
-OSS_BOOM_TOAST_GAP = 10 * 60   # 每 10 分钟一组（用户从 15 分钟改过来）
-OSS_BOOM_TOAST_PICK = 3        # 每组最多 3 条，取涨速最快的那几条，组内按速度从高到低
-OSS_WEEK_SHOWN_TTL = 24 * 3600  # 同一个仓库 24 小时内不重复播报
+# 【2026-11-12 用户定】暴涨播报每 20 分钟一组、1 条，**按暴涨速度降序依次推**，不随机。
+# 【2026-11-13 廿三修·用户「反复出现了很多次」】原 10 分钟 3 条 = 每小时 18 条，
+# 候选池只有 20 条，1 小时就把整池轮一遍、后面只能重复。改成 20 分钟 1 条（每小时 3 条），
+# 配合 24h 硬去重后一天约 72 条，池子扩到 60~80 条仍够用，同一条一天最多再来一次。
+OSS_BOOM_TOAST_GAP = 20 * 60   # 每 20 分钟一组
+OSS_BOOM_TOAST_PICK = 1        # 每组 1 条，取涨速最快的那条
+OSS_WEEK_SHOWN_TTL = 24 * 3600  # 同一个仓库 24 小时内不重复播报（硬挡，见 _oss_pick_boom）
 _OSS_WEEK_CACHE_FILE = os.path.join(
     os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "oss_week_cache.json")
 # 「哪个仓库什么时候播过」要跨重启记住：只在内存里记的话，每次开机都会把周榜第 1 名再弹一遍。
@@ -12389,7 +12393,7 @@ _OSS_BOOM_TOAST_AT = 0.0        # 【2026-11-12】暴涨播报上一组时刻（
 #   每条按**自己那一榜**的星标快照间隔算「净增星 ÷ 间隔小时 × 24 = 星/天」：周榜 1 小时一批、
 #   30 天榜 6 小时一批，两路各存一份 {ts, stars}，谁换批谁更新自己的基准，
 #   快慢不同也能公平比。零额外请求：全部由已有两份榜单派生。
-OSS_SPEED_LIMIT = 20
+OSS_SPEED_LIMIT = 40             # 【2026-11-13 廿三修】20 → 40，与周榜一起把播报池扩到 60~80 条
 OSS_SPEED_MIN_HOURS = 0.25  # 两批间隔不足 15 分钟按 15 分钟算，免得手动连抓把速度吹上天
 # 【2026-11-12 十一修 / 十七修】积累期：速榜一条真值都还没有时，周榜对比间隔临时缩到
 # 3 分钟（十七修从 15 分钟收紧：十六修实测部署交接态基准与缓存同批、delta 恒 0，
@@ -12917,12 +12921,10 @@ def _oss_pick_boom(week_rows, speed_rows, shown, now_ts, limit=OSS_BOOM_TOAST_PI
     elif fresh_any:
         choose_from = fresh_any
     else:
-        choose_from = sorted(
-            pool,
-            key=lambda x: (float((shown or {}).get(x.get("title") or "") or 0),
-                           0 if x["boom_real"] else 1,
-                           -x["boom_val"],
-                           (x.get("title") or "").lower()))
+        # 【2026-11-13 廿三修】整池 24 小时内都播过：**不再按「最早播过」回退**——
+        # 那正是同一条反复出现的来源。这里直接返回空，调用方本轮不播开源，
+        # 等下一批榜单换新再出（用户取舍：宁缺不重复）。
+        choose_from = []
     picked = [dict(x) for x in choose_from[:limit]]
     for x in picked:
         x.pop("_fresh", None)
@@ -13189,9 +13191,11 @@ def _oss_carousel_seat(now_ts=None, shown=None, mark=False):
     # 【2026-11-13 廿二修·用户「这条新闻播了不下5次，不会轮流吗？」】
     # 光靠 24h 去重挡不住：候选池被挡光时会退到"按上次播报时刻最早"的顺序，
     # 而月榜兜底那条**根本没查 shown**，于是同一个仓库能连着播好几次。
-    # 这里加一条硬规矩：最近 40 分钟播过的仓库，本轮**一律不许再当开源席**
-    # （候选按优先级多取 8 条，逐条跳过被挡的；实在全被挡才用最早的兜底）。
-    _block_s = 40 * 60
+    # 这里加一条硬规矩：**24 小时内播过的仓库，本轮一律不许再当开源席**
+    # （廿三修把 40 分钟拉到 24 小时：40 分钟只挡得住"连续两轮"，挡不住一小时一轮的复用）。
+    # 候选按优先级多取 8 条逐条跳过；全被挡就本轮**不出开源席**（宁缺不重复，
+    # 这是用户在 2026-11-13 明确下来的取舍，优先于「每轮必出开源」）。
+    _block_s = OSS_WEEK_SHOWN_TTL
     _blocked = set()
     try:
         _blocked = {str(n) for n, t in (seen or {}).items()
@@ -13204,18 +13208,22 @@ def _oss_carousel_seat(now_ts=None, shown=None, mark=False):
         if (cand.get("title") or "") not in _blocked:
             d = cand
             break
-    if d is None and picked:
-        d = picked[0]
     if d is None:
-        # 周榜/速榜都空时用 30 天月榜兜底：**同样先跳过最近播过的**，再按星标降序。
+        # 周榜/速榜都空或被挡光时用 30 天月榜兜底：**同样跳过 24 小时内播过的**，
+        # 一个都挑不出来就本轮不放开源席，绝不拿同一条顶上去。
         # 【十二修】优先挑有中文用途说明的，免得大字变成「X 开源项目」标签。
         ranked = sorted([x for x in (month_items or [])
-                         if isinstance(x, dict) and x.get("title")],
-                        key=lambda x: (1 if (x.get("title") or "") in _blocked else 0,
-                                       float((seen or {}).get(x.get("title") or "") or 0),
+                         if isinstance(x, dict) and x.get("title")
+                         and (x.get("title") or "") not in _blocked],
+                        key=lambda x: (float((seen or {}).get(x.get("title") or "") or 0),
                                        0 if _oss_cn_usable(x) else 1,
                                        -int(x.get("stars") or 0)))
         if not ranked:
+            try:
+                print("[气泡] 开源席：候选 24 小时内都播过，本轮不出（挡掉 %d 条）"
+                      % len(_blocked))
+            except Exception:
+                pass
             return (None, "")
         d = dict(ranked[0])
         d["boom_real"] = False
@@ -13251,10 +13259,11 @@ def _oss_boom_announce():
     speed_items, _, _, _ = _oss_speed_snapshot()
     week_items, _, _ = _oss_week_snapshot()
     picked = _oss_pick_boom(week_items, speed_items, _OSS_WEEK_SHOWN, now, 8)
-    # 【廿二修】同一批里也跳过最近 40 分钟播过的仓库（重启后 _OSS_BOOM_TOAST_AT 归零，
+    # 【廿二修】同一批里也跳过最近播过的仓库（重启后 _OSS_BOOM_TOAST_AT 归零，
     # 一开机就会立刻再投一组，不挡的话同一批项目会连着出现）。
+    # 【廿三修】时间窗从 40 分钟拉到 24 小时，与 _oss_carousel_seat 用同一把尺子。
     _blocked = {str(n) for n, t in (_OSS_WEEK_SHOWN or {}).items()
-                if now - float(t or 0) < 40 * 60}
+                if now - float(t or 0) < OSS_WEEK_SHOWN_TTL}
     picked = [x for x in (picked or [])
               if (x.get("title") or "") not in _blocked][:OSS_BOOM_TOAST_PICK]
     if not picked:
@@ -13806,8 +13815,10 @@ def api_oss():
     # 【2026-11-13】出口先按"有中文简介"筛，再按各榜上限截 —— 候选池故意多备 10 条，
     # 这样筛掉的 1~2 条不会让榜单变成 18/19 条（用户要求三榜严格 20）。
     items = _oss_display_rows(items)[:OSS_LIMIT]
-    week_items = _oss_display_rows(week_items)[:OSS_WEEK_LIMIT]
-    speed_items = _oss_display_rows(speed_items)[:OSS_SPEED_LIMIT]
+    # 【2026-11-13 廿三修】缓存/播报候选扩到 40 条，但**页面仍只列 20 条** ——
+    # 三榜严格 20 是用户 10-25 定死的展示口径，扩池只为让播报有得轮换。
+    week_items = _oss_display_rows(week_items)[:OSS_LIMIT]
+    speed_items = _oss_display_rows(speed_items)[:OSS_LIMIT]
     _note_item_hosts(items)
     _note_item_hosts(week_items)
     _note_item_hosts(speed_items)

@@ -339,7 +339,7 @@ def main():
     # 【十七修】积累期换批从 15 分钟收紧到 3 分钟：部署交接态基准与缓存同批时，
     # 必须靠下一批拉开时间差才出真值，15 分钟让用户空等太久；出真值后仍恢复 1 小时。
     check("积累期换批间隔缩到 3 分钟（首批真值尽快出）", ns["OSS_SPEED_SEED_TTL"], 180)
-    check("周榜条数与 30 天榜相同（一屏扫完）", ns["OSS_WEEK_LIMIT"], ns["OSS_LIMIT"])
+    check("周榜条数 40（廿三修扩池，减少重复播报）", ns["OSS_WEEK_LIMIT"], 40)
     check("30 天榜口径没动：窗口", ns["OSS_WINDOW_DAYS"], 30)
     check("30 天榜口径没动：间隔", ns["OSS_TTL"], 6 * 3600)
     # 钉死 2026-10-28：老项目星多但涨得慢，新项目星少但涨得快。
@@ -499,7 +499,7 @@ def main():
     print("---- 8d) 第三档「涨速榜」（2026-11-12 三修）：两榜并集 / 星每天 / 气泡提示下线")
     # 用户点破「和 7 天周榜会不会重复」：只把周榜 20 条重排等于白加一档。
     # 下面钉死：候选是两榜并集、每条按自己那一路的间隔算速度、首轮不冒充真值。
-    check("涨速榜也是 20 条", ns["OSS_SPEED_LIMIT"], 20)
+    check("涨速榜 40 条（廿三修扩池）", ns["OSS_SPEED_LIMIT"], 40)
     check("两批间隔下限 0.25 小时", ns["OSS_SPEED_MIN_HOURS"], 0.25)
     _now = 1770000000.0
     _pw = {"ts": _now - 3600, "stars": {"w/a": 100, "w/b": 100}}
@@ -643,8 +643,8 @@ def main():
                _first_call(_wkref, "_oss_speed_rebuild") < _first_call(_wkref, "_oss_prewarm"))
 
     print("---- 8e) 暴涨气泡（2026-11-12 七修：10分钟一组 / 按速度降序不随机 / 必出开源）")
-    check("播报间隔 10 分钟", ns["OSS_BOOM_TOAST_GAP"], 600)
-    check("每组最多 3 条", ns["OSS_BOOM_TOAST_PICK"], 3)
+    check("播报间隔 20 分钟（廿三修降频）", ns["OSS_BOOM_TOAST_GAP"], 1200)
+    check("每组 1 条（廿三修降频）", ns["OSS_BOOM_TOAST_PICK"], 1)
     _boom_wk = [
         {"title": "b/x", "stars": 5000, "velocity": 900, "age_days": 4.0},
         {"title": "b/y", "stars": 3000, "velocity": 600, "age_days": 5.0}]
@@ -676,8 +676,8 @@ def main():
           ["s/a", "s/b"])
     _all_shown = {"s/a": _now, "s/b": _now, "b/x": _now, "b/y": _now}
     _p3 = ns["_oss_pick_boom"](_boom_wk, _boom_sp, _all_shown, _now, 3)
-    check_true("候选全被 24h 挡光仍回退全池、必出开源", len(_p3) > 0)
-    check("回退池也按速度降序", [x["title"] for x in _p3], ["s/a", "s/b", "b/x"])
+    check("候选全被 24h 挡光时宁缺不重复（廿三修）", [x["title"] for x in _p3], [])
+
     check_true("暴涨播报由刷新循环每轮敲门",
                calls_inside(tree, "refresh_loop", "_oss_boom_announce"))
     # 【2026-11-12 用户定】暴涨气泡正文同样「看全、无残缺」：
