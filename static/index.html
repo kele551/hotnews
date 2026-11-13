@@ -217,6 +217,10 @@
   .news h3 a:hover{color:var(--accent)}
   .news .desc{font-size:var(--fs-meta);color:var(--txt-2);margin-top:4px;
     display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+  /* 【2026-11-12 十四修】开源卡片描述行是一整句中文用途说明，必须看全：
+     新闻卡片仍保持单行省略，只有带 .full 的开源卡片放开成多行、不裁切。 */
+  .news .desc.full{display:block;-webkit-line-clamp:unset;overflow:visible;
+    white-space:normal;line-height:1.55}
   .news .meta{display:flex;align-items:center;gap:7px;margin-top:7px;
     font-size:var(--fs-micro);color:var(--txt-2);flex-wrap:wrap}
   .news .thumb2{width:112px;flex:none;aspect-ratio:16/9;border-radius:6px;overflow:hidden;
@@ -231,10 +235,26 @@
     white-space:nowrap}
   .tag.cls{color:var(--txt-2);border-color:var(--line-2)}
   .tag.fresh{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,var(--line))}
+/* 【2026-11-13 原创标】原创/深度源（新京报、中国新闻周刊、财新、澎湃、界面）的条目。
+   与「同一件事 · N 家在报」正好互补：那条是"几家在抄"，这条是"只有这家自己写的"。 */
+.tag.orig{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 38%,var(--line));font-weight:600}
   /* 开源热榜（2026-10-28）：★ 后面那个数就是 GitHub 星标，也是这一栏的排名依据，
      所以给它单独的金色胶囊 —— --warn 本来就是深浅两套金色，不用另加变量。 */
   .tag.star{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 38%,var(--line));
     background:color-mix(in srgb,var(--warn) 10%,var(--card-2));font-weight:700}
+  /* 开源周榜（2026-11-12）：★ 是累计星标，↗ 是日均涨星 —— 周榜按后者排，
+     两颗徽章同时出现时用户才看得懂「为什么星少的项目排在前面」。 */
+  .tag.vel{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 38%,var(--line));
+    background:color-mix(in srgb,var(--ok) 10%,var(--card-2));font-weight:700}
+  /* 同一栏目里 30 天 / 7 天 切换，沿用页面已有的按钮配色，不新增第三套主色。 */
+  .oss-switch{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+  .oss-switch button{font:inherit;font-size:12px;padding:5px 12px;border-radius:7px;cursor:pointer;
+    border:1px solid var(--line);background:var(--card-2);color:var(--txt-2)}
+  .oss-switch button.on{border-color:var(--accent);background:var(--accent);color:var(--accent-ink);font-weight:700}
+  /* 开源涨速榜（2026-11-12 三修）：⚡ 是「近 N 小时净增星折算成星/天」，与 ★ 累计星标、
+     ↗ 日均涨星是三把不同的尺，单独一个配色才不会看混。 */
+  .tag.spd{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 38%,var(--line));
+    background:color-mix(in srgb,var(--accent) 10%,var(--card-2));font-weight:700}
 
   /* ===== 「同一件事，几家在报」（2026-10-25 新增）=====
      服务端把折叠掉的兄弟稿挂在条目上（also / also_n，判据与去重完全同一套），
@@ -412,6 +432,7 @@
     </div>
     <span class="pill" title="当前版本"><i></i>v<span id="ver">-</span></span>
     <button class="btn ghost" id="themeBtn" title="切换明暗：暗色 → 亮色 → 跟随系统">◐</button>
+    <button class="btn" id="balloonPlay" title="立刻在屏幕右下角投一轮桌面气泡">气泡试播</button>
     <button class="btn" id="checkUpdate" title="检查是否有新版本">检查更新</button>
     <button class="btn danger" id="quit" title="停止后台服务并退出程序">退出程序</button>
   </div>
@@ -559,6 +580,54 @@ const OSS_CLS = "开源热榜";
 state.oss = (SSR && SSR.oss) || [];
 state.ossWin = Number(SSR && SSR.oss_win) || 30;   // 窗口天数以服务端为准，不在前端硬写
 state.ossAt = Number(SSR && SSR.oss_at) || 0;
+// 【2026-11-12】同一栏目三档：7 天周榜（日均涨星）/ 涨速榜（星/天）/ 30 天榜（累计星标）。
+// 前两档与 30 天榜各走自己的缓存与刷新节奏；涨速榜是服务端由两榜并集派生的第三份榜。
+// 【用户指定】按钮只写「速榜 / 周榜 / 月榜」；速榜在最左、月榜在最右；默认仍落在周榜。
+state.ossWeek = (SSR && SSR.oss_week) || [];
+state.ossWeekWin = Number(SSR && SSR.oss_week_win) || 7;
+state.ossWeekAt = Number(SSR && SSR.oss_week_at) || 0;
+state.ossSpeed = (SSR && SSR.oss_speed) || [];
+state.ossSpeedAt = Number(SSR && SSR.oss_speed_at) || 0;
+state.ossSpeedReal = Number(SSR && SSR.oss_speed_real) || 0;
+// 【十六修】本批没新增涨星时，速榜显示的是「最近一次真实净增」，必须标出时间。
+state.ossSpeedStale = !!(SSR && SSR.oss_speed_stale);
+state.ossSpeedRealAt = Number(SSR && SSR.oss_speed_real_at) || 0;
+state.ossSpeedSource = (SSR && SSR.oss_speed_source) || "";
+state.ossTab = "week";            // 默认落在 7 天周榜：用户要的就是这批上星快的新项目
+// 气泡点「打开」带 ?oss=week；涨速榜也留一个深链，方便以后投送。
+try{
+  const _ossQ = new URLSearchParams(location.search).get("oss");
+  if(_ossQ === "week" || _ossQ === "speed") state.ossTab = _ossQ;
+}catch(_){ }
+state.ossDeepLinked = false;      // 自动选中栏目只做一次，不反复抢焦点
+// 三档任一有内容就算开源榜还活着（速榜首轮空榜时用它保住左栏与软件栏里的入口）。
+function _ossAliveTop(){
+  return !!(state.oss.length || state.ossWeek.length || state.ossSpeed.length);
+}
+function activeOss(){
+  const t = state.ossTab;
+  const raw = t === "week" ? state.ossWeek : (t === "speed" ? state.ossSpeed : state.oss);
+  return {
+    tab: t,
+    week: t === "week",
+    speed: t === "speed",
+    items: Array.isArray(raw) ? raw : [],
+    win: t === "speed" ? "7+30"
+      : (Number(t === "week" ? state.ossWeekWin : state.ossWin) || (t === "week" ? 7 : 30)),
+    at: Number(t === "week" ? state.ossWeekAt
+      : (t === "speed" ? state.ossSpeedAt : state.ossAt)) || 0
+  };
+}
+function setOssTab(t){
+  state.ossTab = (t === "week" || t === "speed") ? t : "month";
+  buildClsOptions(); renderLeft(); render();
+}
+// 切换按钮用事件委托：整块 grid 会被反复重建，绑在按钮上重绘一次就丢一次。
+document.addEventListener("click", function (e) {
+  const b = e.target && e.target.closest ? e.target.closest("button[data-osstab]") : null;
+  if (!b) return;
+  setOssTab(b.getAttribute("data-osstab"));
+});
 // 来源上色表（服务端 SRC_HUES：按"配置里第几家"发色相，见 server.py 的注释）。
 // 首屏那份随 SSR 一起到，之后每次 /api/news 回带时再对一遍；表里没有的名字退回按名字散列。
 let SRC_HUES = (SSR && SSR.src_hues) || {};
@@ -768,9 +837,12 @@ function buildClsOptions(){
   if(!sel) return;
   const cur = sel.value;
   const set = [...new Set(state.items.map(i => i.cls))].filter(Boolean).filter(c => !EXCLUDED_CLS.has(c));
-  // 【2026-10-28】开源热榜不在 state.items 里（单独一条 /api/oss 链路），
-  // 但它要能当"分类"选 —— 有内容才出现在下拉里，抓不到就当这一栏不存在。
-  if((state.oss || []).length && !set.includes(OSS_CLS)) set.push(OSS_CLS);
+  // 【2026-11-12 用户定】开源不再单列一个分类：三榜全部归到「软件」栏目下面。
+  // 下拉里不 push OSS_CLS，左栏也不再显示独立「开源热榜」按钮（见 renderLeft）；
+  // 气泡深链 ?oss=week/speed 改成落到「软件」栏并切到对应档（见 applyOss）。
+  // 没有软件新闻、但开源榜有数据时，也要把「软件」补进下拉，否则左栏点了选不中。
+  const _ossAlive = (state.oss || []).length || (state.ossWeek || []).length || (state.ossSpeed || []).length;
+  if(_ossAlive && !set.includes("软件")) set.push("软件");
   set.sort((a, b) => clsRank(a) - clsRank(b));
   sel.innerHTML = '<option value="">全部分类</option>' + set.map(c => `<option>${esc(c)}</option>`).join("");
   sel.value = set.includes(cur) ? cur : "";
@@ -786,8 +858,11 @@ function renderLeft(){
     const k = it.cls || "其他";
     cnt.set(k, (cnt.get(k) || 0) + 1);
   });
-  // 开源热榜的条数来自 /api/oss 那一份（顶部注释里有说明），并进同一张计数表显示。
-  if((state.oss || []).length) cnt.set(OSS_CLS, state.oss.length);
+  // 【2026-11-12 用户定】开源不再单列一栏：把三档条数并进「软件」栏的计数里，
+  // 用户点「软件」就看到软件新闻 + GitHub 三榜。左栏从此没有独立「开源热榜」按钮。
+  // 三档任一有数据就算开源活着；软件栏计数 = 软件新闻数 + 当前档开源条数。
+  const _ossAlive = (state.oss || []).length || (state.ossWeek || []).length || (state.ossSpeed || []).length;
+  if(_ossAlive) cnt.set("软件", (cnt.get("软件") || 0) + activeOss().items.length);
   const keys = [...cnt.keys()].filter(k => !EXCLUDED_CLS.has(k)).sort((a, b) => clsRank(a) - clsRank(b));
   let html = `<button type="button" class="side-item ${cur === "" ? "on" : ""}" data-cls="">
       全部<span class="n">${(state.items || []).length}</span></button>`;
@@ -831,7 +906,11 @@ function cardHTML(it, showCls, rank){
          <img loading="lazy" src="/img?url=${encodeURIComponent(it.image)}" alt=""
               data-l="${esc(shortLabel(it.label || it.channel))}" onerror="imgFail(this)"></a>`
     : "";
-  const desc = (it.desc || "").trim();
+  // 【2026-11-12 十四修】开源条目由服务端补了 intro（纯中文用途说明），有这个字段
+  // 就只显示它：desc 开头那串「GitHub 开源周榜 · 语言 · 日均涨星 N」不再占用描述行，
+  // 中文说明整句显示、不截断。新闻条目没有 intro 字段，照旧显示 desc，一个字不动。
+  const hasIntro = Object.prototype.hasOwnProperty.call(it, "intro");
+  const desc = (hasIntro ? (it.intro || "") : (it.desc || "")).trim();
   // 「同一件事，几家在报」：服务端把被折叠掉的兄弟稿挂在这条上（判据与去重同一套，
   // 见 server._dedup_same_event 的 with_also）。只有**不同来源**才算"几家"，
   // 同一家媒体自己的副本不会挂上来。展开看到的是各家把同一件事写成了什么样 ——
@@ -853,12 +932,17 @@ function cardHTML(it, showCls, rank){
     <div class="body">
       <h3><a href="${esc(link)}" target="_blank" rel="noopener" data-cls="${esc(it.cls || "")}"
              title="${esc(it.title_en || it.desc_en || it.title)}">${esc(it.title)}</a></h3>
-      ${desc ? `<p class="desc">${esc(desc)}</p>` : ""}
+      ${desc ? `<p class="desc${hasIntro ? " full" : ""}">${esc(desc)}</p>` : ""}
       <div class="meta">
         ${showCls && it.cls ? `<span class="tag cls">${esc(it.cls)}</span>` : ""}
+        ${it.original ? `<span class="tag orig" title="原创/深度报道：这家自己采写，不是转载">原创</span>` : ""}
         <span class="tag${_sm.cls}"${_sm.sty}>${esc(it.label || it.channel || "")}</span>
         ${isNew ? '<span class="tag fresh">新增</span>' : ""}
-        ${it.stars ? `<span class="tag star" title="GitHub 星标数（开源热榜就按它排名）">★ ${fmtHeat(it.stars)}</span>` : ""}
+        ${it.stars ? `<span class="tag star" title="GitHub 累计星标数（30 天榜按它排名）">★ ${fmtHeat(it.stars)}</span>` : ""}
+        ${it.velocity ? `<span class="tag vel" title="日均涨星 = 累计星标 ÷ 建库天数（7 天周榜按它排名）">↗ 日均 +${fmtHeat(it.velocity)}</span>` : ""}
+        ${it.has_speed ? `<span class="tag spd" title="近 ${it.speed_hours} 小时真实净增 ${fmtHeat(it.delta)} 星，按间隔折算成 ${it.speed_day} 星/天（涨速榜按它排名）">⚡ +${fmtHeat(it.speed_day)} 星/天</span>` : ""}
+        <!-- 【2026-11-12 十一修】速榜只列真实涨了星的项目，首轮留空榜等对比数据；
+             原「日均 +N · 待对比」标签（平均数假榜）整段删除，不再出现。 -->
         ${(!it.stars && it.heat) ? `<span class="tag" title="源站显示的热度/互动数">${fmtHeat(it.heat)}</span>` : ""}
         ${it.lang ? `<span class="tag" title="仓库主要编程语言">${esc(it.lang)}</span>` : ""}
         ${also ? `<button type="button" class="tag also" data-act="also" data-for="${esc(it.id)}"
@@ -912,32 +996,80 @@ function render(){
   // 它不是新闻、不属于任何一个新闻分区，跟着分区切没意义；左栏既然两个分区都摆这个
   // tab，点进去就必须有内容（第一版误加过 isCn 条件，国际分区点进去是空栏，已去掉）。
   // 真正没接这一栏的是 /world 那套英文外壳（static/intl.html）。
-  const oss = Array.isArray(state.oss) ? state.oss : [];
-  const ossWin = Number(state.ossWin) || 30;
+  // 【2026-11-12】当前显示哪一份由 activeOss() 按 30 天 / 7 天 切换决定；
+  // 渲染侧取这一栏的数据不看分区（国际点进去也得有内容，这条老口径不变）。
+  const _ossA = activeOss();
+  const oss = Array.isArray(state.oss) ? _ossA.items : [];
+  const ossWin = _ossA.win;
+  const ossAt = _ossA.at;
 
   // —— 选中「开源热榜」这一栏：整块就是这份榜，按服务端定好的名次排 ——
   // 榜单不按时间排（用户要看的是"谁星最多"），所以这里不跟着工具条那个"最新/最早"走。
+  // 【2026-11-12】同一栏目里 30 天 / 7 天 切换。空档也必须把切换按钮画出来，
+  // 否则周榜还没抓到时用户会卡在空页面、切不回 30 天榜。
+  // 【2026-11-12 用户指定】按钮只写「速榜 / 周榜 / 月榜」；速榜在左、月榜在右。
+  const ossSwitch = `<div class="oss-switch">`
+      + `<button type="button" data-osstab="speed" class="${_ossA.speed ? "on" : ""}">速榜</button>`
+      + `<button type="button" data-osstab="week" class="${_ossA.week ? "on" : ""}">周榜</button>`
+      + `<button type="button" data-osstab="month" class="${(_ossA.week || _ossA.speed) ? "" : "on"}">月榜</button>`
+      + `</div>`;
+  // 开源榜正文（标题 / 卡片 / 规则脚注）抽成函数，独立栏与「软件」栏共用同一份口径，
+  // 免得两处各写一套、改一处漏一处。【2026-11-12 用户定】GitHub 榜也放进「软件」栏目。
+  function ossBoardHTML(){
+    const _ossTitle = _ossA.week
+      ? `开源周榜 · 按日均涨星排`
+      : (_ossA.speed
+        ? `开源速榜 · 按真实净增星/天排`
+        : `开源月榜 · 按累计星标排`);
+    let oh = `<h2 class="sech">${_ossTitle}</h2>`;
+    oh += `<div class="newslist">` + oss.map(it => cardHTML(it, false, Number(it.rank) || 0)).join("") + `</div>`;
+    // 数据时间要写出来：两档刷新节奏不同，不写就会被人当成"页面卡住了"。
+    const _ot = ossAt
+      ? new Date(ossAt * 1000).toLocaleString("zh-CN",
+          {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
+      : "-";
+    const _ossRule = _ossA.week
+      ? "日均涨星 = 星标 ÷ 建库天数，上星快的新项目排前面"
+      : (_ossA.speed
+        ? `只列真实涨了星的项目，按「净增星 ÷ 间隔小时 × 24 = 星/天」降序；不是日均涨星，和周榜不是同一批`
+        : "按累计星标降序");
+    // 【十六修】本批没有新增涨星时，页面上摆的是「最近一次真实净增」，如实标出来；
+    // 空态不再给一个反复不兑现的出榜时间承诺，也不冒充刚刷出来的实时数据。
+    const _spStale = _ossA.speed && state.ossSpeedStale;
+    const _rt = state.ossSpeedRealAt
+      ? new Date(state.ossSpeedRealAt * 1000).toLocaleString("zh-CN",
+          {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
+      : _ot;
+    const _spNote = _spStale
+      ? ` · 本批暂无新增，显示最近一次真实净增（${_rt}）` : "";
+    oh += `<p class="muted xs" style="text-align:center;padding-top:6px">共 ${oss.length} 条 · `
+        + `更新于 ${_spStale ? _rt : _ot}（${_ossA.week ? "每 1 小时一批" : (_ossA.speed ? "随两榜换批更新" : "每 6 小时一批")}）· `
+        + _ossRule + _spNote + ` · `
+        + `只列公开仓库名与站方自己写的一句简介，点卡片直达 GitHub 原页面</p>`;
+    return oh;
+  }
+  function ossEmptyTip(){
+    return ((_ossA.week || _ossA.speed) && OSS_WEEK_RETRY > 0)
+      ? ((_ossA.speed && !state.ossSpeedReal)
+          ? "速榜只列真实涨了星的项目，正在积累首批对比数据；一旦出现真值就会一直保留，不再每批清空。可以先看周榜或月榜。"
+          : "速榜 / 周榜正在抓取，几秒后自动出现；也可以先切到月榜看看。")
+      : "换一档看看，或等下一批抓取；抓不到就整栏收起，一条新闻都不影响。";
+  }
+  function ossMetaText(){
+    const _metaRule = _ossA.speed ? "7+30 天并集，按星/天降序"
+      : (`近 ${ossWin} 天新建，` + (_ossA.week ? "按日均涨星降序" : "按累计星标降序"));
+    return `开源热榜 · 共 ${oss.length} 条（${_metaRule}）`;
+  }
   if(cls === OSS_CLS){
     if(!oss.length){
-      grid.innerHTML = emptyHTML("这一栏暂时没有内容",
-        "GitHub 的公开仓库榜抓不到就整栏收起，一条新闻都不影响。", "");
+      grid.innerHTML = ossSwitch + emptyHTML("这一档暂时没有内容", ossEmptyTip(), "");
       const m0 = $("meta");
       if(m0) m0.textContent = metaText(0);
       return;
     }
-    let oh = `<h2 class="sech">开源热榜 · GitHub 近 ${ossWin} 天新建，按星标排</h2>`;
-    oh += `<div class="newslist">` + oss.map(it => cardHTML(it, false, Number(it.rank) || 0)).join("") + `</div>`;
-    // 数据时间要写出来：这一栏 6 小时才换一批，不写就会被人当成"页面卡住了"。
-    const _ot = state.ossAt
-      ? new Date(state.ossAt * 1000).toLocaleString("zh-CN",
-          {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
-      : "-";
-    oh += `<p class="muted xs" style="text-align:center;padding-top:6px">共 ${oss.length} 条 · `
-        + `更新于 ${_ot}（每 6 小时一批）· `
-        + `只列公开仓库名与站方自己写的一句简介，点卡片直达 GitHub 原页面</p>`;
-    grid.innerHTML = oh;
+    grid.innerHTML = ossSwitch + ossBoardHTML();
     const m1 = $("meta");
-    if(m1) m1.textContent = `开源热榜 · 共 ${oss.length} 条（近 ${ossWin} 天新建，按累计星标降序）`;
+    if(m1) m1.textContent = ossMetaText();
     return;
   }
 
@@ -965,13 +1097,18 @@ function render(){
   // —— 两态：还没有数据（骨架） / 池子被清空（罕见，给一句说明） ——
   // 【2026-10-28】新闻一条都还没到、但开源热榜已从本机缓存读回来时不画骨架屏：
   // 先让用户看到这一栏，新闻由 2.5 秒那轮自动重试接上。
-  if(!state.items.length && !oss.length){
+  // 【2026-11-12】软件栏里 GitHub 榜可作为独立内容存在：新闻还没到、但开源榜有数据时
+  // 不能画骨架屏 / 空态把它盖掉，否则用户点「软件」又是一片空白（就是他刚才找不到入口的现象）。
+  const _softHasOss = (cls === "软件" && _ossAliveTop());
+  if(!state.items.length && !oss.length && !_softHasOss){
     grid.innerHTML = skeletonHTML();
     const m = $("meta");
     if(m && !m.textContent.trim()) m.textContent = "正在抓取 RSS，请稍候…";
     return;
   }
-  if(!hotItems.length && !cards.length && !(cls === "" && oss.length)){
+  // 【2026-11-12】首页不再靠开源榜撑场（那段预览已按用户要求删掉），
+  // 空态只认新闻：没有热榜也没有卡片就是空，不再给开源榜开例外。
+  if(!hotItems.length && !cards.length && !_softHasOss){
     grid.innerHTML = emptyHTML("这一栏暂时没有内容", "稍等一轮刷新，或点左栏「全部」看看。", "");
     const m = $("meta");
     if(m) m.textContent = metaText(0);
@@ -987,19 +1124,23 @@ function render(){
     html += hotlistHTML(hotItems.slice(0, HOT_SHOW));
   }
   let shown = Math.min(hotItems.length, HOT_SHOW);
-  // 【2026-10-28 新增】「全部」视图在热榜之后插一段开源热榜，只露前 OSS_SHOW 名。
-  // 插在这里而不是并进下面的分类分块，是因为它跟新闻不是一个池子（不按时效收口、
-  // 不参与事件合并），标题上也直接写明它是 GitHub 的榜，不让用户误读成新闻。
-  if(cls === "" && oss.length){
-    const cut = oss.slice(0, OSS_SHOW);
-    html += `<h2 class="sech">开源热榜 · GitHub 近 ${ossWin} 天新建</h2>`;
-    html += `<div class="newslist">`
-          + cut.map(it => cardHTML(it, false, Number(it.rank) || 0)).join("") + `</div>`;
-    if(oss.length > cut.length){
-      html += `<p class="muted xs">只显示前 ${cut.length} 名 / 共 ${oss.length} 条，点左栏「开源热榜」看全。</p>`;
+  // 【2026-11-12 用户定】GitHub 开源三榜放进「软件」栏目：点左栏「软件」，
+  // 最上面就是速榜/周榜/月榜切换 + 这一档的榜，下面才是软件新闻。这样就不用去
+  // 单独一栏找 GitHub——用户原话「你让我去哪里看速榜和周榜」「要么就放进软件栏目里」。
+  // 走同一份 ossBoardHTML / ossSwitch，口径和独立「开源热榜」栏完全一致。
+  if(cls === "软件" && _ossAliveTop()){
+    html += ossSwitch;
+    if(oss.length){
+      html += ossBoardHTML();
+      shown += oss.length;
+    }else{
+      html += emptyHTML("这一档暂时没有内容", ossEmptyTip(), "");
     }
-    shown += cut.length;
   }
+  // 【2026-11-12 用户定】首页「全部」视图不再露开源榜那段预览。用户原话：
+  // 「首页第一次打开会出现周榜，点速榜就消失了」「喊你把开源放进软件栏目，怎么还是在外面」。
+  // 开源三榜唯一落点就是左栏「软件」栏目（右上带切换按钮），独立「开源热榜」栏仍保留
+  // 供老习惯/气泡深链直达；首页只留新闻 + 实时热榜，不再混一段 GitHub 榜进来。
   if(cards.length){
     if(hotItems.length) html += `<h2 class="sech">${isCn ? "更多新闻" : "更多国际新闻"}</h2>`;
     if(!isCn && !cls){
@@ -1030,9 +1171,9 @@ function render(){
       }).join("");
     }
   }
-  // 【2026-10-28】分母把开源热榜也算进去（只有「全部」视图才把它插进页面），
-  // 否则会出现"已显示 30 / 28 条"这种一眼就假的数。
-  const _tot = state.items.length + (cls === "" ? oss.length : 0);
+  // 【2026-11-12】开源三榜只在「软件」栏目里显示，分母只在那时把它算进去；
+  // 首页「全部」已不再露开源预览，分母就别再加它了，否则"已显示 N / M"对不上。
+  const _tot = state.items.length + ((cls === "软件" && oss.length) ? oss.length : 0);
   html += `<p class="muted xs" style="text-align:center;padding-top:4px">已显示 ${shown} / ${_tot} 条</p>`;
   grid.innerHTML = html;
   const m = $("meta");
@@ -1182,16 +1323,47 @@ async function load(showToast){
  * 每 8 回来一次，最多 10 次（约 80 秒）就停手 —— 别在后面无限打圈。
  */
 let OSS_RETRY = 0;
+let OSS_WEEK_RETRY = 0;   // 【2026-11-12】周榜空档专用补拉计数（与 30 天榜那套互不干扰）
 function applyOss(items, meta){
   state.oss = Array.isArray(items) ? items : [];
   if(meta){
     if(meta.window_days) state.ossWin = Number(meta.window_days) || 30;
     state.ossAt = Number(meta.updatedAt) || 0;
     state.ossSource = meta.source || "";
+    // 【2026-11-12】周榜是 /api/oss 里新增的一组字段，老服务端没有就保持 SSR 那份不动。
+    // 空响应不清掉已经抓到的那份：服务端换批失败时会保留上一批，前端更不能自己抹掉。
+    if(Array.isArray(meta.week_items) && meta.week_items.length) state.ossWeek = meta.week_items;
+    if(meta.week_window_days) state.ossWeekWin = Number(meta.week_window_days) || 7;
+    if(meta.week_updatedAt) state.ossWeekAt = Number(meta.week_updatedAt) || 0;
+    state.ossWeekSource = meta.week_source || "";
+    // 【2026-11-12 三修】涨速榜：同样只增字段，空响应不清掉 SSR / 上一次抓到的那份。
+    if(Array.isArray(meta.speed_items) && meta.speed_items.length) state.ossSpeed = meta.speed_items;
+    if(meta.speed_updatedAt) state.ossSpeedAt = Number(meta.speed_updatedAt) || 0;
+    state.ossSpeedReal = Number(meta.speed_real) || 0;
+    state.ossSpeedSource = meta.speed_source || "";
+    // 【十六修】本批无新增时标注「最近一次真实净增」及其时间，不冒充实时。
+    state.ossSpeedStale = !!meta.speed_stale;
+    state.ossSpeedRealAt = Number(meta.speed_real_at) || 0;
   }
   buildClsOptions();
   renderLeft();
   render();
+  // 从周榜/暴涨气泡点进来：数据到位后直接选中「软件」栏目（开源已归类到这里），
+  // 并把那一档切换按钮点亮，用户一眼看见整份周榜/速榜。
+  try{
+    const _dq = new URLSearchParams(location.search).get("oss");
+    const _dItems = _dq === "speed" ? state.ossSpeed : state.ossWeek;
+    if(!state.ossDeepLinked && (_dq === "week" || _dq === "speed")
+       && (_dItems || []).length){
+      state.ossDeepLinked = true;
+      if(_dq === "week" || _dq === "speed") setOssTab(_dq);
+      const _sel = $("cls");
+      if(_sel && [..._sel.options].some(o => o.value === "软件")){
+        _sel.value = "软件";
+        renderLeft(); render();
+      }
+    }
+  }catch(_){ }
 }
 async function loadOss(){
   try{
@@ -1203,12 +1375,27 @@ async function loadOss(){
     // 用裸 setTimeout，不用 scheduleAuto —— 那个定时器是新闻重试共用的一个槽，
     // 两边互相 clearTimeout 会把对方的等待掐掉（开源热榜不该影响新闻首屏重试）。
     else if(js.loading && OSS_RETRY < 10){ OSS_RETRY++; setTimeout(() => loadOss(), 8000); }
+    // 【2026-11-12 实测修】程序刚启动那一两秒，30 天榜已读盘、周榜还在后台抓：
+    // /api/oss 这一轮回的是 week_items=[]，而 30 天榜有内容所以 loading=false，
+    // 老逻辑要等 2 分钟定时轮询才补 —— 用户点开「7 天周榜」看到的就是空栏。
+    // 空档时按 8 秒一轮补拉，最多 10 次；一拿到就归零，不再占用定时器。
+    const wk = Array.isArray(js.week_items) ? js.week_items : [];
+    const spd = Array.isArray(js.speed_items) ? js.speed_items : [];
+    // 涨速榜由两榜派生：周榜还没到时它也是空的，一起等这一轮补拉就行。
+    if(wk.length && spd.length) OSS_WEEK_RETRY = 0;
+    else if(js.enabled !== false && OSS_WEEK_RETRY < 10){
+      OSS_WEEK_RETRY++;
+      setTimeout(() => loadOss(), 8000);
+    }
   }catch(e){
     // 抓不到就当这栏不存在：不往页面上抛错，也不影响用户看新闻
   }
 }
-// 服务端每 6 小时换一批，页面跟着每 10 分钟看一次有没有新缓存就行，别打得太勤。
-setInterval(() => { if(!document.hidden) loadOss(); }, 600000);
+// 【2026-11-12】周榜 1 小时抓一批，页面改成每 2 分钟看一次有没有新缓存；
+// 从后台 / 别的窗口切回来时立刻拉一次，不必等定时器（「及时给用户看见」）。
+// 拉的是本机 /api/oss 的内存快照，不发外部请求，2 分钟一次没有额度开销。
+setInterval(() => { if(!document.hidden) loadOss(); }, 120000);
+document.addEventListener("visibilitychange", () => { if(!document.hidden) loadOss(); });
 // 国际板块的中文译文由后台线程渐进补齐（抓取不等翻译，否则国际板块要慢 90 秒以上）。
 // 这里定期静默重拉：只有内容真的变了才重绘，避免闪烁，也把补上的译文刷出来。
 // 【2026-10-24】判"变没变"的指纹从 `id|translated` 加严到 `id|rank|heat|translated`：
@@ -1344,6 +1531,20 @@ $("srcRefresh").onclick = () => { loadSources(); toast("已重新读取源健康
 
 /* ================= 刷新 / 检查更新 / 退出 ================= */
 $("reload").onclick = () => { load(true); };
+/* 【2026-11-13】气泡试播：立刻在右下角投一轮（用户要能马上看见效果，不等自动轮播） */
+$("balloonPlay").onclick = async () => {
+  const btn = $("balloonPlay");
+  btn.disabled = true; const old = btn.textContent; btn.textContent = "投放中…";
+  try{
+    const r = await fetch("/api/balloon/play", {method: "POST", headers: POST_HEADERS});
+    const js = await r.json();
+    toast(js.msg || (js.ok ? "气泡已投放" : "没有弹出来"));
+  }catch(e){
+    toast("试播失败：" + e.message);
+  }finally{
+    setTimeout(() => { btn.disabled = false; btn.textContent = old; }, 800);
+  }
+};
 // 【2026-10-07 已移除】原「浏览器翻译」按钮（跳 /world 纯英文页）。
 // 国际板块现在由后台自动译成中文，这个入口不需要了。
 $("checkUpdate").onclick = async () => {

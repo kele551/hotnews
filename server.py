@@ -21,6 +21,7 @@ import socket            # 同上：只解析域名，不建连接
 import sqlite3           # 【2026-10-25 新增】跨天归档（见下面「跨天归档与历史检索」一节）
                         #   标准库自带，不新增第三方依赖；打包时 PyInstaller 会自动收进去。
 import threading
+import random          # 通用随机源（开源暴涨播报 2026-11-12 改为按速度降序，不再用它挑）
 import urllib.parse
 import webbrowser
 import ctypes            # 【2026-10-28 修 NameError】气泡的 GDI+/DIB 绘制散在几个方法里，
@@ -386,6 +387,25 @@ SOURCES = {
         #     （当天无图或响应 15 秒以上）、观察者网/界面（无娱乐频道或卡片无图）。
         # 所以国内「娱乐」这一轮**维持原样**（凤凰娱乐 + 新浪娱乐 + 国际在线娱乐）；
         # 国际板块的「娱乐」栏目改由 CGTN 文化分区直供（见 SOURCES["intl"]），实测 2 条 → 8 条。
+        # ============ 【2026-11-13 接原创/深度源】解决「新闻都是你家抄我家」 ============
+        # 用户原话：「现在的新闻都你家抄我家的，要看真正的独家新闻，其他没有的新闻」。
+        # 实测结论（2026-11-13）：37 个源全部正常，跨源同事件已被合并压到 1%；
+        # 真正的病根是**供量结构** —— 科技栏 90 条里快科技 44 + IT之家 35 = 79%，
+        # 两家都是快讯/编译，原创稿进不来。
+        # 下面三家是「自己采写、别家转载」的原创/深度媒体，都**没有可用 RSS**
+        # （逐条实测：南方周末/一财/周刊/新京报/极目 RSS 全 404，财新 RSS 200 但 0 条），
+        # 只能按各自列表页做专用解析（见 _parse_inewsweek / _parse_caixin / _parse_bjnews）。
+        # 这三家的条目在出口带 `original=True`：页面打「原创」标、同事件合并时优先保留。
+        #   · 新京报（www.bjnews.com.cn）：首页头条轮播 5 卡，标题+图+「N 小时前」，实测 200；
+        #   · 中国新闻周刊（www.inewsweek.cn）：首页 9 条，gb2312 编码（解码自动回退 gb18030），
+        #     日期写在 URL 里（/society/2026-11-12/33088.shtml）；
+        #   · 财新（www.caixin.com）：滚动新闻 20 条，时间精确到分（11-13 11:59），
+        #     列表不带图 → body_image 走正文页首图；付费墙只影响正文，标题+链接是公开的。
+        # ⚠ 南方周末（infzm.com）首页是 JS 渲染（只有 vendor/bootstrap/ad 三个 js，
+        #   没有文章锚点），本轮**没接**：要接得先逆向它的列表接口，下一轮再做。
+        {"id": "cn-bjnews", "label": "新京报",     "url": "https://www.bjnews.com.cn/", "base": "https://www.bjnews.com.cn", "region": "cn", "cls": "头条", "parser": "bjnews"},
+        {"id": "cn-weekly", "label": "中国新闻周刊", "url": "https://www.inewsweek.cn/", "base": "https://www.inewsweek.cn", "region": "cn", "cls": "头条", "parser": "inewsweek"},
+        {"id": "cn-caixin", "label": "财新",       "url": "https://www.caixin.com/",      "base": "https://www.caixin.com",     "region": "cn", "cls": "财经", "parser": "caixin", "body_image": True},
     ],
     "intl": [
         # ============ 【2026-10-09 换源·合规】国际新闻只用境内媒体的国际版 ============
@@ -473,6 +493,15 @@ NOIMG_SOURCES = set()
 #     正文容器另有取法（见 _art_site_rule / _cn_body_image）；
 #   · 要给它们**更短的超时**（BODY_IMG_TIMEOUT），别让一条慢页面把整轮补图拖住。
 BODY_IMAGE_CHANNELS = {s["id"] for _rg in SOURCES.values() for s in _rg if s.get("body_image")}
+
+# 【2026-11-13 接原创源】「自己采写、别家转载」的源：条目在出口打 original=True。
+# 三处生效：① 页面打「原创」标；② 同事件合并时**优先保留原创那条**（原来留"最先抓到"的）；
+# ③ `_pick_news_with_quota` 补位阶段给原创条目优先权，避免被快讯源挤掉。
+# 澎湃 / 界面是头条原有的两家原创主力，一起算进来（界面也有转载，但原创比例明显高于快讯站）。
+ORIGINAL_CHANNELS = {
+    "cn-bjnews", "cn-weekly", "cn-caixin",    # 2026-11-13 新增的三家
+    "cn-thepaper", "cn-finance",              # 澎湃、界面：原有头条主力，以自己采写为主
+}
 BODY_IMG_TIMEOUT = 3.0     # 「去正文页取首图」的单条上限（秒）
 
 # 【2026-10-25 新增】来源 → 色相表（界面把每家媒体的名字染成固定颜色，见 static/index.html 的 srcHue）。
@@ -1511,6 +1540,11 @@ def _parse_one(src):
         _items = _keep
     # 【2026-10-24】健康度：这个源本轮抓到了多少条（0 条会在右栏标成「降级」，可能改版）
     _note_src_health(src, True, len(_items))
+    # 【2026-11-13 接原创源】给原创源的条目打标：出口排序/去重/前端「原创」标签都靠这个字段。
+    _orig = _sid in ORIGINAL_CHANNELS
+    for _it in _items:
+        if isinstance(_it, dict):
+            _it["original"] = _orig
     _src_settle(_sid, _items, True)
     return _items
 
@@ -1542,6 +1576,13 @@ def _parse_one_raw(src):
         return _parse_people_list(src)
     if src.get("parser") == "gmw_list":       # 光明网·国际（world.gmw.cn 图卡）
         return _parse_gmw_list(src)
+    # 【2026-11-13 接原创源】三家没有 RSS 的原创/深度媒体（列表页解析）
+    if src.get("parser") == "inewsweek":      # 中国新闻周刊（gb2312 首页）
+        return _parse_inewsweek(src)
+    if src.get("parser") == "caixin":         # 财新（滚动新闻，图走正文页）
+        return _parse_caixin(src)
+    if src.get("parser") == "bjnews":         # 新京报（头条轮播图卡）
+        return _parse_bjnews(src)
     # 【2026-10-09 修 低-6 删除死代码】这里原来还有一个 `parser == "github_readme"` 分支
     # （抓 GitHub 上 awesome 列表仓库的 README 做成软件卡片）。SOURCES 里没有任何源用它
     # —— 用户 2026-10-07 已明确要求「删除不易读的英文 GitHub 仓库，改用国内源」，
@@ -4516,11 +4557,118 @@ TRAY = _Tray()
 #       5600 毫秒正好卡在「读得完」与「不拖沓」之间，一组 56 秒，比原来的 6 条 ×7.2=43 秒
 #       只长 13 秒，却多播 4 条、多覆盖 3 个栏目。
 BALLOON_PER_ITEM_MS = 5600   # 每条新闻停留多久（毫秒）；一组 10 条 ≈ 56 秒
+# 【2026-11-12 四修】用户：「github 的轮播跳得太快，来不及看清」。
+# 开源榜气泡是**单条独立播报**（不占新闻那 10 席），单独停 12 秒；新闻轮播仍按 5.6 秒。
+OSS_TOAST_MS = 12000
+# GitHub 官方 Octocat 徽章：Simple Icons github.svg 矢量轮廓，6x 超采样渲染成 PNG 后内嵌。
+# 只有第一次解码成 GDI+ 位图并缓存，不新增图片文件、不依赖 Pillow。
+_GH_BADGE_PNG_B64 = (
+    "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"
+    "YwFPfT/+tqz4seMn9FT33tq5aze/8XfYu28/f7idJPHSJX0xY6ZLjv3zjp36ZsEij5zX7j179eWsf7rs+KvWrNOMWcx9IEC4"
+    "+M7c2UHi1v/cFRbc+Zn4r/iEBPXs219TP5uu7Oxsj38/u/fs1b4DB+UNS4BP+3wGF4iTTP1suvbu2+/UYyYkXNTwEa8Y2nPD"
+    "Vd7/cIrhapVyuYvuyNHjPHpuMGmAMHInfK+B1hWPIlwxsHtjWPDnTc2ys7M1+cMp6vjnrtqyNdYj38OWbbHqP3CYuj7TRydO"
+    "nPSKflm+YpUWL13GX0MnuH79ugYOGW5oXQij4aFv/0G6lJTk0fPKysrS0BdHODUcLV22Qs8PeVGZBl4lBgHCqXMEXDWfwZnH"
+    "NdsETvnRI42+/QepV78BWr9ho8vvfhISLmrGzNlq27Gz+j43yCtX2nvtjQlavmIVF4cTJCUnq2uPvnn+Oe/ctVvdevTRcS8J"
+    "mr9dvapefQdo2fJVeXx1+DeNfnW8Ro4ep6ysLC4YMYnS5W9klIiKumtAvhAf79S7e1cM+M7+Hqk+OE/s9h2K3b5DpUuXUvu2"
+    "MWrXprVqVK9md7MfI5WOA3GHtGnzVm38aZN+2b3X7m6NnpaZmakRo8bqp81bNHTwQJV9oEyu7rpTUlO5oO4YJPsPHKaO7dtq"
+    "2JCBqvhgBcNfe+78BX36+XR9s2Cx1103aenpevmVsVq2cpVeenGoqleravhrExMvad78hfryq38qJYXrxRdYJKlitVoefQCV"
+    "m1c67zXIO2uAdlXFgABhHoXCwlS7Vk3VqhmtcmXLqlSpkoqKilRISAEFBwUpMDBQWVlZyszMUkpqipKSkpWYeEmnz5zRiZOn"
+    "dPjIER04GKf09AyZef+LRg0f1aP16+nh2jVVsmRJhYWGKiSkgLKyspR67ZrOn4/XiZMntWPnLq37br2SkpO5eJTzjpbNmzZR"
+    "zZrRKlf2AYUXK6b8+YN0/XqWrqak6NSp0zpwME4/bNio2O0/Kzv7hinOq3atmmrVoplq1ozWg+XLKywsTIGBgUpPT9Ply1f0"
+    "66nT2n/goLZu267Yn3d4xfwjOMexuD0WrwgQ3hAiXP24wdMhgvAAAHBmgLD6yuQ+5hsQHgAA8s9JlEYHuvvdzTsaInw5fBAe"
+    "AADshWHiMECFBADgcwHiWNwei3ykCpHbwZrqAwAAytX8B8lL98JwxmZb/n7HT3gAAMgfH2E4ukolCA8AAD+fA8FASJ8BALw8"
+    "QHjTPIjcDIhUIQgPAAC5df6Dad7CIEQQHgAA4hGGq0KEvwYJwgMAwKMBwlsfY+R2YmVuwoTZQwfhAQAgNz++kLz0NU5nveLp"
+    "6xUJwgMAQN7yCMPbqxD/GTj9efD09/MHAMij1QfTL2Xtj4MowQEAIG+dRGmGKoQ/DqiEBwCAvKD6IJlwDkROA2tel78mOAAA"
+    "oLy9xmmmKoSvzg1grgMAQF5YfZB8pALhaxUJQgMAQGZeSMqMVQgz38FTcQAAyATVB8lHKxBmq0gQGgAAZmOowlCxWq2bvnbi"
+    "t4aJC/HuCRa3LmxFaAAAyKTVB8MBwldDxK2OHtzt0uNXql6bKxIA4BPhIVcBwh9ChLNCBWEBAODL4UHykzkQomoAAIA8tp23"
+    "2d/KAAAAzhnjra7+AAAA4FvhweHNtAgRAAD4b3jI026chAgAAPwzPOR5O29CBAAA/hce8hwgCBEAAPhfeHBKgCBEAADgX+HB"
+    "aQGCEAEAgP+EB6cGCEIEAAD+ER6cHiAIEQAA+H54kHK5F0Zu+dveGQAA+HpwkKsqEFQjAADw7fDg8gBBiAAAwPfCg+TiRxji"
+    "kQYAAD4VHDwSIAgSAAD4RrXfo48XCBIAAJhzmoBXzE8gSAAAYK75hV41wZEgAQCAOV5M8No3JAgTAAB479uMpnnFkkABACAw"
+    "ECAIFQAAwoKJ10r6NxzY5YPhk2saAAAAAElFTkSuQmCC"
+)
 BALLOON_PLAY_COUNT = 10      # 一条气泡里滚动播放几条（用户要求「增加 10 组新闻」）
 # 【2026-10-28 用户反馈「点打开进了网页，轮播就停止了」】
 # 点「打开」原本把整组一起收掉：第 3 条点开，剩下 7 条就没了 —— 一轮 10 条等于只看 3 条。
 # 现在改成：开完这一条，气泡先让开屏幕（浏览器要看清楚），隔这么久再**接着播这一组剩下的**。
 BALLOON_RESUME_MS = 8000
+# ── 【2026-11-13 轮播升级】换条时的动效 ──
+# 原来是一条硬切下一条，桌面上一眨眼就换了内容，像是"刷新了一下"，不像"投放"。
+# 现在每换一条：整卡从 78% 不透明度淡到 100%，同时从下往上浮 10 像素（300ms 走完）。
+# 透明走 UpdateLayeredWindow 的 SourceConstantAlpha（逐像素 alpha 之上再乘一道），
+# 上浮走 pptDst 的 y 坐标，两者都在 _present 里算，不给窗口挪位置（不会闪一下边框）。
+BALLOON_FADE_MS = 500
+BALLOON_FADE_TICK_MS = 16
+BALLOON_RISE_PX = 22
+BALLOON_SLIDE_PX = 40            # 同时从右边滑进来一点：纯上浮在右下角太不起眼
+BALLOON_FADE_MIN_ALPHA = 90     # 起始不透明度（≈59%），够看得出"淡进来"，又不至于闪一下
+
+
+def _balloon_fade_p(t0, now=None):
+    """换条动效的进度 0~1（纯函数，便于单测）：从 t0 起算 BALLOON_FADE_MS 走完。"""
+    if not t0:
+        return 1.0
+    now = time.monotonic() if now is None else now
+    span = max(1, BALLOON_FADE_MS) / 1000.0
+    return max(0.0, min(1.0, (now - t0) / span))
 # 气泡里「头条」那一行的前缀：自绘气泡会据此把它画成红色标签（见 _wndproc 的 WM_PAINT）。
 BALLOON_HEADLINE_TAG = "【头条】"
 
@@ -4864,6 +5012,26 @@ def _balloon_palette(ui=None):
     return pal
 
 
+def _balloon_heavy_face():
+    """气泡标题/App 名用的「粗黑体」字族名，本机没有就返回空串。
+
+    【廿三修】用户对着一版实拍说「应该是字体的原因，还是看着不舒服」，并给了张粗黑体
+    参考图 —— 雅黑最粗只到 Bold，笔画还是偏薄。Noto Sans SC 的 Black 才是真正的最粗一级，
+    Windows 把 NotoSansSC-VF.ttf 这个可变字体的各个字重注册成独立字族（名字就叫
+    "Noto Sans SC Black"），GDI 与 GDI+ 都能直接按字族名取到。
+    只在 Fonts 目录里真的存在这个文件时才用，别的机器上退回雅黑，不会画成方框。
+    """
+    try:
+        for d in (os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
+                  os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                               "Microsoft", "Windows", "Fonts")):
+            if d and os.path.exists(os.path.join(d, "NotoSansSC-VF.ttf")):
+                return "Noto Sans SC Black"
+    except Exception:
+        pass
+    return ""
+
+
 def _balloon_split_head(head):
     """把 _balloon_head 生成的第一行拆回「栏目 / 来源 / 备注」三段，好分别排版。
 
@@ -4919,8 +5087,34 @@ def _balloon_img_local(url):
     return ""
 
 
+def _balloon_backdrop_img():
+    """【2026-11-13 十五修·用户「这个轮播的背景应该用新闻图片替代」】
+    提示类气泡（「新闻还在抓」「没有新的可播」）本来没有题图，就画成一张纯黑底卡片，
+    用户看着像"黑板"。这里从本机题图缓存里挑**最新的一张新闻图**当背景板 ——
+    只读本地文件、不联网、不动任何排版；缓存空着时返回 ""，照旧走深色底。
+    """
+    try:
+        best, best_mt = "", -1.0
+        for name in os.listdir(BALLOON_IMG_DIR):
+            if not name.endswith(".img"):
+                continue
+            p = os.path.join(BALLOON_IMG_DIR, name)
+            try:
+                st = os.stat(p)
+                if st.st_size < 2048:
+                    continue
+                if st.st_mtime > best_mt:
+                    best, best_mt = p, st.st_mtime
+            except Exception:
+                continue
+        return best
+    except Exception:
+        return ""
+
+
 def _balloon_img_warm(url):
     """确保这张图在后台下一份（已经在本地 / 正在下 / 下过失败 → 直接返回）。"""
+    _balloon_img_prune_tick()          # 顺手看看缓存是不是该收一收了（默认 6 小时一次，后台做）
     if _balloon_img_local(url) or not isinstance(url, str) \
             or not url.startswith(("http://", "https://")):
         return
@@ -4955,6 +5149,86 @@ def _balloon_img_fetch(url):
     finally:
         with _IMG_LOCK:
             _IMG_BUSY.discard(url)
+
+
+# ── 缓存上限（2026-11-12 修「只涨不清」）──────────────────────────────
+# 实测问题：`%LOCALAPPDATA%\hotnews\balloon_img` 攒到 3317 个文件 / 876 MB（最早 10-28），
+# 原实现只有「单张 ≤8MB」一道闸，**没有任何按时间 / 总量清理**，目录会一直涨下去。
+# 现在给两条上限，超出就从最旧的开始删：下次轮到那条新闻时按 URL 重新下一份，表现不变。
+BALLOON_IMG_MAX_BYTES = 300 * 1024 * 1024    # 目录总量上限 300 MB
+BALLOON_IMG_MAX_FILES = 2000                 # 文件数上限
+BALLOON_IMG_PRUNE_EVERY = 6 * 3600           # 两次清理的最小间隔（秒）
+BALLOON_IMG_PART_TTL = 3600                  # 下载中断留下的 .part 残片超过 1 小时就清掉
+_IMG_PRUNE_NEXT = 0.0
+
+
+def _balloon_img_prune(dir_path=None, max_bytes=BALLOON_IMG_MAX_BYTES,
+                       max_files=BALLOON_IMG_MAX_FILES, now=None):
+    """把气泡题图缓存压回上限，返回 (删了几个, 剩余文件数, 剩余字节)。
+
+    顺序：先清超期的 `.part` 残片（下载中断留下的），再按 mtime 从旧到新删，
+    直到文件数与总量都不超上限。目录不存在、单个文件正被绘制线程打开删不掉 → 跳过，
+    绝不抛异常（这条路径在轮播/绘制的热路径上，不能被缓存清理搞挂）。
+    """
+    d = dir_path or BALLOON_IMG_DIR
+    try:
+        entries = []
+        for name in os.listdir(d):
+            p = os.path.join(d, name)
+            try:
+                st = os.stat(p)
+            except Exception:
+                continue          # 刚好被别的线程删了 / 正写一半，跳过
+            entries.append((p, st.st_size, st.st_mtime, name.endswith(".part")))
+    except Exception:
+        return (0, 0, 0)          # 目录还没建 / 没有权限 → 当没事发生
+    now = time.time() if now is None else now
+    removed, total, live = 0, 0, []
+    for p, size, mtime, is_part in entries:
+        if is_part and now - mtime > BALLOON_IMG_PART_TTL:
+            try:
+                os.remove(p)
+                removed += 1
+                continue
+            except Exception:
+                pass
+        live.append((p, size, mtime))
+        total += size
+    live.sort(key=lambda x: x[2])          # 最旧的排前面
+    files = len(live)
+    fails = 0
+    while live and (files > max_files or total > max_bytes):
+        p, size, _mt = live.pop(0)
+        try:
+            os.remove(p)
+        except Exception:
+            fails += 1
+            if fails >= 5:                 # 连续删不动就别继续折腾（多半是被占用）
+                break
+            continue
+        files -= 1
+        total -= size
+        removed += 1
+    return (removed, files, total)
+
+
+def _balloon_img_prune_tick():
+    """缓存清理的节流入口：默认 6 小时一次，**扔到后台线程**做，别卡绘制 / 轮播。"""
+    global _IMG_PRUNE_NEXT
+    now = time.time()
+    if now < _IMG_PRUNE_NEXT:
+        return
+    _IMG_PRUNE_NEXT = now + BALLOON_IMG_PRUNE_EVERY
+
+    def _run():
+        try:
+            r = _balloon_img_prune()
+            if r[0]:
+                print("[ok] 气泡题图缓存清理：删 %d 个，剩 %d 个 / %.1f MB"
+                      % (r[0], r[1], r[2] / 1048576.0))
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _balloon_prefetch(entries):
@@ -5083,6 +5357,14 @@ class _Balloon:
 
             class POINT(ctypes.Structure):
                 _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            # 【2026-11-13 十九修·用户「字体要清晰，不能有毛边、毛刺」】
+            # GDI 的 DrawTextW 在 32 位 DIB 上写出来的 alpha 是 0，靠 _solidify_alpha
+            # 事后把整块钉成不透明 —— 字的抗锯齿边缘因此变成一圈实心黑边（就是"毛刺"）。
+            # 改由 GDI+ 用灰度抗锯齿画字（alpha 自带），边缘才是干净的。
+            class RECTF(ctypes.Structure):
+                _fields_ = [("X", ctypes.c_float), ("Y", ctypes.c_float),
+                            ("W", ctypes.c_float), ("H", ctypes.c_float)]
 
             class BLENDFUNCTION(ctypes.Structure):
                 _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
@@ -5280,6 +5562,25 @@ class _Balloon:
                 gp.GdipFillPolygonI.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                                 ctypes.POINTER(wintypes.POINT),
                                                 ctypes.c_int, ctypes.c_int]
+                # 【十九修】GDI+ 文本：字族 / 字体 / 排版格式 / 灰度抗锯齿
+                gp.GdipCreateFontFamilyFromName.argtypes = [
+                    ctypes.c_wchar_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipDeleteFontFamily.argtypes = [ctypes.c_void_p]
+                gp.GdipCreateFont.argtypes = [ctypes.c_void_p, ctypes.c_float,
+                                              ctypes.c_int, ctypes.c_int,
+                                              ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipDeleteFont.argtypes = [ctypes.c_void_p]
+                gp.GdipCreateStringFormat.argtypes = [ctypes.c_int, ctypes.c_ushort,
+                                                      ctypes.POINTER(ctypes.c_void_p)]
+                gp.GdipSetStringFormatAlign.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipSetStringFormatLineAlign.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipSetStringFormatFlags.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipSetStringFormatTrimming.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipSetTextRenderingHint.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                gp.GdipDeleteStringFormat.argtypes = [ctypes.c_void_p]
+                gp.GdipDrawString.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int,
+                                              ctypes.c_void_p, ctypes.POINTER(RECTF),
+                                              ctypes.c_void_p, ctypes.c_void_p]
                 if gp.GdiplusStartup(ctypes.byref(tok), ctypes.byref(inp), None) == 0:
                     self.gdip, self.gdip_tok = gp, tok
             except Exception as ex:
@@ -5377,8 +5678,14 @@ class _Balloon:
             g.DeleteObject(pn)
 
     def _draw_thumb(self, hdc, rect, path, pal, radius=BALLOON_THUMB_RADIUS,
-                    zoom=1.0, ken=(0.5, 0.5)):
+                    zoom=1.0, ken=(0.5, 0.5), contain=False):
         """把题图贴进 rect（设备像素）：按目标宽高比裁原图（cover）+ 圆角裁剪 + 双三次缩放。
+
+        contain=True 时改为**整张图等比装进卡片、居中、四周留深色底**（不裁切、不放大、
+        不推进镜头）。给开源席用：项目 owner 头像是 420×420 方图，cover 到 480×176
+        扁卡会把人脸放大到占满整卡（用户 11-12「缩放，遮挡了整张画面」），但用户又
+        要求「背景仍是这个项目图标」，所以选了完整不放大这一档。
+
 
         没有图 / 解码失败 → 画一块 --card2 的圆角占位（版面不跳，看着也不像坏了）。
         解码结果按路径缓存在 self._img_cache，倒计时条每 200 毫秒的重画不会反复读盘。
@@ -5453,28 +5760,42 @@ class _Balloon:
                 gp.GdipDeletePath(_cp)
                 iw, ih = img[1], img[2]
                 _z = max(1.0, float(zoom or 1.0))
-                # 【2026-10-28 用户：「图片变形了，应该是由远到近，渐进式展示」】
-                # 原来是「一律裁正方形，再塞进目标矩形」—— 84×84 的缩略图没问题，
-                # 但整卡 600×220 是扁的，方形裁片一拉，人脸就横着胖了一圈。
-                # 现在按**目标矩形的宽高比**裁源图（cover），横竖同一个比例缩放，不变形；
-                # zoom 只决定裁进来多大一块（1.0 = 能看到的最大范围，越大越近）。
                 dw = max(1, x2 - x1)
                 dh = max(1, y2 - y1)
-                _ar = dw / float(dh)
-                if iw / float(ih) > _ar:        # 图比卡宽 → 高度占满，左右裁
-                    sh = ih / _z
-                    sw = sh * _ar
-                else:                          # 图比卡高（或正好）→ 宽度占满，上下裁
-                    sw = iw / _z
-                    sh = sw / _ar
-                sw = max(1, min(int(round(sw)), iw))
-                sh = max(1, min(int(round(sh)), ih))
-                kx, ky = ken if ken else (0.5, 0.5)
-                sx = int(round((iw - sw) * max(0.0, min(1.0, kx))))
-                sy = int(round((ih - sh) * max(0.0, min(1.0, ky))))
-                gp.GdipDrawImageRectRectI(gfx, img[0], x1, y1, dw, dh,
-                                          sx, sy, sw, sh, 2, None, None, None)
-                ok = True
+                if contain:
+                    # 【2026-11-12 十二修】开源席：整张图标等比装进卡片、居中、不裁不放大。
+                    # cover 会把 420×420 头像拉成 480×176 满版人脸（用户「缩放，遮挡了整张画面」），
+                    # contain 则四周留深色底、图标完整可见；暗蒙层照旧盖住整卡保证白字可读。
+                    # _k 封顶 1.0：小图也不放大，避免任何拉伸糊化。
+                    _k = min(1.0, dw / float(iw), dh / float(ih))
+                    tw = max(1, int(round(iw * _k)))
+                    th = max(1, int(round(ih * _k)))
+                    tx = x1 + (dw - tw) // 2
+                    ty = y1 + (dh - th) // 2
+                    gp.GdipDrawImageRectRectI(gfx, img[0], tx, ty, tw, th,
+                                              0, 0, iw, ih, 2, None, None, None)
+                    ok = True
+                else:
+                    # 【2026-10-28 用户：「图片变形了，应该是由远到近，渐进式展示」】
+                    # 原来是「一律裁正方形，再塞进目标矩形」—— 84×84 的缩略图没问题，
+                    # 但整卡 600×220 是扁的，方形裁片一拉，人脸就横着胖了一圈。
+                    # 现在按**目标矩形的宽高比**裁源图（cover），横竖同一个比例缩放，不变形；
+                    # zoom 只决定裁进来多大一块（1.0 = 能看到的最大范围，越大越近）。
+                    _ar = dw / float(dh)
+                    if iw / float(ih) > _ar:        # 图比卡宽 → 高度占满，左右裁
+                        sh = ih / _z
+                        sw = sh * _ar
+                    else:                          # 图比卡高（或正好）→ 宽度占满，上下裁
+                        sw = iw / _z
+                        sh = sw / _ar
+                    sw = max(1, min(int(round(sw)), iw))
+                    sh = max(1, min(int(round(sh)), ih))
+                    kx, ky = ken if ken else (0.5, 0.5)
+                    sx = int(round((iw - sw) * max(0.0, min(1.0, kx))))
+                    sy = int(round((ih - sh) * max(0.0, min(1.0, ky))))
+                    gp.GdipDrawImageRectRectI(gfx, img[0], x1, y1, dw, dh,
+                                              sx, sy, sw, sh, 2, None, None, None)
+                    ok = True
         except Exception:
             ok = False
         finally:
@@ -5643,6 +5964,24 @@ class _Balloon:
                                     self._argb(pal["card"], BALLOON_CARD_ALPHA))
                 self._gp_stroke_round(gr, M, M, W, H, R, self._argb(pal["line"]),
                                       max(1.0, self.scale))
+                # 【2026-11-13 十一修·用户「看不出变化」】卡面顶部加一条主色细条：
+                # 一眼就能看出这是新版气泡，又不动任何排版与文字位置（只压在描边内侧）。
+                _bar_h = max(3, int(4 * self.scale))
+                self._gp_fill_round(gr, M + int(2 * self.scale), M + int(1 * self.scale),
+                                    W - int(4 * self.scale), _bar_h, _bar_h / 2.0,
+                                    self._argb(pal["accent"], 235))
+                # 【2026-11-13 十四修·用户「这种特效参考一下 github 上的项目」】
+                # 照 Aceternity / Magic UI 那类「Shine Border」的思路，但不用逐帧跑光
+                # （气泡常驻会烧 CPU）：做成**呼吸光晕** —— 卡框外侧一圈主色明暗循环，
+                # 周期 2.6 秒、透明度 18→70/255，只在播报版式有动画节拍时自然跳动。
+                _ph = (self._anim_t() % 2600.0) / 2600.0
+                _amp = 1.0 - abs(_ph * 2.0 - 1.0)
+                self._gp_stroke_round(
+                    gr, M - int(2 * self.scale), M - int(2 * self.scale),
+                    W + int(4 * self.scale), H + int(4 * self.scale),
+                    R + int(2 * self.scale),
+                    self._argb(pal["accent"], int(18 + 52 * _amp)),
+                    max(1.5, 2.0 * self.scale))
                 # 【2026-10-28 第五轮·最终口径】用户：「要整成鼠标靠近才显示的状态」——
                 # 两颗按钮平时不画（卡片只留内容），鼠标靠近卡片才浮出来。
                 # 按钮的底片和字都由 _draw_buttons 画（它是每帧最后一步，才能压在
@@ -5712,6 +6051,72 @@ class _Balloon:
         except Exception:
             return 0.0
 
+    def _gp_text(self, hdc, txt, rect, font, color, s, flags):
+        """GDI+ 画一行字（灰度抗锯齿）。成功返回 True，失败让调用方退回 GDI。
+
+        rect 是**设备坐标 + 视口原点之前的**（和 _dt 一样只乘了缩放比），
+        而 GDI+ 不认 SetViewportOrgEx 的 M 偏移，所以这里要自己补上 self.M。
+        """
+        gp = self.gdip
+        info = getattr(self, "_fmap", {}).get(font)
+        if not gp or not info or not txt or hdc != getattr(self, "_memdc", None):
+            return False
+        ct = self.ctypes
+        try:
+            px, weight = info
+            # 【廿三修】900 记号 = 用粗黑体字族（Noto Sans SC Black），不再叠 Bold 样式；
+            # 600 以上仍是雅黑 Bold。
+            if weight >= 900:
+                fam_name, style = (_balloon_heavy_face() or "Microsoft YaHei UI"), 0
+            elif weight >= 600:
+                fam_name, style = "Microsoft YaHei UI", 1
+            else:
+                fam_name, style = "Microsoft YaHei UI", 0
+            key = (fam_name, px, style)
+            f = self._gpf.get(key)
+            if f is None:
+                ff = ct.c_void_p()
+                if gp.GdipCreateFontFamilyFromName(fam_name, None,
+                                                   ct.byref(ff)) != 0:
+                    return False
+                f = ct.c_void_p()
+                rc = gp.GdipCreateFont(ff, ct.c_float(float(px)),
+                                       style, 2, ct.byref(f))
+                gp.GdipDeleteFontFamily(ff)
+                if rc != 0:
+                    return False
+                self._gpf[key] = f
+            gr = ct.c_void_p()
+            if gp.GdipCreateFromHDC(hdc, ct.byref(gr)) != 0:
+                return False
+            try:
+                gp.GdipSetTextRenderingHint(gr, 3)      # AntiAliasGridFit（灰度，不带彩边）
+                gp.GdipSetSmoothingMode(gr, 4)
+                br = ct.c_void_p()
+                if gp.GdipCreateSolidFill(0xFF000000 | (color & 0xFFFFFF),
+                                          ct.byref(br)) != 0:
+                    return False
+                fmt = ct.c_void_p()
+                gp.GdipCreateStringFormat(0, 0, ct.byref(fmt))
+                gp.GdipSetStringFormatFlags(fmt, 0x00004000)   # NoClip：不裁字
+                gp.GdipSetStringFormatLineAlign(fmt, 1)        # 竖直居中
+                if flags & 0x1:
+                    gp.GdipSetStringFormatAlign(fmt, 1)        # 居中
+                elif flags & 0x2:
+                    gp.GdipSetStringFormatAlign(fmt, 2)        # 右对齐
+                m = int(getattr(self, "M", 0))
+                rf = self.RECTF(ct.c_float(rect[0] + m), ct.c_float(rect[1] + m),
+                                ct.c_float(max(1, rect[2] - rect[0])),
+                                ct.c_float(max(1, rect[3] - rect[1])))
+                gp.GdipDrawString(gr, txt, len(txt), f, ct.byref(rf), fmt, br)
+                gp.GdipDeleteStringFormat(fmt)
+                gp.GdipDeleteBrush(br)
+            finally:
+                gp.GdipDeleteGraphics(gr)
+            return True
+        except Exception:
+            return False
+
     def _dt(self, hdc, txt, rect, font, color, s, flags=0x20 | 0x4 | 0x8000 | 0x800):
         """按**逻辑坐标**画一行字（内部乘缩放比），省得每个调用点都写一遍。
 
@@ -5721,10 +6126,14 @@ class _Balloon:
         `round` 让它落在最近的物理像素上，笔画边缘才是实边。
         """
         g, u = self.g, self.u
-        g.SelectObject(hdc, font)
-        g.SetTextColor(hdc, color)
         r = self.RECT(int(round(rect[0] * s)), int(round(rect[1] * s)),
                       int(round(rect[2] * s)), int(round(rect[3] * s)))
+        # 【十九修】优先走 GDI+：灰度抗锯齿、alpha 自带，不再依赖 _solidify_alpha
+        # 把整块钉成不透明，笔画边缘也就没有那圈实心黑毛刺。
+        if self._gp_text(hdc, txt, (r.left, r.top, r.right, r.bottom), font, color, s, flags):
+            return
+        g.SelectObject(hdc, font)
+        g.SetTextColor(hdc, color)
         u.DrawTextW(hdc, txt, -1, ctypes.byref(r), flags)
 
     def _dt_shadow(self, hdc, txt, rect, font, color, s, flags=0x20 | 0x4 | 0x8000 | 0x800,
@@ -5765,7 +6174,11 @@ class _Balloon:
             except Exception:
                 return float(v)
 
-        if halo:
+        # 【廿一修】小字（<18 物理像素）不描边：一圈黑描边在 16px 上就是把笔画
+        # 撑粗一圈毛刺，实拍里「速榜」「按真实净增排」「日增 x 星/天」全是这样。
+        # 小字只留右下 1 像素影子，靠压暗层撑对比。
+        _px_size = int((self._fmap.get(font) or (0, 0))[0]) if hasattr(self, "_fmap") else 0
+        if halo and _px_size >= 18:
             h = _px(halo)
             for dx, dy in ((-h, 0.0), (h, 0.0), (0.0, -h), (0.0, h),
                            (-h, -h), (h, -h), (-h, h), (h, h)):
@@ -5802,6 +6215,23 @@ class _Balloon:
                 cur += ch
                 i += 1
                 continue
+            # 【2026-11-13 二十修·用户「排列不整齐」】断行优先落在**词边界**：英文单词
+            # 整段挪到下一行，不再出现「运行Clo / udflare」这种一个词被劈两半的断口。
+            _k = len(cur)
+            while _k > 0 and cur[_k - 1].isascii() and cur[_k - 1].isalnum():
+                _k -= 1
+            # 【廿三修】断口两侧都是英数字母时，说明正落在一个长词中间（实拍里
+            # 「QQ 客户端」被劈成「Q / Q客户端」就是这里）：这个整段一律挪到下一行，
+            # 即便它当前只有 1 个字符。
+            _cont = text[i].isascii() and text[i].isalnum()
+            if _cont and 0 < _k < len(cur):
+                lines.append(cur[:_k].rstrip())
+                cur = cur[_k:]
+                continue
+            if 0 < _k < len(cur) and (len(cur) - _k) >= 2:
+                lines.append(cur[:_k].rstrip())
+                cur = cur[_k:]
+                continue
             lines.append(cur)
             cur = ""
         if cur and len(lines) < n:
@@ -5813,6 +6243,36 @@ class _Balloon:
                 last = last[:-1]
             lines[-1] = last + "…"
         return lines or [""]
+
+    def _text_fits_lines(self, hdc, text, font, maxw, n=2):
+        """整段文字能否在 n 行内装完 —— 和 _fit_lines 同一套「逻辑→物理」量法。
+
+        【2026-11-12 用户定】「气泡里的文字要看全，不能有残缺」。这是正文自适应字号
+        的判断底子：只量、不改文案，返回 True 表示 _fit_lines 不会往末尾收「…」。
+        """
+        box = maxw * (self.scale or 1.0)
+        cur, lines = "", 1
+        for ch in (text or "").strip():
+            if cur and self._text_w(hdc, cur + ch, font) > box:
+                lines += 1
+                cur = ""
+                if lines > n:
+                    return False
+            cur += ch
+        return True
+
+    def _body_font(self, hdc, text, base_font, maxw, n=2):
+        """播报正文自适应字号：先用标题字体，两行装不下就退 font_msg / font_meta。
+
+        宁可字小一号，也不让正文出现「…」。只挑现成字体、不新建 GDI 资源，也不改
+        新闻标题版式（那套字号是用户 10-29 定死的）。开源榜仓库名长短不一（本机
+        真数据 12~47 字符），这是「文字看全」的最后一道保险。
+        """
+        for f in (base_font, getattr(self, "font_msg", None),
+                  getattr(self, "font_meta", None)):
+            if f and self._text_fits_lines(hdc, text, f, maxw, n):
+                return f
+        return getattr(self, "font_meta", None) or base_font
 
     _grad_warned = False
 
@@ -5843,6 +6303,58 @@ class _Balloon:
         gp.GdipSetLinePresetBlend(br, ca, pa, n)
         return br
 
+    def _draw_github_mark(self, hdc, s):
+        """【2026-11-12 四修】开源榜气泡左上角贴 GitHub **官方**标志徽章。
+
+        用户指出上一版「白圆 + 两个点」标识不对、也模糊。这一版用 Simple Icons 的
+        github.svg 官方 Octocat 矢量轮廓（深色圆底 + 白色猫头 + 站名），6x 超采样
+        渲染成 PNG 内嵌；第一次解码到 GDI+ 位图并缓存，之后每条气泡直接缩放贴图，
+        小尺寸下也不糊。整段自带 try/except：画崩了只少一枚徽章，不让气泡消失。
+        """
+        try:
+            head = self.cur[0] if isinstance(self.cur, (tuple, list)) and self.cur else ""
+            badge, _, _ = _balloon_split_head(head)
+            if badge not in ("开源周榜", "开源热榜", "开源速榜"):
+                return
+            ct = self.ctypes
+            # 【2026-11-12 九修】这里原先把 GDI+ 函数当成 self.g（那是 gdi32）调用，
+            # 每一帧都抛 AttributeError，徽章从未画出来——用户看到的仍是「热点新闻」。
+            # GDI+ 的 DLL 在 self.gdip（__init__ 里 GdiplusStartup 成功后的实例）。
+            gp = self.gdip or ct.windll.gdiplus
+            bmp = getattr(_Balloon, "_gh_badge_bmp", None)
+            if bmp is None:
+                raw = base64.b64decode(_GH_BADGE_PNG_B64)
+                shlwapi = ct.windll.shlwapi
+                shlwapi.SHCreateMemStream.argtypes = [ct.c_void_p, ct.c_uint]
+                shlwapi.SHCreateMemStream.restype = ct.c_void_p
+                stream = shlwapi.SHCreateMemStream(raw, len(raw))
+                if not stream:
+                    return
+                gp.GdipCreateBitmapFromStream.argtypes = [ct.c_void_p,
+                                                         ct.POINTER(ct.c_void_p)]
+                gp.GdipCreateBitmapFromStream.restype = ct.c_int
+                got = ct.c_void_p()
+                if gp.GdipCreateBitmapFromStream(stream, ct.byref(got)) != 0:
+                    return
+                _Balloon._gh_badge_bmp = got
+                bmp = got
+            gp.GdipCreateFromHDC.argtypes = [self.wintypes.HDC, ct.POINTER(ct.c_void_p)]
+            gp.GdipCreateFromHDC.restype = ct.c_int
+            gp.GdipDrawImageRectI.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_int,
+                                              ct.c_int, ct.c_int, ct.c_int]
+            gp.GdipDrawImageRectI.restype = ct.c_int
+            gp.GdipDeleteGraphics.argtypes = [ct.c_void_p]
+            gfx = ct.c_void_p()
+            if gp.GdipCreateFromHDC(hdc, ct.byref(gfx)) != 0:
+                return
+            try:
+                gp.GdipDrawImageRectI(gfx, bmp, int(14 * s), int(12 * s),
+                                      int(88 * s), int(25 * s))
+            finally:
+                gp.GdipDeleteGraphics(gfx)
+        except Exception as ex:
+            print("[warn] 开源榜徽章绘制失败: %s: %s" % (type(ex).__name__, ex))
+
     def _paint_bcast(self, hdc, pal, s, g_rects):
         """播报版式的总入口：按 self.style 分派，最后把悬停按钮压在最上层。
 
@@ -5856,6 +6368,8 @@ class _Balloon:
         try:
             if self.style == "live":
                 self._paint_live(hdc, pal, s, t)
+            elif self.style == "mag":
+                self._paint_mag(hdc, pal, s, t)
             else:
                 self._paint_spot(hdc, pal, s, t)
         except Exception as ex:
@@ -5863,6 +6377,70 @@ class _Balloon:
             print("[warn] 播报版式绘制失败（%s）: %s: %s" % (self.style, type(ex).__name__, ex))
             self._paint_fallback(hdc, pal, s)
         self._draw_buttons(hdc, g_rects, pal, s)
+        # 开源榜徽章压在最上层：左上角原先那句「实时播报」由它接管，来源一眼可辨。
+        self._draw_github_mark(hdc, s)
+
+    def _paint_mag(self, hdc, pal, s, t):
+        """【2026-11-13 十二修·用户选「重做卡片版式」】杂志卡：左图右文。
+
+        和原来的聚光灯（满版大图 + 图上压白字）是两种完全不同的版式：
+        左边一块 132×132 圆角题图，右边自上而下「来源彩色胶囊 → 两行标题 →
+        原创 / N 家在报 → 底部操作提示 + 打开」，一眼就能看出是换了设计。
+        配色全走当前主题（pal），不再往图上压字，字一律用卡片前景色。
+        """
+        cur = self.cur
+        text = cur[1] if len(cur) > 1 else ""
+        meta = cur[5] if len(cur) > 5 else ""
+        time_txt = cur[6] if len(cur) > 6 else ""
+        img = cur[4] if len(cur) > 4 else ""
+        L = lambda v: int(round(v * s))
+        # ① 左侧题图：132×132 圆角，cover 裁切
+        try:
+            _p = _balloon_img_local(img) if img else None
+            self._draw_thumb(hdc, (L(18), L(20), L(150), L(152)), _p, pal,
+                             radius=10, zoom=1.0)
+        except Exception:
+            pass
+        # ② 来源胶囊：主色淡底 + 主色字
+        _src = (meta or "").split(" · ")[0].strip() or "热点新闻"
+        _tw = self._text_w(hdc, _src, self.font_badge) / float(max(1e-6, s))
+        _cw = int(min(150, max(40, _tw + 20)))
+        _chip = (L(166), L(16), L(166) + L(_cw), L(40))
+        try:
+            if self._memdc and self.gdip:
+                _gr = self._gp_graphics()
+                try:
+                    self._gp_fill_round(_gr, _chip[0], _chip[1],
+                                        _chip[2] - _chip[0], _chip[3] - _chip[1],
+                                        (_chip[3] - _chip[1]) / 2.0,
+                                        self._argb(pal["accent"], 34))
+                finally:
+                    self.gdip.GdipDeleteGraphics(_gr)
+        except Exception:
+            pass
+        self._dt(hdc, _src, (_chip[0] + L(10), _chip[1], _chip[2] - L(4), _chip[3]),
+                 self.font_badge, pal["accent"], s, 0x20 | 0x4 | 0x8000 | 0x800)
+        # ③ 右上角时间
+        self._dt(hdc, time_txt or "刚刚", (L(300), L(16), L(462), L(40)),
+                 self.font_meta, pal["txt3"], s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800)
+        # ④ 标题两行（列宽 296）
+        _font = self._body_font(hdc, text, self.font_title, 296, 2)
+        _lines = self._fit_lines(hdc, text, _font, 296, 2)
+        _e = _balloon_ease(t / 720.0)
+        _top = 46 + int((1.0 - _e) * 8)
+        for i, ln in enumerate(_lines[:2]):
+            self._dt(hdc, ln, (L(166), L(_top + i * 30), L(462), L(_top + i * 30 + 30)),
+                     _font, pal["txt"], s, 0x20 | 0x4 | 0x8000 | 0x800)
+        # ⑤ 原创 / N 家在报
+        _rest = " · ".join((meta or "").split(" · ")[1:]).strip()
+        if _rest:
+            self._dt(hdc, _rest, (L(166), L(112), L(462), L(134)),
+                     self.font_badge, pal["txt2"], s, 0x20 | 0x4 | 0x8000 | 0x800)
+        # ⑥ 底部提示 + 打开
+        self._dt(hdc, "滚轮换条 · 右键不感兴趣", (L(166), L(144), L(380), L(164)),
+                 self.font_meta, pal["txt3"], s, 0x20 | 0x4 | 0x8000 | 0x800)
+        self._dt(hdc, "打开 ↗", (L(398), L(144), L(462), L(164)),
+                 self.font_link, pal["accent"], s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800)
 
     def _paint_fallback(self, hdc, pal, s):
         """兜底：标题 + 来源两行字，颜色走当前配色。"""
@@ -5880,6 +6458,38 @@ class _Balloon:
         self._dt(hdc, "打开 ↗", (BALLOON_W - 22 - 64, 134, BALLOON_W - 22, 154),
                  self.font_link, color, s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800)
 
+    @staticmethod
+    def _is_oss_cur(cur):
+        """当前播的是不是开源席（周榜 / 热榜 / 速榜三档共用一套版式口径）。"""
+        try:
+            head = cur[0] if isinstance(cur, (tuple, list)) and cur else ""
+            return _balloon_split_head(head)[0] in ("开源周榜", "开源热榜", "开源速榜")
+        except Exception:
+            return False
+
+    def _draw_oss_growth(self, hdc, pal, s, y=146, shadow=False):
+        """【2026-11-12 九修】开源席把涨星数字放在**右下角那一行**。
+
+        用户原话：「日均涨幅的数字应该放在右下角的那一行」——正文只留中文用途说明，
+        数字从大标题里挪出来，和「打开」同一行右对齐。鼠标悬停时两颗按钮都浮出，
+        数字再往左让一格，绝不压到按钮或正文。
+        """
+        if not self._is_oss_cur(self.cur):
+            return
+        txt = self.cur[6] if len(self.cur) > 6 else ""
+        if not txt:
+            return
+        # 【2026-11-13 十六修·用户实拍「不齐」】涨星数字原来右界算到 402/410，
+        # 而「打开 ↗」从 394 起画 —— 实拍里就是「…星/天」和「打开」粘在一起。
+        # 现在固定让到 380：不管悬停不悬停，都和「打开」留 14px 空隙。
+        right = BALLOON_W - 100
+        wid = self._text_w(hdc, txt, self.font_meta) / float(s)
+        box = (max(22.0, right - wid), y, right, y + BALLOON_META_H)
+        if shadow:
+            self._dt_shadow(hdc, txt, box, self.font_meta, _ref(255, 255, 255), s, halo=1)
+        else:
+            self._dt(hdc, txt, box, self.font_meta, pal["txt3"], s)
+
     def _paint_live(self, hdc, pal, s, t):
         """③ 直播速递：像主播念稿，标题一个字一个字打出来，右上声波一直在跳。
 
@@ -5891,20 +6501,24 @@ class _Balloon:
         meta = self.cur[5] if len(self.cur) > 5 else ""
         time_txt = self.cur[6] if len(self.cur) > 6 else ""
         img = self.cur[4] if len(self.cur) > 4 else ""
-        self._draw_app_icon(hdc, (L(22), L(14), L(40), L(32)), pal)
-        self._dt(hdc, "热点新闻", (47, 14, 200, 34), self.font_app, pal["txt"], s)
-        ax = 47 + self._text_w(hdc, "热点新闻", self.font_app) / float(s) + 8
-        gr = self._gp_graphics() if (self._memdc and self.gdip) else None
-        if gr:
-            try:
-                # 绿点：1.3 秒一个呼吸
-                e = 0.55 + 0.45 * abs(math.sin(t / 1300.0 * math.pi))
-                self._gp_fill_round(gr, L(ax), L(20), L(7), L(7), L(3.5),
-                                    self._argb(_mix_ref(pal["ok"], pal["card"], e), 255))
-            finally:
-                self.gdip.GdipDeleteGraphics(gr)
-        self._dt(hdc, "实时播报", (ax + 12, 14, ax + 100, 34), self.font_badge,
-                 pal["accent"], s)
+        _oss = self._is_oss_cur(self.cur)
+        gr = None
+        if not _oss:
+            # 开源席左上角交给 GitHub 官方徽章，不再并排写「热点新闻」（用户 11-12 指出）。
+            self._draw_app_icon(hdc, (L(22), L(14), L(40), L(32)), pal)
+            self._dt(hdc, "热点新闻", (47, 14, 200, 34), self.font_app, pal["txt"], s)
+            ax = 47 + self._text_w(hdc, "热点新闻", self.font_app) / float(s) + 8
+            gr = self._gp_graphics() if (self._memdc and self.gdip) else None
+            if gr:
+                try:
+                    # 绿点：1.3 秒一个呼吸
+                    e = 0.55 + 0.45 * abs(math.sin(t / 1300.0 * math.pi))
+                    self._gp_fill_round(gr, L(ax), L(20), L(7), L(7), L(3.5),
+                                        self._argb(_mix_ref(pal["ok"], pal["card"], e), 255))
+                finally:
+                    self.gdip.GdipDeleteGraphics(gr)
+            self._dt(hdc, "实时播报", (ax + 12, 14, ax + 100, 34), self.font_badge,
+                     pal["accent"], s)
         # ── 右上五根声波：高低错开，永远在跳 ──
         if gr:
             gr = self._gp_graphics()
@@ -5923,7 +6537,10 @@ class _Balloon:
         # 以前是 18/600 + 列宽 340（右边让给 74 的题图）：本机 200 条真标题量下来两行装不下
         # 81 条（40.5%），字还比聚光灯小一号。现在题图挪到底部左角，标题占满整行，
         # 装不下的只剩 14 条（7%）—— 字变大、被砍的字反而变少。
-        lines = self._fit_lines(hdc, text, self.font_title, BALLOON_TITLE_W, 2)
+        # 【2026-11-12 用户定】正文文字看全、不能有残缺：先按标题字体排，
+        # 两行装不下（超长仓库名）就自动退一档字号，绝不往末尾收「…」。
+        body_font = self._body_font(hdc, text, self.font_title, BALLOON_TITLE_W, 2)
+        lines = self._fit_lines(hdc, text, body_font, BALLOON_TITLE_W, 2)
         for i, ln in enumerate(lines[:2]):
             base, span, steps = (0.0, 1320.0, 14) if i == 0 else (1140.0, 1320.0, 10)
             e = max(0.0, min(1.0, (t - base) / span))
@@ -5934,13 +6551,23 @@ class _Balloon:
             g.IntersectClipRect(hdc, L(22), L(44 + i * 30),
                                 L(22 + BALLOON_TITLE_W * frac), L(74 + i * 30))
             self._dt(hdc, ln, (22, 44 + i * 30, 22 + BALLOON_TITLE_W, 74 + i * 30),
-                     self.font_title, pal["txt"], s)
+                     body_font, pal["txt"], s)
             g.RestoreDC(hdc, -1)
-        mtxt = meta + (" · " + time_txt if (meta and time_txt) else "")
-        if mtxt:
-            self._dt(hdc, mtxt, (22 + BALLOON_THUMB + BALLOON_THUMB_GAP, BALLOON_META_TOP,
-                                 390, BALLOON_META_TOP + BALLOON_META_H),
-                     self.font_meta, pal["txt3"], s)
+        if _oss:
+            # 开源席：英文仓库名已经不进正文，涨星数字落到右下角那一行。
+            if meta:
+                self._dt(hdc, meta, (22 + BALLOON_THUMB + BALLOON_THUMB_GAP,
+                                     BALLOON_META_TOP, 205,
+                                     BALLOON_META_TOP + BALLOON_META_H),
+                         self.font_meta, pal["txt3"], s)
+            self._draw_oss_growth(hdc, pal, s, y=BALLOON_META_TOP)
+        else:
+            mtxt = meta + (" · " + time_txt if (meta and time_txt) else "")
+            if mtxt:
+                self._dt(hdc, mtxt, (22 + BALLOON_THUMB + BALLOON_THUMB_GAP,
+                                     BALLOON_META_TOP, 390,
+                                     BALLOON_META_TOP + BALLOON_META_H),
+                         self.font_meta, pal["txt3"], s)
         # ── 题图：念完两行才淡入（用 0.96→1 的轻微放大代替透明度，GDI 图片没有 alpha）──
         # 位置在底部左角（和卡片版同一格），右端那块留给「打开」和悬停时的两颗按钮。
         e = max(0.0, min(1.0, (t - 2400) / 600.0))
@@ -6042,14 +6669,25 @@ class _Balloon:
         meta = self.cur[5] if len(self.cur) > 5 else ""
         time_txt = self.cur[6] if len(self.cur) > 6 else ""
         img = self.cur[4] if len(self.cur) > 4 else ""
-        # 【2026-10-28 用户：「应该是由远到近，渐进式展示」】
+        # 【2026-11-13 十五修·用户「这个轮播的背景应该用新闻图片替代」】
+        # 提示类气泡没有题图，以前整卡是画出来的深色底（用户实拍说像黑板）。
+        # 现在拿缓存里最新的一张新闻图当背景板：字位、压暗、圆点一律不动，
+        # 只是把"黑板"换成"当天的一条新闻画面"。缓存空着仍走原来的深色底。
+        if not img:
+            img = _balloon_backdrop_img()
         # 从 zoom=1.0（能看到的范围最大、整张图"离得最远"）缓推到 1.10，
         # 锚点同时从正中慢慢偏向人物所在的一侧；5.2 秒推完就停住，不来回抽。
         _e = _balloon_ease(min(1.0, max(0.0, t / 5200.0)))
-        zoom = 1.0 + 0.10 * _e
-        ken = (0.50 + 0.12 * _e, 0.50 - 0.08 * _e)
+        # 【2026-11-12 十二修】开源席例外：用户选「仍做背景但完整不放大」——
+        # 项目头像是方图，cover + 1.10 倍推进会把人脸放大到占满整卡、把画面遮住。
+        # 这里改成 contain 完整居中、zoom 固定 1.0，四周留深色底，暗蒙层照旧压住整卡。
+        _badge_spot, _, _ = _balloon_split_head(self.cur[0] if self.cur else "")
+        _oss_spot = _badge_spot in ("开源周榜", "开源热榜", "开源速榜")
+        zoom = 1.0 if _oss_spot else 1.0 + 0.10 * _e
+        ken = (0.50, 0.50) if _oss_spot else (0.50 + 0.12 * _e, 0.50 - 0.08 * _e)
         _pic = self._draw_thumb(hdc, (0, 0, Wd, Hd), _balloon_img_local(img), pal,
-                                BALLOON_BCAST_RADIUS, zoom=zoom, ken=ken)
+                                BALLOON_BCAST_RADIUS, zoom=zoom, ken=ken,
+                                contain=False)   # 2026-11-13：开源席也铺满卡面（原来 contain 会左右留两条深灰带，看着像断了）
         # 【2026-10-28 用户：「图片样式，会出现没有图片的样式」】
         # 图没到位**不再退回速递**（以前这里画不出底图就直接退一档，一组里
         # 聚光灯 / 速递来回跳）。改由 _paint_spot_backdrop 画一张自己的底，字的位置一个像素不动，
@@ -6087,10 +6725,12 @@ class _Balloon:
                 #   ① 整卡一层很轻的 veil（18%）：把高光压下去一档，图还是图；
                 #   ② 顶部一条给 App 行、底部一条给标题/来源行，峰值只有 190（原来 246）；
                 #   ③ 字用 halo 描边（8 个方向各描一遍黑），底图某一块突然变亮也不会吃字。
-                _fill_solid(self._argb(0x060A10, 46))
+                # 【2026-11-13 十八修·用户「背景图片一定要清晰可辨」】整卡 veil
+                # 46 → 18、顶部渐变 150/70 → 110/46：图不能再被压成灰片。
+                _fill_solid(self._argb(0x060A10, 18))
                 _fill(self._gp_grad_brush(0, 0, 0, L(46),
-                                          [self._argb(0x060A10, 150),
-                                           self._argb(0x060A10, 70),
+                                          [self._argb(0x060A10, 110),
+                                           self._argb(0x060A10, 46),
                                            self._argb(0x060A10, 0)],
                                           (0.0, 0.6, 1.0)))
                 # 【2026-10-28 修 字体清晰度】底部这一档 190 → 212、中段 130 → 148。
@@ -6098,11 +6738,12 @@ class _Balloon:
                 # 白字还得靠一圈黑描边撑对比，描边又把笔画间空隙填满 → 越看越糊。
                 # 把标题所在的下半截再压暗一档（离 226~246 那个"图全黑"的极端还差很远，
                 # 图照样看得出内容），字就能少依赖描边，边缘才干净。
+                # 底部渐变只保标题那两行的对比：78/148/212 → 52/104/150。
                 _fill(self._gp_grad_brush(0, L(56), 0, Hd,
                                           [self._argb(0x060A10, 0),
-                                           self._argb(0x060A10, 78),
-                                           self._argb(0x060A10, 148),
-                                           self._argb(0x060A10, 212)],
+                                           self._argb(0x060A10, 92),
+                                           self._argb(0x060A10, 150),
+                                           self._argb(0x060A10, 205)],
                                           (0.0, 0.35, 0.68, 1.0)))
                 # 扫光：1.2~3.72 秒从左边扫到右边
                 e = _balloon_ease((t - 1200) / 2520.0)
@@ -6138,21 +6779,68 @@ class _Balloon:
         # 次级字要是还那么灰，整块就成了"一个粗标题 + 两行虚影"，层级反而乱。
         dim = _mix_ref(white, _ref(12, 16, 20), 0.93)
         dim2 = _mix_ref(white, _ref(12, 16, 20), 0.90)
-        self._draw_app_icon(hdc, (L(22), L(13), L(40), L(31)), pal)
-        self._dt_shadow(hdc, "热点新闻", (47, 13, 200, 33), self.font_app, white, s, halo=1)
-        self._dt_shadow(hdc, time_txt or "刚刚", (BALLOON_W - 130, 13, BALLOON_W - 22, 33),
-                        self.font_meta, dim, s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800, halo=1)
+        _oss = self._is_oss_cur(self.cur)
+        if not _oss:
+            # 开源席左上角只留 GitHub 官方徽章（_draw_github_mark 最后压上），
+            # 不再写「热点新闻」——用户 11-12 截图指出的就是这一处。
+            self._draw_app_icon(hdc, (L(22), L(13), L(40), L(31)), pal)
+            self._dt_shadow(hdc, "热点新闻", (47, 13, 200, 33), self.font_app, white, s, halo=1)
+            self._dt_shadow(hdc, time_txt or "刚刚",
+                            (BALLOON_W - 130, 13, BALLOON_W - 22, 33),
+                            self.font_meta, dim, s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800,
+                            halo=1)
         # 标题从下往上浮（0.72 秒到位），两行 21.6/700 —— 这一档现在是四版式共用的 font_title
         # 行高 30、起始位置 83：21.6 的字塞在 27 的行高里会顶到下一行；
         # 83 + 30*2 = 143，来源行（146）还留 3px 空隙。
-        lines = self._fit_lines(hdc, text, self.font_title, BALLOON_TITLE_W, 2)
+        # 正文同样走自适应字号（用户 11-12：文字要看全，不能有残缺）——
+        # 两行装不下就退一档，和速递档口径一致；标题字体仍从 self.font_title 起。
+        body_font = self._body_font(hdc, text, self.font_title, BALLOON_TITLE_W, 2)
+        lines = self._fit_lines(hdc, text, body_font, BALLOON_TITLE_W, 2)
         e = _balloon_ease(t / 720.0)
         top = 83 + int((1.0 - e) * 10)
         for i, ln in enumerate(lines[:2]):
             self._dt_shadow(hdc, ln, (22, top + i * 30, BALLOON_W - 22, top + i * 30 + 30),
-                            self.font_title, white, s, halo=1)
+                            body_font, white, s, halo=1)
         if meta:
-            self._dt_shadow(hdc, meta, (22, 146, 330, 164), self.font_meta, dim2, s, halo=1)
+            # 【2026-11-13 十七修·用户「其实可以把红底白字移到上面的热点新闻旁边对齐」】
+            # 来源胶囊从底部挪到**顶部这一行**：紧跟在「热点新闻」（开源席是 GitHub 徽章）
+            # 后面，垂直中心跟 App 名对齐（13~33 的中心 23）；底部只留「原创 / N 家在报」。
+            _parts = [x.strip() for x in (meta or "").split(" · ") if x.strip()]
+            _src = _parts[0] if _parts else ""
+            _rest = " · ".join(_parts[1:])
+            _cw = int(min(150, max(44, (self._text_w(hdc, _src, self.font_meta) / float(s)) + 20)))
+            try:
+                if _oss:
+                    _cx = 108                        # GitHub 徽章 14~102，后面留 6px
+                else:
+                    _cx = int(47 + self._text_w(hdc, "热点新闻", self.font_app) / float(s) + 12)
+            except Exception:
+                _cx = 108 if _oss else 96
+            try:
+                if self._memdc and self.gdip:
+                    _gr2 = self._gp_graphics()
+                    try:
+                        # 主色实底胶囊，居中落在 App 名那一行（y 10~36，中心 23）
+                        self._gp_fill_round(_gr2, L(_cx), L(10), L(_cw), L(26), L(13),
+                                            self._argb(pal["accent"], 235))
+                    finally:
+                        self.gdip.GdipDeleteGraphics(_gr2)
+            except Exception:
+                pass
+            # 【2026-11-13 廿一修·用户「速榜那两个字就是有毛刺毛边」】胶囊本身是主色实底，
+            # 白字在上面本来就够对比；再叠 8 向黑描边，16px 的小字会被描成一圈毛刺。
+            # 这里改成**不描边**（纯 GDI+ 抗锯齿），底部小字同理降一档描边。
+            self._dt(hdc, _src, (_cx, 13, _cx + _cw, 33), self.font_meta, white, s,
+                     0x20 | 0x1 | 0x4 | 0x8000 | 0x800)
+            if _rest:
+                # 胶囊搬走后，底部这行从左边 16 起，不和任何东西挤
+                _rest_right = (BALLOON_W - 96 if not _oss else 246)
+                self._dt_shadow(hdc, _rest, (16, 143, _rest_right, 163),
+                                self.font_meta, dim2, s, 0x20 | 0x4 | 0x8000 | 0x800,
+                                halo=1)
+            _meta_right = 0   # 上面已经画完，别再按老口径重画一遍
+        if _oss:
+            self._draw_oss_growth(hdc, pal, s, y=143, shadow=True)
         if not self.hover:
             self._dt_shadow(hdc, "打开 ↗", (BALLOON_W - 22 - 64, 146, BALLOON_W - 22, 164),
                             self.font_link, white, s, 0x20 | 0x2 | 0x4 | 0x8000 | 0x800,
@@ -6200,17 +6888,32 @@ class _Balloon:
             base = (M + y) * stride
             mv[base + x0 * 4 + 3: base + x1 * 4 + 3: 4] = card_a * (x1 - x0)
 
+    def _fade_p(self):
+        """换条动效的进度 0~1（从 _apply_current 记下的时刻起算 300 毫秒）。"""
+        try:
+            return _balloon_fade_p(getattr(self, "_fade_t0", None))
+        except Exception:
+            return 1.0
+
     def _present(self):
-        """把 DIB 整块交给 DWM（逐像素 alpha：圆角/阴影外是透明的，鼠标也点不到）。"""
+        """把 DIB 整块交给 DWM（逐像素 alpha：圆角/阴影外是透明的，鼠标也点不到）。
+
+        【2026-11-13】顺手把换条动效做了：透明度走 SourceConstantAlpha（乘在逐像素 alpha 上），
+        上浮走 pptDst 的 y。两者都在这里算，窗口真正的 x/y 不动 —— 动效结束后位置天然就准。
+        """
         if not (self._memdc and self.hwnd):
             return
         u = self.u
         sdc = u.GetDC(None)
         try:
-            pt = self.POINT(self.x, self.y)
+            _p = self._fade_p()
+            _a = BALLOON_FADE_MIN_ALPHA + int((255 - BALLOON_FADE_MIN_ALPHA) * _p)
+            _dy = int(round(BALLOON_RISE_PX * self.scale * (1.0 - _p)))
+            _dx = int(round(BALLOON_SLIDE_PX * self.scale * (1.0 - _p)))
+            pt = self.POINT(self.x + _dx, self.y + _dy)
             sz = self.SIZE(self.winW, self.winH)
             src = self.POINT(0, 0)
-            bf = self.BLENDFUNCTION(0, 0, 255, 1)          # AC_SRC_OVER / AC_SRC_ALPHA
+            bf = self.BLENDFUNCTION(0, 0, max(0, min(255, _a)), 1)   # AC_SRC_OVER / AC_SRC_ALPHA
             u.UpdateLayeredWindow(self.hwnd, sdc, ctypes.byref(pt), ctypes.byref(sz),
                                   self._memdc, ctypes.byref(src), 0, ctypes.byref(bf), 2)
         finally:
@@ -6330,6 +7033,7 @@ class _Balloon:
                 # 用户根本不知道可以点（"退出在哪"就是这么来的）。常驻灰胶囊「关闭」+
                 # 主色胶囊「打开」，悬停时两个都提亮一档。
                 self._draw_buttons(hdc, _g, pal, s)
+                self._draw_github_mark(hdc, s)   # 卡片兜底版也要有左上角 GitHub 标志
                 self._finish_paint(hwnd, ps, hdc)
                 return 0
             if msg == 0x0113:                      # WM_TIMER
@@ -6359,10 +7063,10 @@ class _Balloon:
                                        0x0010 | 0x0040)          # NOACTIVATE|SHOWWINDOW
                         u.InvalidateRect(hwnd, None, True)
                         self.showing = True
-                        # 整组停留时间 = 每条停留 × 条数
-                        u.SetTimer(hwnd, 2, BALLOON_PER_ITEM_MS * len(pl), None)
+                        # 整组停留时间 = 每条停留 × 条数（开源榜那条单列 12 秒）
+                        u.SetTimer(hwnd, 2, _toast_per_item_ms(pl) * len(pl), None)
                         if len(pl) > 1:
-                            u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)   # 轮换计时器
+                            u.SetTimer(hwnd, 3, _toast_per_item_ms(pl), None)   # 轮换计时器
                 elif wp == 2:                      # 整组播完 → 隐藏
                     u.KillTimer(hwnd, 2)
                     u.KillTimer(hwnd, 3)
@@ -6384,6 +7088,12 @@ class _Balloon:
                     if not self.showing:
                         u.KillTimer(hwnd, 5)
                     else:
+                        u.InvalidateRect(hwnd, None, False)
+                elif wp == 6:                      # 换条淡入/上浮的节拍（300ms 后自己停）
+                    if self._fade_p() >= 1.0:
+                        u.KillTimer(hwnd, 6)
+                        u.InvalidateRect(hwnd, None, True)   # 最后一帧落在准确位置上
+                    elif self.showing:
                         u.InvalidateRect(hwnd, None, False)
                 return 0
             if msg == 0x0200:                      # WM_MOUSEMOVE —— 悬停
@@ -6494,12 +7204,52 @@ class _Balloon:
                 _open_app_later(_link or APP_URL)
                 self._hide_and_resume(hwnd)
                 return 0
+            if msg == 0x020A:                      # WM_MOUSEWHEEL —— 滚轮切上一条 / 下一条
+                # 【2026-11-13 轮播升级】用户要"手感"：鼠标停在气泡上滚一下就往下翻，
+                # 不用等 5.6 秒。滚到底不绕回来（绕回会被当成"没反应"）。
+                _d = ctypes.c_short((wp >> 16) & 0xFFFF).value
+                self._step(-1 if _d > 0 else 1, hwnd)
+                return 0
+            if msg == 0x0205:                      # WM_RBUTTONUP —— 右键「不感兴趣」
+                # 【2026-11-13 轮播升级】右键一下：这一类 24 小时不再往气泡里排，
+                # 直接跳下一条（不弹菜单，桌面上少一个要点的东西）。越用越准。
+                try:
+                    _cls = _interest_class(_balloon_split_head(self.cur[0])[0])
+                    _balloon_mute_add(_cls)
+                except Exception:
+                    pass
+                self._step(1, hwnd)
+                return 0
             if msg == 0x0002:                      # WM_DESTROY
                 u.PostQuitMessage(0)
                 return 0
         except Exception as ex:
             print(f"[warn] 气泡窗口消息处理异常: {type(ex).__name__}: {ex}")
         return u.DefWindowProcW(hwnd, msg, wp, lp)
+
+    def _step(self, delta, hwnd):
+        """手动切上一条 / 下一条（滚轮、右键不感兴趣用）。
+
+        【2026-11-13】只在这一组里走：走到头就停，不绕回第一条 —— 绕回等于原地重播，
+        用户会以为"滚轮坏了"。手动切过之后这一组剩余的时间重新给足，
+        不让人刚滚到一条感兴趣的就被原来的计时器收走。
+        """
+        if not self.playlist:
+            return
+        i = max(0, min(len(self.playlist) - 1, self.idx + int(delta)))
+        if i == self.idx:
+            return
+        self.idx = i
+        self._apply_current()
+        try:
+            self.u.InvalidateRect(hwnd, None, True)
+            self.u.SetTimer(hwnd, 2,
+                            _toast_per_item_ms(self.playlist)
+                            * max(1, len(self.playlist) - self.idx), None)
+            if len(self.playlist) > 1:
+                self.u.SetTimer(hwnd, 3, _toast_per_item_ms(self.playlist), None)
+        except Exception:
+            pass
 
     def _mouse_leave(self, hwnd):
         """鼠标离开卡片（真的移开，或者只是划过外面那圈阴影）：收起悬停态、恢复计时。"""
@@ -6508,9 +7258,9 @@ class _Balloon:
             # 移开就恢复计时，重新给一整组的时间，别立刻消失
             try:
                 self.u.SetTimer(hwnd, 2,
-                                BALLOON_PER_ITEM_MS * max(1, len(self.playlist)), None)
+                                _toast_per_item_ms(self.playlist) * max(1, len(self.playlist)), None)
                 if len(self.playlist) > 1:
-                    self.u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)
+                    self.u.SetTimer(hwnd, 3, _toast_per_item_ms(self.playlist), None)
                 self.paused = False
             except Exception:
                 pass
@@ -6548,6 +7298,12 @@ class _Balloon:
         # 用户点名那档不受这里影响 —— spot 没图也照画聚光灯，只是底换成画出来的那张。
         try:
             self.style = _balloon_pick_style(has_img=bool(_balloon_img_local(img)))
+            # 【2026-11-12 用户定】开源席「背景必须是这个项目的图标」：不管用户把
+            # 气泡样式设成哪一档，开源榜那条一律用 spot（整卡铺 GitHub 项目图 + 暗蒙层），
+            # 中文正文浮在下半部、GitHub 官方标在左上角，图看得到、字也看得清。
+            _b, _, _ = _balloon_split_head(title)
+            if _b in ("开源周榜", "开源热榜", "开源速榜"):
+                self.style = "spot"
         except Exception:
             # 版式解析这一步整个炸了（读配置失败之类）也要有东西可画：退回静态卡片版 ——
             # 它就是 WM_PAINT 那条 fall-through（`if self.style != "card"` 才走 _paint_bcast），
@@ -6555,6 +7311,14 @@ class _Balloon:
             # 只是从"可选样式"降成"最后的兜底"。
             self.style = "card"
         self._t0 = time.monotonic()
+        # 【2026-11-13 轮播升级】换条动效的起点：这一条从"淡入 + 上浮"开始画。
+        self._fade_t0 = self._t0
+        # 16ms 一支计时器推 300ms 的淡入；动效走完自己停，不常驻烧 CPU。
+        try:
+            if self.hwnd:
+                self.u.SetTimer(self.hwnd, 6, BALLOON_FADE_TICK_MS, None)
+        except Exception:
+            pass
         # 40ms 的动画节拍：只有播报版式需要（卡片版是静态的，别白烧 CPU）。
         try:
             if self.style != "card" and self.hwnd:
@@ -6593,6 +7357,7 @@ class _Balloon:
             self.u.KillTimer(hwnd, 3)              # 逐条轮换
             self.u.KillTimer(hwnd, 4)              # 「打开」后接着播的那次唤醒
             self.u.KillTimer(hwnd, 5)              # 播报版式的动画节拍
+            self.u.KillTimer(hwnd, 6)              # 换条淡入的节拍
         except Exception:
             pass
         self.showing = False
@@ -6664,9 +7429,9 @@ class _Balloon:
             u.SetWindowPos(hwnd, -1, self.x, self.y, self.winW, self.winH,
                            0x0010 | 0x0040)         # NOACTIVATE|SHOWWINDOW
             u.InvalidateRect(hwnd, None, True)
-            u.SetTimer(hwnd, 2, BALLOON_PER_ITEM_MS * len(self.playlist), None)
+            u.SetTimer(hwnd, 2, _toast_per_item_ms(self.playlist) * len(self.playlist), None)
             if len(self.playlist) > 1:
-                u.SetTimer(hwnd, 3, BALLOON_PER_ITEM_MS, None)
+                u.SetTimer(hwnd, 3, _toast_per_item_ms(self.playlist), None)
         except Exception:
             pass
         self.showing = True
@@ -6719,13 +7484,21 @@ class _Balloon:
             # 125% 缩放下 19 * 1.25 = 23.75，`int` 砍成 23 —— 奇数像素高让微软雅黑的
             # hinting 把笔画挤成不匀的宽度（横画尤其明显）；`round` 给 24，笔画落在整像素上。
             # 12.5 * 1.25 = 15.625 原来被砍成 15，现在 16，小字立刻实一档。
+            # 【廿三修·用户「应该是字体的原因，还是看着不舒服」，给了张粗黑体参考图】
+            # 根因是字族：微软雅黑最粗只有 Bold（700），笔画横竖一样宽、转角偏方，
+            # 34 物理像素下看着"薄一档"。参考图那种厚实感是 思源黑体/Noto Sans SC 的
+            # Black 字重（真正的最粗一级）。本机 Fonts 里有 NotoSansSC-VF.ttf（可变字体，
+            # Windows 把它的各个字重注册成独立字族，其中就有 "Noto Sans SC Black"）。
+            # 有就用它当标题/App 名的字族，没有就退回雅黑 Bold（配置最稳，不硬依赖）。
+            _heavy = _balloon_heavy_face()
+            _tface = _heavy or "Microsoft YaHei UI"
             self.font_msg = g.CreateFontW(-int(round(BALLOON_TITLE_PX * s)), 0, 0, 0, 600, 0, 0, 0,
                                          134, 5, 0, 4, 0, "Microsoft YaHei UI")   # 兜底版式的标题（小一号保平安）
             # 小字也各升一档：12.5 → 13.6（物理 16 → 17）、11.5 → 12.8（物理 14 → 16）。
             # 聚光灯那一版的小字是压在**新闻原图**上的，14 物理像素本来就偏小，档位上到 16 之后
             # 既好认又不至于跟标题抢戏。
-            self.font_app = g.CreateFontW(-int(round(13.6 * s)), 0, 0, 0, 600, 0, 0, 0,
-                                          134, 5, 0, 4, 0, "Microsoft YaHei UI")  # App 行「热点新闻」
+            self.font_app = g.CreateFontW(-int(round(13.6 * s)), 0, 0, 0, 400 if _heavy else 600,
+                                          0, 0, 0, 134, 5, 0, 4, 0, _tface)  # App 行「热点新闻」
             self.font_link = g.CreateFontW(-int(round(13.6 * s)), 0, 0, 0, 600, 0, 0, 0,
                                            134, 5, 0, 4, 0, "Microsoft YaHei UI")  # 打开 / 关闭
             self.font_meta = g.CreateFontW(-int(round(12.8 * s)), 0, 0, 0, 500, 0, 0, 0,
@@ -6755,12 +7528,29 @@ class _Balloon:
             # 撑得住的底气来自版式：标题带从「让出 84 给题图、两行 ×24」改成「整行 436、
             # 两行 ×30」，加上 _fit_lines 那个单位 bug 修掉，本机 200 条真标题里两行装不下的
             # 从 81 条（速递旧版 40.5%）降到 14 条（7%）—— 字变大，被砍掉的标题反而更少。
-            self.font_title = g.CreateFontW(-int(round(BALLOON_HEAD_PX * s)), 0, 0, 0, 700, 0, 0, 0,
-                                            134, 5, 0, 4, 0, "Microsoft YaHei UI")
+            self.font_title = g.CreateFontW(-int(round(BALLOON_HEAD_PX * s)), 0, 0, 0,
+                                            400 if _heavy else 700, 0, 0, 0,
+                                            134, 5, 0, 4, 0, _tface)
             self.font_num = g.CreateFontW(-int(round(11 * s)), 0, 0, 0, 500, 0, 0, 0,
                                           134, 5, 0, 4, 0, "Microsoft YaHei UI")
             self.font_badge = g.CreateFontW(-int(round(10.5 * s)), 0, 0, 0, 700, 0, 0, 0,
                                             134, 5, 0, 4, 0, "Microsoft YaHei UI")
+            # 【十九修】HFONT → (物理像素高, 字重)：GDI+ 画字要自己建字体，不给句柄，
+            # 所以在这里把每一支字的两个参数记下来（后面 _gp_text 查表用）。
+            # 【廿三修】字重 900 是"用粗黑体字族"的记号（GDI 那边按 400 建，免得再叠一层
+            # 合成加粗；GDI+ 那边改成直接挑 Black 字族、不加 Bold 样式）。900 不会与真实
+            # 字重值撞车（雅黑最高只到 700）。
+            self._fmap = {
+                self.font_msg: (int(round(BALLOON_TITLE_PX * s)), 600),
+                self.font_app: (int(round(13.6 * s)), 900 if _heavy else 600),
+                self.font_link: (int(round(13.6 * s)), 600),
+                self.font_meta: (int(round(12.8 * s)), 500),
+                self.font_icon: (int(round(11 * s)), 700),
+                self.font_title: (int(round(BALLOON_HEAD_PX * s)), 900 if _heavy else 700),
+                self.font_num: (int(round(11 * s)), 500),
+                self.font_badge: (int(round(10.5 * s)), 700),
+            }
+            self._gpf = {}           # (字族, 物理px, 字重) → GpFont*，跨帧复用
             # 【2026-10-28 第四轮】不再用 SetWindowRgn 切直角圆角（那是台阶，不是抗锯齿）。
             # 改成：画到 32 位 DIB，圆角/阴影由 GDI+ 按 alpha 画准，再 UpdateLayeredWindow 交给 DWM。
             try:
@@ -6801,6 +7591,22 @@ class _Balloon:
 
 
 BALLOON = _Balloon()
+
+
+def _toast_per_item_ms(pl):
+    """一条气泡里每条停多久：开源榜（徽章在左上角那条）单独 12 秒，其余仍 5.6 秒。
+
+    用户 2026-11-12：「github 的轮播跳的太快，来不及看清」——那条是单条独立播报，
+    原来套用新闻的 5600ms 太短。按 head 的栏目徽章判定，不碰新闻轮播的 10 席与配额。
+    """
+    try:
+        head = (pl or [])[0][0] if pl else ""
+        badge, _, _ = _balloon_split_head(head)
+        if badge in ("开源周榜", "开源热榜", "开源速榜"):
+            return OSS_TOAST_MS
+    except Exception:
+        pass
+    return BALLOON_PER_ITEM_MS
 
 
 def _show_toast_list(entries, replace=False):
@@ -7025,6 +7831,16 @@ def _balloon_meta_line(it):
     src = (it.get("source") or it.get("label") or "").strip()
     if src:
         bits.append(src)
+    # 【2026-11-13 轮播升级】原创/深度稿标出来（这是"别人桌面上没有的那条"）；
+    # 同一件事被几家一起报就写「3 家在报」——把"抄来抄去"变成可读的信号。
+    try:
+        if it.get("original"):
+            bits.append("原创")
+        _n = int(it.get("also_n") or 0)
+        if _n >= 2:
+            bits.append("%d 家在报" % _n)
+    except Exception:
+        pass
     try:
         r = int(it.get("rank") or 0)
         if 0 < r < 1000:
@@ -7567,6 +8383,96 @@ def _interest_quota(base=None, weights=None):
     return tuple((c, q[c]) for c in order if q.get(c, 0) > 0)
 
 
+# ============ 【2026-11-13 轮播升级】「不感兴趣」+ 时段主题 ============
+# 用户这次的要求：轮播投放要"更出彩、更吸引人"，四条落地在这里：
+#   ① 右键「不感兴趣」：右键一下，这一类 24 小时不再排进气泡（本机 json，不联网）；
+#   ② 时段主题：早上速览（头条+财经）、午间（科技+软件）、晚间（原创优先）；
+#   ③ 原创席位：每轮固定留一条原创/深度稿（别人桌面上没有的那条）；
+#   ④ 几家在报：同一件事合并后带上"3 家在报"，把"抄来抄去"变成可读的信号。
+# ① 的存储和兴趣档一样是本机私有：%LOCALAPPDATA%\hotnews\balloon_mute.json。
+BALLOON_MUTE_PATH = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "balloon_mute.json")
+BALLOON_MUTE_HOURS = 24
+
+
+def _balloon_mute_set(now=None):
+    """还没过期的「不感兴趣」栏目集合。坏文件当没有，绝不抛。"""
+    now = time.time() if now is None else now
+    try:
+        with open(BALLOON_MUTE_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f) or {}
+    except Exception:
+        return set()
+    out = set()
+    for k, v in (raw.get("cls") or {}).items():
+        try:
+            if float(v) > now:
+                out.add(str(k))
+        except Exception:
+            continue
+    return out
+
+
+def _balloon_mute_add(cls, hours=BALLOON_MUTE_HOURS, now=None):
+    """把某一类拉黑 N 小时（默认 24）。写盘用 .tmp + os.replace，失败绝不抛。"""
+    cls = (cls or "").strip()
+    if not cls:
+        return None
+    now = time.time() if now is None else now
+    keep = _balloon_mute_set(now)
+    keep.add(cls)
+    data = {"v": 1, "cls": {k: now + hours * 3600 for k in keep}}
+    try:
+        os.makedirs(os.path.dirname(BALLOON_MUTE_PATH), exist_ok=True)
+        tmp = BALLOON_MUTE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, BALLOON_MUTE_PATH)
+        print("[ok] 气泡：右键「不感兴趣」，%d 小时内不再播「%s」类" % (hours, cls))
+        return cls
+    except Exception as ex:
+        print("[warn] 不感兴趣写入失败: %s" % type(ex).__name__)
+        return None
+
+
+def _balloon_mute_hit(it, muted):
+    """这条是不是撞上「不感兴趣」的某一类。
+
+    两套栏目名要一起看：`cls`（科技/财经/国际…）与气泡抬头（【头条】/国际·要闻），
+    右键时记的是抬头归一后的名字，候选池里拿的是 cls —— 只对一套会漏掉国际那批。
+    """
+    if not muted:
+        return False
+    names = set()
+    try:
+        names.add(_balloon_cls_key(it))
+        names.add(_interest_class(_balloon_cls_key(it)))
+    except Exception:
+        pass
+    try:
+        names.add(_interest_class(_balloon_split_head(it.get("title") or "")[0]))
+    except Exception:
+        pass
+    return bool(names & muted)
+
+
+def _balloon_hour_theme(now=None):
+    """按当前钟点给出"这一时段该先看什么"的栏目顺序（纯函数，便于单测）。
+
+    只影响**补位顺序**和原创加权，不动用户 2026-10-25 定的栏目配额
+    （头条 2 / 热榜 3 / 国际 2 / 科技 1 / 财经 1 / 娱乐 1）——
+    时段是"先看什么"，不是"只看什么"。
+    """
+    h = time.localtime(time.time() if now is None else now).tm_hour
+    if 6 <= h < 11:
+        return ("头条", "财经")        # 早上：三分钟速览，先知道今天发生了什么、钱怎么样
+    if 11 <= h < 14:
+        return ("科技", "软件")        # 午间：工作间隙刷科技和软件
+    if 18 <= h < 24:
+        return ("原创",)              # 晚间：一天里最值得读的那条深度
+    return ()
+
+
 def _pick_balloon_items(fresh, count=None):
     """按栏目配额挑一组气泡条目（纯函数：只读 fresh，不改任何外部状态，便于单测）。
 
@@ -7580,7 +8486,12 @@ def _pick_balloon_items(fresh, count=None):
     同一件事占掉两个座位时用户一眼就看出重复（这是用户报的原话场景）。
     """
     cap = int(count or BALLOON_PLAY_COUNT)
-    fresh = _dedup_same_event(list(fresh))
+    # 【2026-11-13】合并同一件事时带上 `also_n`（"N 家在报"），气泡那行小字要用。
+    fresh = _dedup_same_event(list(fresh), with_also=True)
+    # 右键「不感兴趣」的栏目，24 小时内整个不进候选（本机 json，无网络）
+    _muted = _balloon_mute_set()
+    if _muted:
+        fresh = [x for x in fresh if not _balloon_mute_hit(x, _muted)]
     picked, used, labels = [], set(), []
 
     def take(cands, maxn=1, no_repeat_src=True):
@@ -7610,6 +8521,9 @@ def _pick_balloon_items(fresh, count=None):
             return [x for x in fresh if (x.get("cls") or "") == "热榜" and not _is_intl_item(x)]
         if name == "国际":
             return [x for x in fresh if _is_intl_item(x) and (x.get("cls") or "") != "热榜"]
+        if name == "原创":
+            # 【2026-11-13】原创/深度稿单独是一档候选（晚间主题与原创席位都用它）
+            return [x for x in fresh if x.get("original")]
         return by_cls(name)
 
     def sort_key(x):
@@ -7638,12 +8552,16 @@ def _pick_balloon_items(fresh, count=None):
         take(order(cands(_cls)), _n)
     # ② 补位第一轮：软件 → 热榜 → 国际，**每个候选栏目最多 1 条**。
     #    哪一栏当期没货，名额就顺着往下走；③④ 再放开条数把席位填满。
-    for _cls in BALLOON_FILL_ORDER:
+    #    【2026-11-13】补位顺序先走当前时段主题（早头条财经 / 午科技软件 / 晚原创），
+    #    主题只是插到队头，不删原来的补位栏目 —— 某栏没货也照样能填满。
+    _fill = list(_balloon_hour_theme())
+    _fill += [c for c in BALLOON_FILL_ORDER if c not in _fill]
+    for _cls in _fill:
         if len(picked) >= cap:
             break
         take(order(cands(_cls)), 1)
     # ③ 还差就接着补：补位栏目不限 1 条 → 全部条目按时间 → 最后放开"同来源只取一条"凑满
-    for _cls in BALLOON_FILL_ORDER:
+    for _cls in _fill:
         if len(picked) >= cap:
             break
         take(order(cands(_cls)), cap - len(picked))
@@ -7652,6 +8570,23 @@ def _pick_balloon_items(fresh, count=None):
     # ④ 某栏目当期没货 / 同源被去重挡住 → 放开"同来源只取一条"再补满
     if len(picked) < cap:
         take(order(fresh), cap - len(picked), no_repeat_src=False)
+    # ⑤ 【2026-11-13】原创席位：每轮至少留 1 条原创/深度稿 —— 这是"别的软件没有的那条"。
+    #    没有原创货就安静跳过（不拿非原创冒充），绝不影响这一组正常播完。
+    if cap >= 4 and not any(x.get("original") for x in picked):
+        _orig = [it for it in order(cands("原创")) if id(it) not in used]
+        if _orig:
+            _it = _orig[0]
+            # 从后往前找一个可以替换的普通席（热榜是骨架，不动）
+            for _i in range(len(picked) - 1, 0, -1):
+                if (not picked[_i].get("original")
+                        and _balloon_cls_key(picked[_i]) != "热榜"):
+                    used.discard(id(picked[_i]))
+                    used.add(id(_it))
+                    picked[_i] = _it
+                    print("[气泡] 原创席位：%s（%s）"
+                          % ((_it.get("title") or "")[:20],
+                             _it.get("label") or _it.get("source") or "?"))
+                    break
     return picked
 
 
@@ -7669,9 +8604,13 @@ def _pick_balloon_items(fresh, count=None):
 # 下一轮挑之前先按同一套判据（`_dup_verdict_full` / `_nums_conflict` / `_ordinals_conflict`）
 # 把"和已播事件是同一件事"的条目整个去掉，不进配额、不占席位。
 # 判据沿用现有阈值，**没有放宽也没有收紧**，只是把它的作用范围从"本轮"扩到"最近几小时"。
-_BALLOON_EVENT_TTL = 6 * 3600    # 记忆窗口：6 小时。同一件事的后续发展（新数字/新序数）
-                                 # 按现有判据会被放行，所以窗口长一点也不会压掉真正的新闻。
-_BALLOON_EVENT_MAX = 400         # 最多记 400 个事件（10 条/轮 × 几十轮），防止长跑内存涨
+# 【2026-11-12 八修】窗口 6h → 26h，和「播过名单」_BALLOON_SHOWN_TTL（26 小时）对齐。
+# 用户明确「一条新闻多家网站报道，还一直轮播，这是禁止的」：原来 6 小时后事件记忆
+# 过期，隔夜同一件事的别家稿又被当新事件投一遍 —— 实测真池子 446 条里 168 对同事件。
+# 同一件事的**后续发展**带新数字/新序数，按 _nums_conflict/_ordinals_conflict 本来就会
+# 放行，所以窗口拉长不会压掉真正的新进展；只会挡住"换汤不换药"的重复稿。
+_BALLOON_EVENT_TTL = 26 * 3600   # 记忆窗口 26 小时（= 播过名单窗口），跨夜也不重播同一件事
+_BALLOON_EVENT_MAX = 1200        # 窗口翻倍，容量同步翻倍（10 条/轮 × 约 120 轮），防长跑内存涨
 _BALLOON_EVENTS = []             # [{at, nt, g, cg, dr, nums, ords, title}]，按写入先后排列
 _BALLOON_EVENT_LOCK = threading.Lock()
 
@@ -8355,24 +9294,40 @@ def _notify_news(items, force=False):
                                    "%d 条候选按栏目配额没凑出能播的一轮。等新新闻抓进来再双击托盘。"
                                    % len(fresh))
             return
+        # 【2026-11-12 用户定】轮播的时间段里必须出现开源的新闻：每轮固定留一个
+        # GitHub 开源席（取当前涨速最快的一条），不随机、不占额外条数。
+        # 【八修】用户实测「这次轮播都没看见开源」——原来塞在最后一条（第 10 条），
+        # 要等约 50 秒才轮到，常常没看到就切走了。改成**排在第一条**，一开播就看见。
+        # 让位的是配额补位里优先级最低的最末一条（头条/热榜/科技等按配额排前面的都保留）；
+        # 被让位那条**不记进已播名单**，下一轮照样会回来，绝不静默丢内容。
+        # 开源榜没数据时保持原样，绝不往里塞空的或假条目。
+        _seat, _seat_name = None, ""
+        try:
+            _seat, _seat_name = _oss_carousel_seat(mark=True)
+        except Exception as ex:
+            print("[warn] 新闻轮播置顶开源席失败（不影响新闻）: %s" % type(ex).__name__)
+        _news_shown = picked[:BALLOON_PLAY_COUNT]
+        if _seat and _news_shown:
+            _news_shown = _news_shown[:BALLOON_PLAY_COUNT - 1]
+            _balloon_trace("本轮开源席（置顶第1条）：%s" % (_seat_name or "")[:40])
         # 记录已播，保证"轮播内容不能重复"（按条记 26 小时、跨重启保留，见 _balloon_mark_shown）
         # 【2026-10-29】手动那一轮 force 落盘：不等 60 秒节流，用户刚看到的这几条当场写进名单。
         # 记账必须和挑选同在一把锁里：另一条线程紧跟着挑时，这批已经算"播过"。
+        # 【八修】只记**真正播出去**的那几条 —— 被开源席顶掉的最末一条不算播过。
         try:
-            _balloon_mark_shown([_it.get("id") or _it.get("title") for _it in picked], force=force)
+            _balloon_mark_shown([_it.get("id") or _it.get("title") for _it in _news_shown],
+                                force=force)
         except Exception:
             pass
         # 【2026-10-25】同一批条目还要按"事件"记一笔：下一轮别的网站的兄弟稿才会被挡掉。
         try:
-            _balloon_event_remember(picked)
+            _balloon_event_remember(_news_shown)
         except Exception:
             pass
-    entries = [_balloon_entry(it) for it in picked[:BALLOON_PLAY_COUNT]]
-    # 「本次共新增 N 条」这句只在自动那一套用：手动轮播的 added 是整个池子，
-    # 挂上去会变成"本次共新增 260 条"，用户会以为一分钟里真冒出来 260 条新闻。
-    if not force and len(added) > len(entries):
-        _e = entries[-1]
-        entries[-1] = (_e[0], _e[1] + f"　（本次共新增 {len(added)} 条）") + tuple(_e[2:])
+    entries = ([_seat] if _seat else []) + [_balloon_entry(it) for it in _news_shown]
+    # 【2026-11-12 用户要求】一组气泡的最后一条不再追加「（本次共新增 N 条）」：
+    # 那句话挂在新闻正文末尾会挤占正文、干扰阅读。这里只保留纯正文；
+    # 「滚动播放 N 条（按栏目）」仍照常写进日志，排查不受影响。
     # 【2026-10-09 用户要求】日志口径改成**按栏目报数**，形如
     #   滚动播放 10 条（头条2/科技2/财经2/娱乐2/软件1/热榜1）
     _balloon_trace("滚动播放 %d 条（%s）"
@@ -9184,6 +10139,192 @@ def _parse_gmw_list(src):
     return out
 
 
+# ---------- 【2026-11-13 接原创源】三家没有 RSS 的原创/深度媒体 ----------
+# 共同口径（与全站一致）：只取列表页的公开标题、原文链接、列表页（或正文页首图），不取正文。
+# 三家的列表页都是旧式 HTML（非 JS 渲染），一张正则就能拿干净，所以没有引入解析库。
+_WEEKLY_ART_RE = re.compile(
+    r'<a[^>]+href="(//www\.inewsweek\.cn/[a-z]+/(20\d\d)-(\d\d)-(\d\d)/\d+\.shtml)"[^>]*>(.*?)</a>',
+    re.S)
+_WEEKLY_IMG_RE = re.compile(r'<img[^>]+src="([^"]+)"', re.S)
+
+
+def _parse_inewsweek(src):
+    """中国新闻周刊（www.inewsweek.cn）：首页文章锚点，图在锚点里，日期在 URL 里。
+
+    ⚠ 页面是 **gb2312**（_decode_feed_bytes 先试 utf-8 失败、再回退 gb18030，实测能解）。
+    ⚠ 列表页只给到日期（/society/2026-11-12/33088.shtml），按当天 00:00（东八区）记，
+      副作用是这几条在「最新优先」里排在同日有具体时分的条目之后 —— 与人民网/光明网同一口径。
+    实测（2026-11-13）：200 / 41 KB / 9 条 / 9 条带图 / 最新当天。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 中国新闻周刊列表抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)
+    max_age = _max_age_hours(src)
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    out, seen, dropped = [], set(), 0
+    for m in _WEEKLY_ART_RE.finditer(page):
+        link = "https:" + m.group(1)
+        if link in seen:
+            continue
+        title = _clean(re.sub(r"<[^>]+>", " ", m.group(5) or ""))
+        if not title or len(title) < 4:
+            continue
+        try:
+            ts = int(datetime(int(m.group(2)), int(m.group(3)), int(m.group(4)),
+                              tzinfo=CST).timestamp())
+        except Exception:
+            ts = 0
+        # 【2026-11-13】列表页只写日期，正文页头部有一行注释给出精确到秒的发布时间
+        # （`<!--[972,2,33088] published at 2026-11-12 13:29:42 from #10 by …-->`）。
+        # 只在前 12 条上多抓一页（每条 ~0.2 秒），拿到就覆盖日期口径，拿不到仍按当天 00:00。
+        if len(out) < 12:
+            try:
+                _art = _fetch(link)
+                if isinstance(_art, tuple):
+                    _art = _art[0]
+                if _art:
+                    _pm = re.search(r"published at (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)",
+                                    _decode_feed_bytes(_art))
+                    if _pm:
+                        ts = int(_ts_from_date_str(_pm.group(1)) or ts)
+            except Exception:
+                pass
+        if ts and ts < cutoff:
+            dropped += 1
+            continue
+        mi = _WEEKLY_IMG_RE.search(m.group(5) or "")
+        img = _norm_url(mi.group(1), src["base"]) if mi else ""
+        if img and any(x in img.lower() for x in _IMG_JUNK):
+            img = ""
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": img, "published": ts, "translated": False,
+        })
+        if len(out) >= 24:
+            break
+    print(f"[ok] {src['id']}: 中国新闻周刊解析 {len(out)} 条"
+          f"（带图 {sum(1 for x in out if x['image'])} 条，滤除过期 {dropped} 条）")
+    return out
+
+
+# 财新首页「滚动新闻」：<li><a href="https://china.caixin.com/2026-11-13/102504370.html">标题</a><span>11-13 11:48</span></li>
+_CAIXIN_ITEM_RE = re.compile(
+    r'<li>\s*<a href="(https://[a-z]+\.caixin\.com/(\d{4})-(\d{2})-(\d{2})/\d+\.html)">'
+    r'([^<]+)</a>\s*<span>(\d{2})-(\d{2})\s+(\d{2}):(\d{2})</span>', re.S)
+
+
+def _parse_caixin(src):
+    """财新网（www.caixin.com）：首页滚动新闻，标题 + 精确到分的时间；列表不带图 → body_image。
+
+    ⚠ 财新正文有付费墙，但**标题与链接是公开的**（全站合规口径只收这两样，不取正文），
+      所以可以接；条目点开是否可读由读者自行决定，不影响本程序。
+    实测（2026-11-13）：200 / 92 KB / 滚动新闻 20 条 / 最新 11-13 11:59。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 财新列表抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)
+    max_age = _max_age_hours(src)
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    out, seen, dropped = [], set(), 0
+    for m in _CAIXIN_ITEM_RE.finditer(page):
+        link, title = m.group(1), _clean(m.group(5))
+        if not title or len(title) < 4 or link in seen:
+            continue
+        try:
+            ts = int(datetime(int(m.group(2)), int(m.group(6)), int(m.group(7)),
+                              int(m.group(8)), int(m.group(9)), tzinfo=CST).timestamp())
+        except Exception:
+            ts = 0
+        if ts and ts < cutoff:
+            dropped += 1
+            continue
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": "", "published": ts, "translated": False,
+            "body_image": True,
+        })
+        if len(out) >= 24:
+            break
+    print(f"[ok] {src['id']}: 财新解析 {len(out)} 条（图走正文页首图，滤除过期 {dropped} 条）")
+    return out
+
+
+_BJN_IMG_RE = re.compile(
+    r'<a class="img img\d" href="(https://www\.bjnews\.com\.cn/detail/\d+\.html)"[^>]*>\s*'
+    r'<img src="([^"]+)"', re.S)
+_BJN_TITLE_RE = re.compile(
+    r'<a href="(https://www\.bjnews\.com\.cn/detail/\d+\.html)"[^>]*>\s*'
+    r'<div class="title">([^<]+)</div>', re.S)
+_BJN_REL_RE = re.compile(r"(\d+\s*(?:分钟前|小时前|天前)|今天\s*\d{1,2}[:：]\d{1,2}|昨天\s*\d{1,2}[:：]\d{1,2})")
+
+
+def _parse_bjnews(src):
+    """新京报（www.bjnews.com.cn）：首页头条轮播，标题块 + 图卡分开写，时间只有「N 小时前」。
+
+    标题锚点是 `<a href="…/detail/xxx.html"><div class="title">…</div></a>`，
+    图在同一 ID 的 `<a class="img imgN">` 上 → 按 URL 对齐；时间取标题块后面的相对时间
+    （站方只写「1小时前」，用 _cdsb_rel_time 折算成时间戳，与红星新闻同一套）。
+    实测（2026-11-13）：200 / 89 KB / 标题卡 5 张，5 张都有图。
+    ⚠ 拿不到时间的条目**不上**：宁可少一条，也不编一个时点把它塞进「最新优先」。
+    """
+    raw = _fetch(src["url"])
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        print("[warn] 新京报列表抓取失败")
+        return []
+    page = _decode_feed_bytes(raw)
+    max_age = _max_age_hours(src)
+    cutoff = datetime.now(CST).timestamp() - max_age * 3600
+    imgs = {}
+    for m in _BJN_IMG_RE.finditer(page):
+        imgs[m.group(1)] = m.group(2)
+    out, seen, dropped, no_time = [], set(), 0, 0
+    for m in _BJN_TITLE_RE.finditer(page):
+        link, title = m.group(1), _clean(m.group(2))
+        if not title or len(title) < 4 or link in seen:
+            continue
+        rel = _BJN_REL_RE.search(page[m.end(): m.end() + 1200])
+        ts = _cdsb_rel_time(rel.group(1)) if rel else 0
+        if not ts:
+            no_time += 1
+            continue
+        if ts < cutoff:
+            dropped += 1
+            continue
+        img = _norm_url(imgs.get(link, ""), src["base"]) if imgs.get(link) else ""
+        if img and any(x in img.lower() for x in _IMG_JUNK):
+            img = ""
+        if not img:
+            continue
+        seen.add(link)
+        out.append({
+            "id": hashlib.md5((src["id"] + title).encode("utf-8")).hexdigest()[:12],
+            "region": src["region"], "channel": src["id"], "label": src["label"],
+            "cls": src["cls"], "title": title, "desc": "",
+            "link": link, "image": img, "published": ts, "translated": False,
+        })
+        if len(out) >= 24:
+            break
+    print(f"[ok] {src['id']}: 新京报解析 {len(out)} 条（带图 {sum(1 for x in out if x['image'])} 条，"
+          f"滤除过期 {dropped} 条，无时间跳过 {no_time} 条）")
+    return out
+
+
 # 国内板块里要做「国内 / 国际」内容分流的栏目（用户 2026-10-07 要求）：
 #   · 热榜：原来就分流了
 #   · 头条（2026-10-09 按用户口径定名；定名前叫另一个名字，改名记录见 README 与
@@ -9683,6 +10824,18 @@ def _notify_major(items):
         print("[ok] 大事提醒：跳过本轮 —— %s" % _hold_note(_hold))
         return
     _MAJOR_LAST_TOAST = now
+    # 【2026-11-12 八修】用户「一条新闻多家网站报道，还一直轮播，这是禁止的」：
+    # 大事提醒原来只把播过的写进事件记忆、播前不过滤 —— 开机/更新提醒播过的同一件事，
+    # 别家稿还能从这条路径再弹一遍。现在和更新提醒同口径，播前先挡同事件稿。
+    # 真·新进展带新数字/新序数按判据会放行，不会压掉重大事件的发展。
+    try:
+        fresh, _major_dupes = _balloon_event_filter(fresh)
+        if _major_dupes:
+            _balloon_trace("大事提醒：去掉 %d 条已播事件的别家稿" % len(_major_dupes))
+    except Exception:
+        pass
+    if not fresh:
+        return
     sample = fresh[:BALLOON_PLAY_COUNT]
     entries = []
     for it in sample:
@@ -9700,7 +10853,7 @@ def _notify_major(items):
     print(f"[ok] 大事提醒：滚动播放 {len(entries)} 条")
     # 【2026-10-25 用户「不能几个网站的新闻重复投放」】大事提醒播过的事件也写进"已播事件"记忆，
     # 这样随后那波「更新提醒」不会把同一场地震/同一条快讯再播一遍。
-    # 注意**只写不读**：大事提醒本身不做跨轮过滤 —— 这类通知漏报比多报严重。
+    # 【2026-11-12 八修】上面已加播前过滤，不再"只写不读"——用户要的是同一件事不重复。
     try:
         _balloon_event_remember(sample)
     except Exception:
@@ -9801,6 +10954,32 @@ def _warmup():
                 # 满栏白框看着就像坏了。_oss_refresh 那条路已经预热过，但「读到本机缓存」
                 # 时 6 小时内不会再抓，所以这一步得补在这里。
                 _oss_prewarm(_oss_snapshot()[0])
+            # 【2026-11-12】周榜那份缓存也要读回来并预热题图，否则切到周榜首屏是白框；
+            # 它自己 1 小时一批，开机这一下不产生外部请求。
+            try:
+                _oss_week_shown_load()   # 跨重启的「播过名单」，别开机又弹一次周榜第 1
+                _nw = _oss_week_load_disk()
+                if _nw:
+                    print("[ok] 开源周榜: 本机缓存载入 %d 条" % _nw)
+                    _oss_prewarm(_oss_week_snapshot()[0][:6])
+            except Exception as ex:
+                print("[warn] 开源周榜预热失败: %s" % type(ex).__name__)
+            # 【2026-11-12 三修】涨速榜缓存也读回来，重启后首屏第三档不空白。
+            try:
+                _ns = _oss_speed_load_disk()
+                if _ns:
+                    print("[ok] 开源涨速榜: 本机缓存载入 %d 条" % _ns)
+                # 【2026-11-12 十六修】冷启动总是用磁盘基准重算两路派生行，并把两路
+                # 缓存时刻传进去：某路基准确实为空时用它建初始基准，不伪造 now。
+                # 旧版只复用磁盘里 has_speed=False 的旧行，重启必然又是空榜。
+                _m_snap = _oss_snapshot()
+                _w_snap = _oss_week_snapshot()
+                _nsd = _oss_speed_seed(_m_snap[0], _w_snap[0],
+                                       float(_m_snap[1]), float(_w_snap[1]))
+                if _nsd:
+                    print("[ok] 开源涨速榜: 冷启动补齐 %d 条" % _nsd)
+            except Exception as ex:
+                print("[warn] 开源涨速榜预热失败: %s" % type(ex).__name__)
             _kick_oss()
         except Exception as ex:
             print("[warn] 开源热榜预热失败: %s" % type(ex).__name__)
@@ -9964,10 +11143,34 @@ def _warmup():
                                     _balloon_trace("启动播报：这一轮只播 %d 小时内的，"
                                                    "%d 条稍旧的让位"
                                                    % (BALLOON_FRESH_PREFER_HOURS, _held))
+                                # 【2026-11-12 八修】同事件去重（用户：「一条新闻多家网站
+                                # 报道，还一直轮播，这是禁止的」）——启动这一路以前只写
+                                # 「已播事件」记忆、播前却不过滤，开机就会把播过的同一件事
+                                # 的别家稿再投一遍。现在和更新提醒同一口径，播前先挡。
+                                try:
+                                    _novel_boot, _dupes_boot = _balloon_event_filter(_ordered)
+                                except Exception:
+                                    _novel_boot, _dupes_boot = _ordered, []
+                                if _dupes_boot:
+                                    _balloon_trace("启动播报：去掉 %d 条已播事件的别家稿"
+                                                   % len(_dupes_boot))
+                                _ordered = _novel_boot
                                 _pick = _pick_balloon_items(_ordered)[:BALLOON_PLAY_COUNT]
                                 if not _pick:
                                     print("[warn] 启动气泡：没有可用条目，跳过")
                                     return
+                                # 【2026-11-12 八修】开机这一轮也必须出现开源（用户实测
+                                # 「这次轮播都没看见开源」）。同样置顶第 1 条，让位最末一条，
+                                # 被让位的不记为播过。开源榜没数据就保持原样。
+                                _seat_boot, _seat_boot_name = None, ""
+                                try:
+                                    _seat_boot, _seat_boot_name = _oss_carousel_seat(mark=True)
+                                except Exception:
+                                    pass
+                                if _seat_boot:
+                                    _pick = _pick[:BALLOON_PLAY_COUNT - 1]
+                                    _balloon_trace("启动播报：开源席置顶 %s"
+                                                   % (_seat_boot_name or "")[:40])
                                 # 【2026-10-25 用户「不能几个网站的新闻重复投放」】
                                 # 启动播报播过的这件事也得进"已播事件"记忆 —— 否则几分钟后
                                 # 第一波「更新提醒」会把同一条新闻的别家稿再播一遍。
@@ -9983,7 +11186,8 @@ def _warmup():
                                                          for x in _pick], force=True)
                                 except Exception:
                                     pass
-                            _ents = [_balloon_entry(x) for x in _pick]
+                            _ents = ([_seat_boot] if _seat_boot else []) \
+                                    + [_balloon_entry(x) for x in _pick]
                             _n_intl = sum(1 for x in _pick if x.get("region") == "intl")
                             print("[ok] 启动气泡：播报 %d 条（%s；含国际 %d 条）"
                                   % (len(_ents), _balloon_cls_tally(_pick), _n_intl))
@@ -10037,6 +11241,12 @@ def _warmup():
             # 不发请求。效果是：这一栏最长 6 小时换一次，程序重启/断网期间也不会空着。
             try:
                 _kick_oss()
+            except Exception:
+                pass
+            # 【2026-11-12 用户要求】每 10 分钟投一组暴涨项目，按速度降序依次、
+            # 必出开源；候选全在本机缓存里，函数自己节流，不额外发请求、不占新闻 10 席。
+            try:
+                _oss_boom_announce()
             except Exception:
                 pass
             try:
@@ -10727,6 +11937,18 @@ def _guard_mutating(request):
 # 所以上限就定 200；超出按 200 截断（不再因为 FastAPI 的 le 校验回 422 —— 见 api_news 的说明）。
 NEWS_LIMIT_MAX = 200
 
+# 【2026-11-12 修「娱乐整栏消失」】热榜扩到 6 家后每轮 140+ 条，全部排在新闻流前面，
+# 再撞上 200 条上限 —— 娱乐 / 软件 / 头条被整栏挤没。实测（本机 1.5.9 装机态）：
+#   池子 456 条（头条 43 / 娱乐 56 / 软件 47 / 科技 130 / 财经 37 / 热榜 143），
+#   接口只回 200 条 = 热榜 143 + 科技 43 + 财经 10 + 头条 4，娱乐 0 / 软件 0，
+#   左栏计数与下拉都是从这批数据现算的，于是「娱乐」按钮根本不出现。
+# 现在两刀（都不动抓取与排名口径）：
+#   HOT_RESPONSE_MAX —— 热榜在 /api/news 里最多回 24 条（页面「实时热榜」只露 20 条；
+#                       要查某条上榜历史走 /api/hot-snapshot，那条路不受影响）；
+#   NEWS_MIN_PER_CLS —— 新闻流先给每栏保底 20 条，剩余名额再按发布时间倒序补。
+HOT_RESPONSE_MAX = 24
+NEWS_MIN_PER_CLS = 20
+
 # 【2026-10-25 待办 #62】内存池空了（断网 / 还在预热）时，首屏回落本机归档的窗口。
 ARCHIVE_BACKFILL_DAYS = 7      # 第一档：先找最近 7 天
 ARCHIVE_BACKFILL_MIN = 6       # 第一档少于这个数 → 放宽再查一次（不是"就放弃"）
@@ -10760,6 +11982,63 @@ def _news_from_archive(region, limit):
         return [], note          # note 非空 = 归档此刻读不到；空 = 归档里确实没这一栏的货
     newest_day = max([(it.get("day") or "") for it in items]) or "?"
     return items, "本机归档 %s 的 %d 条" % (newest_day, len(items))
+
+
+def _pick_news_with_quota(rest, budget):
+    """新闻流取条：**每栏先保底，剩余名额再按发布时间倒序补**（不改抓取、不改排名口径）。
+
+    为什么需要它：热榜是独立榜块、页面单独渲染（只露 20 条），却和新闻流抢同一个 limit。
+    6 家热榜一轮 140+ 条全排在新闻前面，200 条上限一到，娱乐 / 软件 / 头条整栏到不了页面。
+    这里把「热榜」和「新闻」拆开算账：调用方只把新闻（rest）交给本函数，并按剩余名额传 budget。
+
+    保底条数 = min(NEWS_MIN_PER_CLS, budget // 栏目数) —— limit 很小（比如 48）时按均分，
+    不会因为保底写死 20 反而一栏都装不下；某栏本身不够这么多就全给，名额顺延给别的栏。
+    返回的列表仍按发布时间倒序（与响应原来的排序一致），且不重复、不改原字典。
+    """
+    if budget <= 0 or not rest:
+        return []
+    groups, order = {}, []
+    for it in rest:
+        c = it.get("cls") or "其他"
+        if c not in groups:
+            groups[c] = []
+            order.append(c)
+        groups[c].append(it)
+    per = min(NEWS_MIN_PER_CLS, max(1, int(budget) // max(1, len(order))))
+    picked, seen = [], set()
+    for c in order:
+        for it in groups[c][:per]:
+            picked.append(it)
+            seen.add(id(it))
+    remain = int(budget) - len(picked)
+    if remain > 0:
+        # 【2026-11-13 原创加权·单源限流】补位阶段：
+        #   ① 原创源的条目先上（别被快讯源按时间挤掉）；
+        #   ② 单源上限 = 本批名额的 35%（至少 6 条）—— 实测科技栏 90 条里
+        #      快科技 44 + IT之家 35 = 79%，页面看着就是"几家在互相抄"；
+        #   ③ 一轮补不满（该栏源本来就少）时**放开上限**再补一轮，宁可多给，不让页面空着。
+        _cap = max(6, int(int(budget) * 0.35))
+        _cnt = {}
+        for _p in picked:
+            _lab = _p.get("label") or ""
+            _cnt[_lab] = _cnt.get(_lab, 0) + 1
+        _order = ([it for it in rest if it.get("original")]
+                  + [it for it in rest if not it.get("original")])
+        for _round in (0, 1):
+            for it in _order:           # rest 进来时已按发布时间倒序，同一档内保持时间序
+                if remain <= 0:
+                    break
+                if id(it) in seen:
+                    continue
+                _lab = it.get("label") or ""
+                if _round == 0 and _cnt.get(_lab, 0) >= _cap:
+                    continue
+                picked.append(it)
+                seen.add(id(it))
+                _cnt[_lab] = _cnt.get(_lab, 0) + 1
+                remain -= 1
+    picked.sort(key=lambda x: x.get("published") or 0, reverse=True)
+    return picked
 
 
 @app.get("/api/news")
@@ -10854,9 +12133,12 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
         # 真正重复的那层（同一条稿子的副本）进门处的「同标题去重」已经抹过了，
         # 这里再折一次纯属误杀。
         _hot_part = [it for it in items if it.get("cls") == "热榜"]
-        _rest_part = _dedup_same_event(
-            [it for it in items if it.get("cls") != "热榜"],
-            with_also=True)
+        # 【2026-11-13 原创优先】同事件合并原来留「最先抓到」的那条，抓取顺序决定谁胜出 ——
+        # 结果常常是快讯站先发、原创站被折掉。这里先把原创条目排前面，
+        # `_dedup_same_event` 的"留第一条"就等于"留原创那条"，判据一个字没改。
+        _rest_src = [it for it in items if it.get("cls") != "热榜"]
+        _rest_src.sort(key=lambda x: 0 if x.get("original") else 1)
+        _rest_part = _dedup_same_event(_rest_src, with_also=True)
         items = _hot_part + _rest_part
     # 【2026-10-15 用户口径】国际栏出口再兜一道：
     # 收集那一刻 CGTN 这类英文源的标题**还是英文**，判据可能判不出"中国主体"；
@@ -10886,10 +12168,20 @@ def api_news(region: str = Query("cn", enum=["cn", "intl", "hot"]), q: str = Que
     # 的既定设计一致；新闻流（rest）仍按真实发布时间倒序，不受影响。
     hot.sort(key=lambda x: x.get("score") or 0, reverse=True)
     rest.sort(key=lambda x: x["published"], reverse=True)
-    items = hot + rest
+    # 【2026-11-12 修「娱乐整栏消失 / 软件栏没有新闻 / 头条只剩 4 条」】热榜与新闻流分开算账：
+    #   搜索 → 不限额不配额（用户明确在找某条，宁可多给几条）；
+    #   热榜区 → 这一批本来就全是热榜，按 limit 截断；
+    #   正常流 → 热榜最多 HOT_RESPONSE_MAX 条，剩下的名额给新闻，且每栏有保底。
+    # limit 很小时（默认 48）也不会把某一栏整栏挤掉：那 24 条新闻按均分给各栏。
     if q.strip():
         kw = q.strip().lower()
-        items = [i for i in items if kw in i["title"].lower() or kw in i["desc"].lower()]
+        items = [i for i in (hot + rest)
+                 if kw in i["title"].lower() or kw in i["desc"].lower()]
+    elif region == "hot":
+        items = hot[:limit]
+    else:
+        hot_top = hot[:HOT_RESPONSE_MAX]
+        items = hot_top + _pick_news_with_quota(rest, max(0, limit - len(hot_top)))
     # 【修 高-1】把这一批图里出现过的域名登记进 /img 的来源白名单
     _note_item_hosts(items)
     # 显式声明 charset=utf-8，避免个别客户端把 JSON 误判为 GBK 导致乱码。
@@ -11028,11 +12320,23 @@ OSS_SOURCE_ID = "oss-github-stars"
 OSS_SOURCE_LABEL = "GitHub"
 OSS_WINDOW_DAYS = 30       # 「近 30 天新建」这个窗口本身是榜单定义，不是时效妥协
 OSS_LIMIT = 20             # 一屏能扫完的量；再多没人看
+# 【2026-11-13】取候选池时多抓一批再挑：闸门会剔除「站方简介为空」的仓库
+# （见 _oss_items_from_payload 的十五修准入），只按 20 条去取，筛完常常只剩
+# 18~19 条（本机实测月 19 / 周 18 / 速 19）。用户要求三榜都必须是 20 条，
+# 所以按名次顺延：多要 20 条候选，筛完再取前 20，空简介照旧不上榜。
+# 【2026-11-13】余量 20 → 40：20 条实测筛完仍差 1~2 条（老仓库的简介被站方清空），
+# 改成 40 条余量（per_page 60，远在 GitHub 单页上限 100 以内）。三榜必须 20/20/20。
+OSS_POOL_EXTRA = 40
 OSS_TTL = 6 * 3600         # 榜单一天挪不了几次，6 小时抓一次足够（省境外接口额度）
 OSS_FAIL_TTL = 600         # 抓不到时 10 分钟内不再撞（境内直连不通时别每轮都试一遍）
 OSS_TIMEOUT = 12           # 实测 0.9~1.6 秒，给到 12 秒兜抖动；比它长的抖动就当失败
 OSS_SEARCH_URL = "https://api.github.com/search/repositories"
 OSS_IMAGE_BASE = "https://opengraph.githubassets.com/1/"
+# 【2026-11-12 十修】气泡背景改用项目 owner 的 GitHub 头像：分享卡（上面那一行）
+# 自己就印着大号英文仓库名 + 英文简介，白底压不住，用户截图里「中文介绍」被它盖光
+# （用户选「换成项目头像/图标」）。头像来自搜索接口现成的 owner.avatar_url，
+# 不额外请求；下面这个域名经实测直连 image/png 可用，且只认 github 官方域。
+OSS_AVATAR_HOST = "avatars.githubusercontent.com"
 # 仓库全名必须是 owner/repo 这两段安全字符：它要拼进图片地址，放开了就能改写请求路径，
 # 也挡不住站方返回一个畸形 full_name 把 /img 当成跳转入口。
 OSS_NAME_RX = re.compile(r"^[\w.\-]{1,100}/[\w.\-]{1,100}$")
@@ -11050,6 +12354,61 @@ _OSS = {"ts": 0.0, "items": [], "note": "", "next_try": 0.0}
 _OSS_LOCK = threading.Lock()
 _OSS_BUSY = [False]
 
+# 【2026-11-12 新增】开源周榜：用户选「同一栏目里 30 天 / 7 天 切换」。
+#   30 天榜按**累计星标**排，老项目越攒越多、天天看都是同一批；周榜改按
+#   「日均涨星 = 星标 ÷ 建库至今的天数」排，2 天涨 6000 星的新项目能压过
+#   25 天攒 5 万星的老项目（2026-11-12 本机实测：GestaltX 2.8 天 / 6266 星 /
+#   日均 2205，按累计星标只能排第 2，按日均涨星就是第 1）。
+#   两个窗口各自一份内存 + 磁盘缓存、各自的抓取间隔：谁失败都不影响另一个，
+#   30 天榜那条链路（口径 / 6 小时 / 20 条）一个字不改。
+OSS_WEEK_DAYS = 7
+OSS_WEEK_LIMIT = 20
+OSS_WEEK_TTL = 3600              # 周榜 1 小时一批；30 天榜仍是 6 小时
+OSS_WEEK_MIN_VELOCITY = 100      # 日均涨星低于这个不触发桌面播报，免得刷屏
+OSS_WEEK_TOAST_GAP = 10 * 60    # 两条周榜气泡（换批播报）之间的最小间隔
+# 【2026-11-12 用户定】暴涨播报每 10 分钟一组、最多 3 条，**按暴涨速度降序依次推**，不随机。
+OSS_BOOM_TOAST_GAP = 10 * 60   # 每 10 分钟一组（用户从 15 分钟改过来）
+OSS_BOOM_TOAST_PICK = 3        # 每组最多 3 条，取涨速最快的那几条，组内按速度从高到低
+OSS_WEEK_SHOWN_TTL = 24 * 3600  # 同一个仓库 24 小时内不重复播报
+_OSS_WEEK_CACHE_FILE = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "oss_week_cache.json")
+# 「哪个仓库什么时候播过」要跨重启记住：只在内存里记的话，每次开机都会把周榜第 1 名再弹一遍。
+_OSS_WEEK_SHOWN_FILE = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "oss_week_shown.json")
+_OSS_WEEK = {"ts": 0.0, "items": [], "note": "", "next_try": 0.0}
+_OSS_WEEK_LOCK = threading.Lock()
+_OSS_WEEK_BUSY = [False]
+_OSS_WEEK_TOAST_AT = 0.0
+_OSS_WEEK_SHOWN = {}            # 仓库全名 -> 上次播报时刻（落盘，跨重启有效）
+_OSS_BOOM_TOAST_AT = 0.0        # 【2026-11-12】暴涨播报上一组时刻（每 10 分钟）
+
+# 【2026-11-12 三修】第三档「涨速榜」：用户点破「和 7 天周榜会不会重复」。
+#   只把周榜那 20 条换个顺序重排，切过去还是同一批项目，这一档等于白加。
+#   改成 **7 天周榜 ∪ 30 天榜 的并集**：上一轮端到端实测两榜零重合，合计约 39 个
+#   不同仓库，还能捞到「建库一周以上、最近突然加速」的项目 —— 那才是「速涨」。
+#   每条按**自己那一榜**的星标快照间隔算「净增星 ÷ 间隔小时 × 24 = 星/天」：周榜 1 小时一批、
+#   30 天榜 6 小时一批，两路各存一份 {ts, stars}，谁换批谁更新自己的基准，
+#   快慢不同也能公平比。零额外请求：全部由已有两份榜单派生。
+OSS_SPEED_LIMIT = 20
+OSS_SPEED_MIN_HOURS = 0.25  # 两批间隔不足 15 分钟按 15 分钟算，免得手动连抓把速度吹上天
+# 【2026-11-12 十一修 / 十七修】积累期：速榜一条真值都还没有时，周榜对比间隔临时缩到
+# 3 分钟（十七修从 15 分钟收紧：十六修实测部署交接态基准与缓存同批、delta 恒 0，
+# 15 分钟才出首批真值用户等太久；GitHub 搜索接口限速 10 次/分钟，3 分钟一批远在限流内）。
+# 让第一份真实净增几分钟内就出来；真值一出现立刻恢复常态 1 小时一批，
+# 不增加长期请求量。仍是纯真值口径：不摆观察榜、不掺日均平均数、基准不随空批推进。
+OSS_SPEED_SEED_TTL = 3 * 60
+# 【2026-11-12 十六修】基准最长保留 24 小时：只在这一路确实观测到涨星时才推进，
+# 超时无条件换新基准，避免把「最近一段时间的真实净增」拖成长期平均数。
+OSS_SPEED_BASE_MAX_AGE = 24 * 3600
+_OSS_SPEED_CACHE_FILE = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "oss_speed_cache.json")
+_OSS_SPEED_PREV = {"week": {"ts": 0.0, "stars": {}},
+                   "month": {"ts": 0.0, "stars": {}}}
+# real_at = 最近一次真值产生时刻；stale = 当前显示的是「最近一次真值」而非本批新增。
+_OSS_SPEED = {"ts": 0.0, "items": [], "note": "", "real": 0,
+              "week_rows": [], "month_rows": [], "real_at": 0.0, "stale": False}
+_OSS_SPEED_LOCK = threading.Lock()
+
 
 def _oss_window_date(days=OSS_WINDOW_DAYS, today=None):
     """`created:>` 后面那个日期。
@@ -11064,9 +12423,10 @@ def _oss_window_date(days=OSS_WINDOW_DAYS, today=None):
 def _oss_search_url(days=OSS_WINDOW_DAYS, limit=OSS_LIMIT, today=None):
     """search 地址。`>` 必须转义成 %3E，GitHub 那边对裸 `>` 的容忍度不稳定，别赌。"""
     q = "created:>%s" % _oss_window_date(days, today)
+    # 【2026-11-13】per_page 取「要显示的条数 + 候选余量」：闸门筛完还要够 20 条。
     return OSS_SEARCH_URL + "?" + urllib.parse.urlencode(
         {"q": q, "sort": "stars", "order": "desc",
-         "per_page": max(1, min(100, int(limit)))})
+         "per_page": max(1, min(100, int(limit) + OSS_POOL_EXTRA))})
 
 
 def _oss_created_ts(s):
@@ -11106,18 +12466,25 @@ def _oss_link(u):
     return "%s://%s%s" % (p.scheme, p.netloc.lower(), p.path)
 
 
-def _oss_desc(r, days=OSS_WINDOW_DAYS, zh=""):
+def _oss_desc(r, days=OSS_WINDOW_DAYS, zh="", velocity=0):
     """卡片摘要：**中文打头**，英文简介只做补充。
 
     用户 2026-10-07 定过一次口径（「删除不易读的英文 GitHub 仓库，改用国内源」），
     所以这一栏不能整屏是英文：先用一句中文说清"这是什么榜、什么语言"，
     然后有译文就上译文；翻译没开（config.json 里 translate.enabled 默认 false）
     就附站方原文、并标明「简介原文」，绝不把英文裸摆在中文页面上冒充正文。
+    【2026-11-12】周榜多带一个「日均涨星 N」：这一栏的排名依据变了，
+    卡片上也得写明白，不然用户看不懂为什么 ★ 少的项目排在前面。
     """
     lang = (r.get("language") or "").strip()
-    bits = ["GitHub 近 %d 天新建" % max(1, int(days))]
+    # 【2026-11-12 用户定】对外口径跟栏目一致：7 天那档叫「开源周榜」，30 天那档叫
+    # 「开源月榜」，不再写「近 N 天新建」这种跟按钮对不上的说法。
+    _board = "GitHub 开源周榜" if max(1, int(days)) <= 7 else "GitHub 开源月榜"
+    bits = [_board]
     if lang:
         bits.append(lang)
+    if velocity and velocity > 0:
+        bits.append("日均涨星 %d" % int(round(velocity)))
     head = " · ".join(bits)
     base = _clean(r.get("description") or "")[:200]
     zh = (zh or "").strip()
@@ -11129,7 +12496,7 @@ def _oss_desc(r, days=OSS_WINDOW_DAYS, zh=""):
 
 
 def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
-                            today=None, translate=None):
+                            today=None, translate=None, velocity=False):
     """search 响应 → 卡片条目。
 
     **纯函数**：不发网络请求、不读真实时钟（`today` 可注入）、翻译器由调用方注入
@@ -11137,6 +12504,8 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
     字段沿用新闻卡片那一套（title/desc/link/image/published/heat/rank/label/cls），
     前端 cardHTML() 不用为这一栏另写一套渲染；额外只多 `stars` / `lang` / `created_text`
     三个字段，用来把星标数、语言、创建日期显示成中文卡片上看得懂的徽章。
+    【2026-11-12】`velocity=True` 是**周榜**口径：多算 `velocity`（日均涨星）和
+    `age_days`，并按日均涨星降序，而不是按累计星标。默认 False，30 天榜口径原样不变。
     """
     rows = (payload or {}).get("items") or []
     keep = []
@@ -11156,6 +12525,13 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
             badlink += 1
             continue
         base = _clean(r.get("description") or "")
+        # 【2026-11-12 十五修 · 用户「没有介绍，怎么上的榜？用户为什么会选择？」】
+        # 原准入只看时间窗口 + 星标/涨速 + 题材闸门 + 链接，站方简介为空照样进榜：
+        # 机器只看数字，用户点开却不知道这项目是干什么的，白占一个位置。这里把
+        # 「GitHub 简介非空」列为三榜共用的准入条件；老缓存里已经存在的空简介条目
+        # 由出口 _oss_display_rows 挡掉（双保险）。不抓 README、不硬编中文。
+        if not base:
+            continue
         # 闸门看的是"这条会以什么面目出现"的所有字段：仓库名、简介、站方打的标签、
         # 还有语言分类 —— GitHub 的语言桶里就有 Porn/NSFW 这类，只查简介会漏过去。
         hay = " ".join([(r.get("language") or "").strip(), name, base,
@@ -11173,12 +12549,36 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
             forks = 0
         lang = (r.get("language") or "").strip()[:40]
         ts = _oss_created_ts(r.get("created_at"))
+        vel, age_days = 0.0, 0.0
+        if velocity:
+            # 年龄用 epoch 秒差算，避开 today / created_at 时区不一致的坑；半天以内的
+            # 新仓库按 0.5 天算，免得刚建十分钟就除出天文数字的「日均涨星」。
+            # 没有 created_at 时按整个窗口兜底（宁可低估速度，不虚报）。
+            try:
+                _now_ts = (today or datetime.now(CST)).timestamp()
+                age_days = max(0.5, (_now_ts - ts) / 86400.0) if ts else float(days)
+            except Exception:
+                age_days = float(days)
+            vel = stars / age_days
         zh = ""
         if base and translate is not None:
             try:
                 zh = (translate(base) or "").strip()
             except Exception:
                 zh = ""
+        # owner 头像：GitHub 搜索接口自带 avatar_url，零额外请求。只认官方域，
+        # 拼 s=460 让气泡整卡铺图时短边够清（实测 avatar 原图小到几十字节～几百 KB）。
+        avatar = ""
+        try:
+            au = urllib.parse.urlsplit((r.get("owner") or {}).get("avatar_url") or "")
+            if (au.hostname or "").lower() == OSS_AVATAR_HOST and au.scheme == "https":
+                # au.query 不带前导「?」：老缓存里 avatar_url 是 /u/123?v=4，
+                # 漏掉这个问号会拼成 /u/123v=4&s=460（404，气泡背景空白）。
+                avatar = "%s://%s%s?%s" % (
+                    au.scheme, au.netloc.lower(), au.path,
+                    "s=460" if not au.query else au.query + "&s=460")
+        except Exception:
+            avatar = ""
         seen.add(key)
         keep.append({
             "id": hashlib.md5(("oss-" + key).encode("utf-8")).hexdigest()[:12],
@@ -11187,15 +12587,18 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
             "label": OSS_SOURCE_LABEL,
             "cls": OSS_CLS,
             "title": name[:120],
-            "desc": _oss_desc(r, days, zh),
+            "desc": _oss_desc(r, days, zh, vel),
             "desc_en": base[:240],
             "link": link,
             "image": OSS_IMAGE_BASE + name,
+            "avatar": avatar,            # 气泡背景专用：项目 owner 头像（页面卡片仍用 image 分享图）
             "published": ts,
             "created_text": (datetime.fromtimestamp(ts, CST).strftime("%Y-%m-%d")
                              if ts else ""),
             "heat": stars,
             "stars": stars,
+            "velocity": int(round(vel)) if velocity else 0,
+            "age_days": round(age_days, 1) if velocity else 0,
             "forks": forks,
             "lang": lang,
             "source": "%s 开源热榜" % OSS_SOURCE_LABEL,
@@ -11203,7 +12606,12 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
         })
     # 接口说按星标排，但闸门剔除过条目、也防它哪天改口 —— 这里自己再按星标定一次序，
     # 同数按仓库名，保证 rank 稳定可复现（测试就靠这一条断言名次连续）。
-    keep.sort(key=lambda x: (-x["stars"], x["title"].lower()))
+    # 【2026-11-12】周榜（velocity=True）改按「日均涨星」降序：同样多的星，建库越晚
+    # 说明被认可得越快；同速再比累计星标、最后比仓库名，名次照样稳定可复现。
+    if velocity:
+        keep.sort(key=lambda x: (-x["velocity"], -x["stars"], x["title"].lower()))
+    else:
+        keep.sort(key=lambda x: (-x["stars"], x["title"].lower()))
     out = keep[:max(1, int(limit))]
     for i, it in enumerate(out, 1):
         it["rank"] = i
@@ -11338,19 +12746,35 @@ def _oss_refresh():
     _oss_save_disk()
     _note_src_health(_meta, True, len(items))
     print("[ok] %s: %d 条（窗口 近 %d 天新建 · 星标降序）" % (OSS_CLS, len(items), OSS_WINDOW_DAYS))
+    # 【2026-11-12 三修·实测修】榜单数据一落地就派生涨速榜：题图预热是同步的、
+    # 一张卡可能等十几秒，放在它后面会让第三档白白空一会儿，冷启动实测就撞上了。
+    # 30 天榜走 6 小时这一路自己的基准；派生失败不能把主链路带崩（这一栏是加料）。
+    try:
+        _oss_speed_rebuild("month", items)
+    except Exception as ex:
+        print("[warn] 开源涨速榜派生失败: %s" % type(ex).__name__)
     _oss_prewarm(items)           # 后台把首屏那几张题图先取回来（见函数里的实测理由）
     return len(items)
 
 
 def _kick_oss(force=False):
-    """后台补一轮开源热榜（单飞 + 过期判定 + 失败节流）。抢不到闸就什么都不做。"""
+    """后台补一轮开源热榜（30 天榜 + 周榜，各自单飞 + 过期判定 + 失败节流）。"""
     if not OSS_ENABLED:
         return False
+    # 【2026-11-12】周榜跟着同一批调用点（开机预热 / 5 分钟刷新轮 / /api/oss）敲门，
+    # 但它自己有 1 小时的闸，绝大多数轮次直接跳过、不发请求。
+    try:
+        _kick_oss_week()
+    except Exception:
+        pass
     now = time.time()
     with _OSS_LOCK:
         if _OSS_BUSY[0]:
             return False
-        if not force and (now - _OSS["ts"] < OSS_TTL or now < _OSS["next_try"]):
+        # 【2026-11-13】缓存里不足 20 条就立刻重抓：老缓存是「per_page=20 筛完只剩 19」
+        # 那一版写的，光等 6 小时 TTL 会一直摆着 19 条（用户要求必须 20 条）。
+        _short = len(_OSS["items"]) < OSS_LIMIT
+        if not force and not _short and (now - _OSS["ts"] < OSS_TTL or now < _OSS["next_try"]):
             return False
         _OSS_BUSY[0] = True
 
@@ -11367,6 +12791,1001 @@ def _kick_oss(force=False):
     return True
 
 
+# ---------- 开源周榜（2026-11-12 新增；与 30 天榜在同一个栏目里切换） ----------
+# 为什么不改 30 天榜那条链路：它有自己的口径单测（tests/test_oss_board.py 把
+# 30 天 / 6 小时 / 20 条 / 累计星标排序全钉死了），周榜是另一份窗口与另一把排序尺，
+# 混进同一份状态会互相覆盖缓存、健康度与刷新节流。这里单独一份，谁失败都不拖累谁。
+
+
+def _oss_week_load_disk():
+    """把上次抓到的周榜从磁盘读回来（断网 / 重启首屏也有这一档）。"""
+    try:
+        if not os.path.exists(_OSS_WEEK_CACHE_FILE):
+            return 0
+        with open(_OSS_WEEK_CACHE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        items = d.get("items") or []
+        if not isinstance(items, list) or not items:
+            return 0
+        with _OSS_WEEK_LOCK:
+            _OSS_WEEK["items"] = items
+            _OSS_WEEK["ts"] = float(d.get("ts") or 0)
+            _OSS_WEEK["note"] = "本机缓存"
+        return len(items)
+    except Exception:
+        return 0
+
+
+def _oss_week_save_disk():
+    try:
+        os.makedirs(os.path.dirname(_OSS_WEEK_CACHE_FILE), exist_ok=True)
+        with _OSS_WEEK_LOCK:
+            blob = {"ts": _OSS_WEEK["ts"], "window": OSS_WEEK_DAYS,
+                    "items": _OSS_WEEK["items"]}
+        with open(_OSS_WEEK_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(blob, f, ensure_ascii=False)
+    except Exception as ex:
+        print("[warn] 开源周榜缓存写盘失败: %s" % type(ex).__name__)
+
+
+def _oss_week_snapshot():
+    with _OSS_WEEK_LOCK:
+        return list(_OSS_WEEK["items"]), float(_OSS_WEEK["ts"]), _OSS_WEEK["note"]
+
+
+def _oss_week_shown_load():
+    """跨重启读回「哪个仓库什么时候播过」—— 不然每次开机都会把周榜第 1 名再弹一遍。"""
+    global _OSS_WEEK_SHOWN
+    try:
+        if not os.path.exists(_OSS_WEEK_SHOWN_FILE):
+            return
+        with open(_OSS_WEEK_SHOWN_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            _OSS_WEEK_SHOWN = {str(k): float(v) for k, v in d.items()
+                               if isinstance(v, (int, float))}
+    except Exception:
+        pass
+
+
+def _oss_week_shown_save():
+    try:
+        os.makedirs(os.path.dirname(_OSS_WEEK_SHOWN_FILE), exist_ok=True)
+        with open(_OSS_WEEK_SHOWN_FILE, "w", encoding="utf-8") as f:
+            json.dump(_OSS_WEEK_SHOWN, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _oss_pick_boom(week_rows, speed_rows, shown, now_ts, limit=OSS_BOOM_TOAST_PICK):
+    """从周榜 + 速榜候选里按「暴涨速度降序」依次取前几条播报。**纯函数**（不碰时钟/网络/磁盘）。
+
+    口径（用户 2026-11-12 拍板，七修改成「不随机、按速度依次」）：
+      · 每 10 分钟投一组最多 3 条，**直接取涨速最快的几条**，不再 random.sample；
+      · 有真实净增的条目（has_speed）优先，按 speed_day（星/天）降序 —— 这才是「真实剧增」；
+      · 一条真值都没有时（首轮），退用周榜的 velocity（日均涨星），
+        并强制标 real=False，气泡文案写明「首批观察中 · 非真实增速」，绝不冒充；
+      · 同一仓库 24 小时内不重复（shown: 仓库名 -> 上次播报时刻）；
+      · 「必须出现开源」：没被 shown 挡掉的真值/周榜条目哪怕不足 3 条也照投（至少 1 条）；
+        只有候选池整档被 24h 去重挡光时，才从全池按速度取回前 limit 条兜底，
+        保证每一轮播报必出开源、不空转；
+      · 【2026-11-12 十二修】用户「要新闻内容，而不是标题」：有中文用途说明的条目
+        一律排前面；只有**整池都没有中文内容**时才回退到标签式兜底，保证「必出开源」
+        不被这条过滤破坏。全池 39 条实测 36 条有内容，正常轮次永远播中文内容。
+      · 组内严格按 boom_val 从高到低排，依次推送；
+      · 每条带 boom_real / boom_val 两个字段给文案与单测。
+    """
+    try:
+        limit = max(1, int(limit))
+    except Exception:
+        limit = OSS_BOOM_TOAST_PICK
+    pool = []
+    for src, rows in ((True, speed_rows), (False, week_rows)):
+        for it in (rows or []):
+            if not isinstance(it, dict):
+                continue
+            name = it.get("title") or ""
+            if not name:
+                continue
+            real = bool(src and it.get("has_speed"))
+            val = (float(it.get("speed_day") or 0) if real
+                   else float(it.get("velocity") or 0))
+            if val <= 0:
+                continue
+            d = dict(it)
+            d["boom_real"] = real
+            d["boom_val"] = round(val, 1)
+            d["_cn"] = _oss_cn_usable(it)
+            d["_fresh"] = (now_ts - float((shown or {}).get(name) or 0) >= OSS_WEEK_SHOWN_TTL)
+            pool.append(d)
+    # 统一按「有中文内容优先 → 真值优先 → 涨速降序 → 名字」排一次；依次取，不随机。
+    pool.sort(key=lambda x: (0 if x["_cn"] else 1, 0 if x["boom_real"] else 1,
+                             -x["boom_val"], (x.get("title") or "").lower()))
+    # 有中文内容的候选中先做 24h 去重；挡光了才回退到全池（含无中文的兜底），
+    # 保证「轮播必出开源」这条老规矩不被新过滤破坏。
+    usable = [x for x in pool if x["_cn"]]
+    fresh = [x for x in usable if x["_fresh"]]
+    # 【2026-11-13 十三修·用户「github 的新闻重复多次出现」】
+    # 病根有两层：① 原来 fresh 空就退回 usable、并按**涨速降序**取前几条，涨速最快的
+    # 那条永远排第一（日志连着四轮都是 huamidev/GestaltX）；② `usable` 只收「有中文简介」
+    # 的条目，这一批实际只有 1 条有简介，于是「必出开源」次次退回到同一条。
+    # 现在：先挑没播过的（有中文的优先），没播过的都被挡光了就按**上次播报时刻最早**轮换 ——
+    # 宁可这一条没中文简介，也不许每轮同一个。
+    fresh_any = [x for x in pool if x["_fresh"]]
+    if fresh:
+        choose_from = fresh
+    elif fresh_any:
+        choose_from = fresh_any
+    else:
+        choose_from = sorted(
+            pool,
+            key=lambda x: (float((shown or {}).get(x.get("title") or "") or 0),
+                           0 if x["boom_real"] else 1,
+                           -x["boom_val"],
+                           (x.get("title") or "").lower()))
+    picked = [dict(x) for x in choose_from[:limit]]
+    for x in picked:
+        x.pop("_fresh", None)
+        x.pop("_cn", None)
+    return picked
+
+
+def _oss_cn_intro(it, limit=30):
+    """从开源条目的 desc 里抽一句「这项目是干什么的」中文简介（纯函数）。
+
+    desc 形如「GitHub 开源周榜 · Swift · 日均涨星 2164｜适用于 iOS 27.x 的
+    MobileGestalt 编辑器，具备…」—— `｜` 后是站方写的中文用途说明，直接拿来用，
+    不自己编、不翻译。没有说明的条目退回「语言 + 类型」的中文兜底，
+    绝不把英文仓库名塞进正文（用户 2026-11-12：「全中文说明，这个项目是干什么的」）。
+
+    【2026-11-12 十三修 · 用户「气泡里的文字要看全，不能有残缺」】全池 39 条
+    体检抓到上一版两个真缺陷：① 把顿号「、」也当切分点，「在 iPhone、iPad 和
+    Mac 上原生运行…」被拦腰切成「在 iPhone」；② 括号用 split(...)[0] 砍掉
+    主句后半，「中数学文（、英语…）」只剩「中数学文」。这里一次定死规则：
+      · 括号只整段删除（不砍后文），主句后半必须保住；
+      · 按标点切段后丢纯英文段、剥英文产品名前缀，但**再拼回完整文本**；
+      · 按句末标点分句；整句在预算内就整句用；
+      · 超预算时句内逐段累加，只在「汉字 ≥6、末尾不悬空虚词」的完整边界收口，
+        单个短片段（如「在 iPhone」）绝不单独当正文；
+      · 宁可输出略长于预算的完整分句，也不硬截半句 —— 气泡正文两行会自动退字号。
+    """
+    desc = str((it or {}).get("desc") or "")
+    intro = desc.split("｜", 1)[1].strip() if "｜" in desc else ""
+    lang = str((it or {}).get("lang") or "").strip()
+    fallback = ("%s 开源项目" % lang) if lang else "GitHub 开源项目"
+    if not intro:
+        return fallback
+    intro = re.sub(r"\s+", " ", intro).strip()
+    # ① 括号只是补充：整段删掉，绝不「砍到第一个括号为止」把主句后半截丢掉
+    intro = re.sub(r"[（(][^）)]*[）)]", " ", intro)
+    intro = re.sub(r"\s+", " ", intro).strip()
+    if not intro:
+        return fallback
+    # 英文产品名前缀只在**整段开头**剥一次（「AOMEI Backupper 2026 全功能…」）。
+    # 不能逐段剥：句内「iPad 和 Mac 上…」「NVN 在 Metal 上…」会被误当成产品名，
+    # 上一版干跑就把「在 iPhone、iPad 和 Mac 上…」削成了「在 iPhone、和 Mac 上…」。
+    m = re.match(r"^[A-Za-z][A-Za-z0-9 .+/\-—–]{3,}\s+(?=[\u4e00-\u9fff])", intro)
+    if m:
+        intro = intro[m.end():].strip()
+
+    def _has_cn(x):
+        return any("\u4e00" <= c <= "\u9fff" for c in x)
+
+    def _cn_count(x):
+        return sum(1 for c in x if "\u4e00" <= c <= "\u9fff")
+
+    # ② 按标点切段：丢纯英文项目名/版本号段，剥「英文产品名 + 空格 + 中文」前缀，
+    #    其余全部拼回完整文本（并列结构里的顿号段不再被单独拎出来当正文）。
+    raw = [p.strip() for p in re.split(r"(?<=[，、：:；。！？])", intro) if p.strip()]
+    cn_parts = []
+    for p in raw:
+        if not _has_cn(p):
+            continue                      # 纯英文项目名 / 版本号段，整段丢
+        if p:
+            cn_parts.append(p)
+    if not cn_parts:
+        return fallback
+    # 删括号、切段再拼回会留下「中数学文 、… 图谱 ：」这类多余空格，收口前抹平
+    text = "".join(cn_parts).strip()
+    text = re.sub(r"\s+([，、：:；。！？])", r"\1", text)
+    text = re.sub(r"([，、：:；。！？])\s+", r"\1", text)
+
+    # ③ 完整性判据：汉字够多、末尾不悬空虚词/半截标点、不是标签式兜底
+    _dangling = (r"(?:的|和|与|或|及|在|把|被|将|对|为|是|了|并|且|以|从|到|"
+                 r"让|使|给|：|:|，|,|、|；|;|。|！|？|·|-|/|\s)+$")
+    def _clean(x):
+        return re.sub(_dangling, "", (x or "").strip()).strip("，、：；。！？ ")
+    def _whole(x):
+        # 一个能独立看懂的收口点：≥6 汉字，且末尾不是悬空虚词/半截标点
+        return bool(x) and _cn_count(x) >= 6 and not re.search(_dangling, x)
+
+    # ④ 按句末标点分句：整句在预算内就整句用，最干净
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？；])", text) if s.strip()]
+    for sent in sentences:
+        if not _has_cn(sent):
+            continue
+        whole_sent = _clean(sent)
+        if _whole(whole_sent) and len(whole_sent) <= limit:
+            return whole_sent
+        # ⑤ 超预算：句内按次级标点逐段累加，只在完整语义边界收口；
+        #    「在 iPhone、」这种只有 1 个汉字的片段不满足 _whole，必须并到下一段。
+        out, best = "", ""
+        for p in [q.strip() for q in re.split(r"(?<=[，、：:；])", sent) if q.strip()]:
+            if not _has_cn(p):
+                continue
+            trial = out + p
+            cleaned = _clean(trial)
+            if _whole(cleaned):
+                best = cleaned
+                if len(cleaned) >= limit * 0.7:
+                    return cleaned
+            out = trial
+        if best:
+            return best
+    # ⑥ 没有任何完整收口点：宁可给一整句（两行退字号能放下），也绝不硬截半句
+    return _clean(sentences[0]) if sentences else fallback
+
+
+def _oss_cn_usable(it):
+    """这条开源条目有没有**站方写的中文用途说明**（纯函数）。
+
+    【2026-11-12 十二修】用户截图「要新闻内容，而不是标题」：气泡大字显示成
+    「JavaScript 开源项目」——那是 _oss_cn_intro 在 desc 没有中文简介时的兜底标签，
+    等于什么都没说。全池 39 条里 3 条 GitHub 原始简介为空，不能硬编内容冒充，
+    所以播报候选池直接不收它们；中文大字永远是有实质内容的用途说明。
+    【十三修】复用 _oss_cn_intro 的结果再判一次：标签式兜底、以及被切成
+    「在 iPhone」这类 <6 汉字的残句，都算「没有可用中文内容」，一并挡在候选池外。
+    """
+    desc = str((it or {}).get("desc") or "")
+    tail = desc.split("｜", 1)[1].strip() if "｜" in desc else ""
+    if not tail or tail.startswith("简介原文："):
+        return False
+    intro = _oss_cn_intro(it)
+    if not intro or intro.endswith("开源项目"):
+        return False
+    return sum(1 for c in intro if "\u4e00" <= c <= "\u9fff") >= 6
+
+
+def _oss_card_intro(it, limit=120):
+    """网页卡片的描述行：**只回完整中文用途说明**（纯函数）。
+
+    【2026-11-12 十四修】用户截图「日均涨多少，要那么多叙述干嘛？还是要中文介绍
+    这个项目到底是干啥的，要说清楚」：desc 是给气泡抽取用的内部字段，开头那串
+    「GitHub 开源周榜 · Swift · 日均涨星 2111」是元信息，网页卡片整段照抄就把
+    真正的中文用途挤到后面，再被单行省略号截掉。这里复用十三修定死的完整句
+    收口规则，按更大的预算取一整句中文说明；没有中文说明就回空串 ——
+    绝不摆「X 开源项目」标签，也不把「日均涨星」再叙述一遍。
+    星标 / 日均 / 语言 / 来源仍由卡片下方徽章展示，读者要看的就是这句中文。
+    """
+    if not _oss_cn_usable(it):
+        return ""
+    txt = _oss_cn_intro(it, limit=limit)
+    if not txt or txt.endswith("开源项目"):
+        return ""
+    # 再兜一道完整性：不足 6 汉字、末尾悬空虚词、或又混进榜单元信息，都不摆
+    cn = sum(1 for c in txt if "\u4e00" <= c <= "\u9fff")
+    if cn < 6 or re.search(
+            r"(?:的|和|与|或|在|把|被|将|对|为|是|了|并|且|：|:|，|、|；|-|/|\s)+$", txt):
+        return ""
+    if "｜" in txt or "日均涨星" in txt or "开源周榜" in txt or "开源月榜" in txt:
+        return ""
+    return txt
+
+
+def _oss_with_intro(rows):
+    """给对外展示的三份榜逐条补 intro 字段（纯函数，不改缓存里的原 dict）。
+
+    【十四修】只在 /api/oss 与首屏 SSR 的出口补，一次覆盖月榜 / 周榜 / 速榜；
+    磁盘缓存格式不变，气泡那条链路（读内存快照、按 desc 抽中文）一个字不动。
+    """
+    out = []
+    for it in (rows or []):
+        if not isinstance(it, dict):
+            out.append(it)
+            continue
+        d = dict(it)
+        d["intro"] = _oss_card_intro(d)
+        out.append(d)
+    return out
+
+
+def _oss_display_rows(rows):
+    """网页三榜的出口：**只列有中文用途说明的项目**，名次重新连续编号（纯函数）。
+
+    【2026-11-12 十五修】用户选「只列有中文介绍的项目」：十四修后没有中文说明的
+    卡片是空白描述行，等于「说不清这个项目干什么」，不如不列。这里只过滤对外
+    展示的三份榜，磁盘缓存不变、气泡候选池不变（气泡仍要保证「轮播必出开源」）。
+    兜底：整池都没有中文说明时（例如翻译全线失效）原样回原榜，宁可留空描述行，
+    也不能让「软件」栏三档入口整块消失 —— 用户 11-12 明确要求入口常驻。
+    """
+    out = []
+    for it in _oss_with_intro(rows or []):
+        if not isinstance(it, dict) or not (it.get("intro") or "").strip():
+            continue
+        d = dict(it)
+        d["rank"] = len(out) + 1
+        out.append(d)
+    if not out and rows:
+        return _oss_with_intro(rows)
+    return out
+
+
+def _oss_avatar_url(it):
+    """气泡背景：项目 owner 的 GitHub 头像，绝不返回印着英文的分享卡。纯函数。
+
+    优先用抓取时存下的 owner.avatar_url（只认官方域）；缓存是老版本、没有该字段
+    时按仓库名的 owner 段现拼一个（实测 avatars.githubusercontent.com/<owner>?s=460
+    直连可用）。头像偶发拿不到也只给官方默认头像域，不退回 opengraph 分享卡 ——
+    那张白底图上印着大号英文仓库名，正是用户反复指出要看不见中文的根因。
+    """
+    src = (it or {}).get("avatar") or ""
+    try:
+        u = urllib.parse.urlsplit(src)
+        if (u.hostname or "").lower() == OSS_AVATAR_HOST and u.scheme == "https":
+            return src
+    except Exception:
+        pass
+    name = str((it or {}).get("title") or "").strip()
+    owner = name.split("/", 1)[0] if "/" in name else ""
+    if owner and OSS_NAME_RX.match(name) and re.match(r"^[\w.\-]{1,100}$", owner):
+        return "https://%s/%s?s=460" % (OSS_AVATAR_HOST, owner)
+    return ""
+
+
+def _oss_boom_entry(it, head="【开源速榜】GitHub 暴涨"):
+    """把一个开源榜条目做成气泡 7 元组（GitHub 徽章 / 全中文正文 / 项目图背景 / 项目直链）。纯函数。
+
+    给三处复用：暴涨播报、新闻轮播开源席、周榜换批播报。正文口径三处一致。
+
+    【2026-11-12 九修】用户看了实拍截图再定三条：① 正文只写「这项目是干什么的」
+    中文简介，英文仓库名和星数都不要挤在正文；② 涨星数字挪到**右下角那一行**
+    （entry 第 7 元，由 _draw_oss_growth 右对齐画），不再和大标题抢位置；
+    ③ 点「打开」直接进入 GitHub 项目页，不再跳本机榜单页。背景仍用项目分享图，
+    GitHub 官方徽章在左上角，正文两行自动退字号保证看全。
+    """
+    name = it.get("title") or ""
+    real = bool(it.get("boom_real"))
+    val = float(it.get("boom_val") or 0)
+    intro = _oss_cn_intro(it)
+    # 正文只留中文用途说明；涨星数字单独走右下角，由绘制端排版。
+    msg = intro[:90]
+    growth = (("日增%s星/天" if real else "日均+%s星/天") % _fmt_num(val))
+    badge = _balloon_split_head(head)[0] or "开源速榜"
+    if badge == "开源速榜":
+        # 【十一修】速榜已不摆观察榜：没有真实净增时这一条实际来自周榜日均回退，
+        # 如实标成「周榜 · 按日均涨星排」，不再写「速榜 · 首批观察中」误导用户。
+        src_note = "速榜 · 按真实净增排" if real else "周榜 · 按日均涨星排"
+    elif badge == "开源周榜":
+        src_note = "周榜 · 按日均涨星排"
+    else:
+        src_note = "月榜 · 按累计星标排"
+    # 【用户 11-12】「点打开不能进入开源社区网址」→ 直接给 GitHub 仓库地址。
+    # 仍然只认 github.com，防住缓存被塞进别的域名。
+    link = _oss_link(it.get("link")) or (
+        "https://github.com/" + name if OSS_NAME_RX.match(name) else "https://github.com")
+    # 【2026-11-12 十修】背景换成项目头像，不再用印着英文仓库名的 opengraph 分享卡。
+    return ("【%s】%s" % (badge, "GitHub 开源"), msg, False, link,
+            _oss_avatar_url(it) or it.get("image") or "", src_note, growth)
+
+
+def _oss_carousel_seat(now_ts=None, shown=None, mark=False):
+    """新闻轮播里固定的那一个开源席：取当前涨速最快的一条，套 GitHub 徽章。
+    读本机缓存（周榜/速榜/月榜三份快照，零额外网络请求）；mark=True 时把选中的
+    仓库记进 24h 已播名单并落盘，下一轮换下一个，避免每轮都是同一个。
+
+    用户 2026-11-12 定：轮播间隔的时间段必须出现开源新闻。挑法与 10 分钟暴涨播报
+    同源（_oss_pick_boom，真值优先 + 速度降序 + 24h 不重播），必出开源：
+    三榜任一有数据就返回 1 条；全空才返回 None（那种情况本就没有开源可看）。
+
+    返回 (entry, 仓库名)；调用方拿 entry 塞进轮播，拿仓库名记账/排查。
+    """
+    if not OSS_ENABLED:
+        return (None, "")
+    now = float(now_ts if now_ts is not None else time.time())
+    speed_items, _, _, _ = _oss_speed_snapshot()
+    week_items, _, _ = _oss_week_snapshot()
+    month_items, _, _ = _oss_snapshot()
+    seen = _OSS_WEEK_SHOWN if shown is None else shown
+    # 【2026-11-13 廿二修·用户「这条新闻播了不下5次，不会轮流吗？」】
+    # 光靠 24h 去重挡不住：候选池被挡光时会退到"按上次播报时刻最早"的顺序，
+    # 而月榜兜底那条**根本没查 shown**，于是同一个仓库能连着播好几次。
+    # 这里加一条硬规矩：最近 40 分钟播过的仓库，本轮**一律不许再当开源席**
+    # （候选按优先级多取 8 条，逐条跳过被挡的；实在全被挡才用最早的兜底）。
+    _block_s = 40 * 60
+    _blocked = set()
+    try:
+        _blocked = {str(n) for n, t in (seen or {}).items()
+                    if now - float(t or 0) < _block_s}
+    except Exception:
+        _blocked = set()
+    picked = _oss_pick_boom(week_items, speed_items, seen, now, 8)
+    d = None
+    for cand in (picked or []):
+        if (cand.get("title") or "") not in _blocked:
+            d = cand
+            break
+    if d is None and picked:
+        d = picked[0]
+    if d is None:
+        # 周榜/速榜都空时用 30 天月榜兜底：**同样先跳过最近播过的**，再按星标降序。
+        # 【十二修】优先挑有中文用途说明的，免得大字变成「X 开源项目」标签。
+        ranked = sorted([x for x in (month_items or [])
+                         if isinstance(x, dict) and x.get("title")],
+                        key=lambda x: (1 if (x.get("title") or "") in _blocked else 0,
+                                       float((seen or {}).get(x.get("title") or "") or 0),
+                                       0 if _oss_cn_usable(x) else 1,
+                                       -int(x.get("stars") or 0)))
+        if not ranked:
+            return (None, "")
+        d = dict(ranked[0])
+        d["boom_real"] = False
+        d["boom_val"] = d.get("velocity") or int(d.get("stars") or 0)
+    name = d.get("title") or ""
+    try:
+        print("[气泡] 开源席：选中 %s（最近 40 分钟挡掉 %d 条，候选 %d 条）"
+              % (name[:40], len(_blocked), len(picked or [])))
+    except Exception:
+        pass
+    if mark and name:
+        seen[name] = now
+        try:
+            _oss_week_shown_save()
+        except Exception:
+            pass
+    return (_oss_boom_entry(d), name)
+
+
+def _oss_boom_announce():
+    """每 10 分钟投一组「暴涨项目」桌面气泡（不占新闻 10 席）。
+
+    用户 2026-11-12 七修：不随机、按暴涨速度降序依次投；这一组必出开源
+    （候选被 24h 去重挡光时回退全池选最快的）。由 refresh_loop 每 5 分钟敲门，
+    本函数自己按 OSS_BOOM_TOAST_GAP 节流；候选全部来自本机周榜 + 速榜缓存，零额外请求。
+    """
+    global _OSS_BOOM_TOAST_AT
+    if not OSS_ENABLED:
+        return
+    now = time.time()
+    if now - _OSS_BOOM_TOAST_AT < OSS_BOOM_TOAST_GAP:
+        return
+    speed_items, _, _, _ = _oss_speed_snapshot()
+    week_items, _, _ = _oss_week_snapshot()
+    picked = _oss_pick_boom(week_items, speed_items, _OSS_WEEK_SHOWN, now, 8)
+    # 【廿二修】同一批里也跳过最近 40 分钟播过的仓库（重启后 _OSS_BOOM_TOAST_AT 归零，
+    # 一开机就会立刻再投一组，不挡的话同一批项目会连着出现）。
+    _blocked = {str(n) for n, t in (_OSS_WEEK_SHOWN or {}).items()
+                if now - float(t or 0) < 40 * 60}
+    picked = [x for x in (picked or [])
+              if (x.get("title") or "") not in _blocked][:OSS_BOOM_TOAST_PICK]
+    if not picked:
+        return
+    entries = [_oss_boom_entry(it) for it in picked]
+    try:
+        _show_toast_list(entries)
+        _OSS_BOOM_TOAST_AT = now
+        for it in picked:
+            _OSS_WEEK_SHOWN[it.get("title") or ""] = now
+        _oss_week_shown_save()
+        print("[ok] 开源速榜: 暴涨依次播报 %d 条（真值 %d 条）"
+              % (len(entries), sum(1 for x in picked if x.get("boom_real"))))
+    except Exception as ex:
+        print("[warn] 开源速榜暴涨播报失败: %s" % type(ex).__name__)
+
+
+def _fmt_num(v):
+    """播报文案里的数字：整数不带小数点，小数保留 1 位。"""
+    try:
+        f = float(v)
+        return str(int(f)) if abs(f - int(f)) < 0.05 else ("%.1f" % f)
+    except Exception:
+        return str(v)
+
+
+def _oss_week_announce(old_items, new_items):
+    """周榜换批后，把「值得马上看见」的那一条投到桌面气泡。
+
+    走独立播报链路（_show_toast_list 单条），**不进新闻轮播那 10 个席位**：
+    新闻那边有「只播中文标题」「按栏目配额」「同一件事去重」三道闸，仓库名是英文，
+    硬塞进去会被第一道闸直接滤掉；改配额又会动到用户 10-25 定死的投放口径。
+    规则一次定死：一轮最多 1 条、同仓库 24 小时不重播（名单落盘，跨重启仍有效）、
+    两条周榜气泡至少隔 10 分钟；触发条件是首次抓到 / 新晋 / 日均涨星涨了 20% /
+    名次跃升 3 位，且日均涨星不低于 OSS_WEEK_MIN_VELOCITY。
+    【2026-11-12 实测修正】首次抓到周榜时**也要投一条**（本周增速第 1）：
+    只建基线不弹的话，用户装完要等下一批（1 小时后）才看得见桌面投送，
+    与「及时给用户看见」相悖；已播名单落盘保证不会因为反复重启而刷屏。
+    """
+    global _OSS_WEEK_TOAST_AT
+    if not OSS_ENABLED or not new_items:
+        return
+    now = time.time()
+    if now - _OSS_WEEK_TOAST_AT < OSS_WEEK_TOAST_GAP:
+        return
+    old = {x.get("title"): x for x in old_items
+           if isinstance(x, dict) and x.get("title")}
+    cands = []
+    for it in new_items:
+        if not isinstance(it, dict):
+            continue
+        name = it.get("title") or ""
+        vel = int(it.get("velocity") or 0)
+        # 【十二修】气泡大字必须是中文用途说明，不是「X 开源项目」标签。
+        if not name or vel < OSS_WEEK_MIN_VELOCITY or not _oss_cn_usable(it):
+            continue
+        rank = int(it.get("rank") or 99)
+        prev = old.get(name)
+        if prev is None:
+            why = "本周增速第 1" if not old_items else "本周新晋"
+        else:
+            pvel = int(prev.get("velocity") or 0)
+            prank = int(prev.get("rank") or 99)
+            if pvel > 0 and vel >= pvel * 1.2:
+                why = "涨星加速"
+            elif prank - rank >= 3:
+                why = "名次跃升 %d 位" % (prank - rank)
+            else:
+                continue
+        if now - float(_OSS_WEEK_SHOWN.get(name) or 0) < OSS_WEEK_SHOWN_TTL:
+            continue
+        cands.append((vel, rank, it, why))
+    if not cands:
+        return
+    cands.sort(key=lambda x: (-x[0], x[1]))
+    vel, rank, it, why = cands[0]
+    name = it.get("title") or ""
+    # 【2026-11-12 九修】这一路此前没跟上暴涨席/轮播席的新口径：正文还是英文仓库名 +
+    # 星数 + 日均，链接也只回本机榜单页。用户截图逐条指出后，统一复用 _oss_boom_entry：
+    # 正文中文用途说明、GitHub 项目直链、涨星数字落右下角，三路只留一套文案。
+    d = dict(it)
+    d["boom_real"] = False
+    d["boom_val"] = float(vel)
+    entry = _oss_boom_entry(d, head="【开源周榜】GitHub 第%d" % rank)
+    try:
+        _show_toast_list([entry])
+        _OSS_WEEK_TOAST_AT = now
+        _OSS_WEEK_SHOWN[name] = now
+        for k in [k for k, v in _OSS_WEEK_SHOWN.items()
+                  if now - v > OSS_WEEK_SHOWN_TTL]:
+            _OSS_WEEK_SHOWN.pop(k, None)
+        _oss_week_shown_save()
+        print("[ok] 开源周榜: 桌面播报 %s（日均 +%d，%s）" % (name, vel, why))
+    except Exception as ex:
+        print("[warn] 开源周榜桌面播报失败: %s" % type(ex).__name__)
+
+
+def _oss_week_refresh():
+    """抓一轮周榜：7 天新建 + 日均涨星降序。失败保留上一批，不抛异常。"""
+    today = datetime.now(CST)
+    url = _oss_search_url(OSS_WEEK_DAYS, OSS_WEEK_LIMIT, today)
+    try:
+        raw = _fetch(url, timeout=OSS_TIMEOUT,
+                     extra_headers={"Accept": "application/vnd.github+json"})
+    except Exception as ex:
+        raw = None
+        print("[warn] 开源周榜抓取异常: %s" % type(ex).__name__)
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        with _OSS_WEEK_LOCK:
+            _OSS_WEEK["next_try"] = time.time() + OSS_FAIL_TTL
+            _OSS_WEEK["note"] = "抓取失败，显示上一批"
+        print("[warn] 开源周榜: 本轮没抓到，保留上一批")
+        return -1
+    try:
+        payload = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception as ex:
+        with _OSS_WEEK_LOCK:
+            _OSS_WEEK["next_try"] = time.time() + OSS_FAIL_TTL
+            _OSS_WEEK["note"] = "响应解析失败"
+        print("[warn] 开源周榜: 响应不是合法 JSON（%s）" % type(ex).__name__)
+        return -1
+    use_tr = bool(CONFIG.get("translate", {}).get("enabled", False))
+    items = _oss_items_from_payload(
+        payload, days=OSS_WEEK_DAYS, limit=OSS_WEEK_LIMIT, today=today,
+        translate=(_translate_text if use_tr else None), velocity=True)
+    if not items:
+        with _OSS_WEEK_LOCK:
+            _OSS_WEEK["next_try"] = time.time() + OSS_FAIL_TTL
+            _OSS_WEEK["note"] = "抓到 0 条"
+        print("[warn] 开源周榜: 抓到 0 条，这一档先收起")
+        return 0
+    old_items, _, _ = _oss_week_snapshot()
+    with _OSS_WEEK_LOCK:
+        _OSS_WEEK["items"] = items
+        _OSS_WEEK["ts"] = time.time()
+        _OSS_WEEK["note"] = "实时"
+        _OSS_WEEK["next_try"] = 0.0
+    # 健康度面板那一行由 30 天榜维护：两份榜共用同一个 GitHub 来源，周榜再登记一次
+    # 会互相覆盖条数，失败时还会把好着的那一路标红，所以这里只登记题图域名。
+    _note_item_hosts(items)
+    _oss_week_save_disk()
+    print("[ok] 开源周榜: %d 条（窗口 近 %d 天新建 · 日均涨星降序）"
+          % (len(items), OSS_WEEK_DAYS))
+    _oss_week_announce(old_items, items)
+    # 【2026-11-12 三修·实测修】同样先派生、再预热题图，别让图片拖住榜单数据。
+    try:
+        _oss_speed_rebuild("week", items)
+    except Exception as ex:
+        print("[warn] 开源涨速榜派生失败: %s" % type(ex).__name__)
+    # 只预热首屏那 6 张；与 30 天榜共用图片缓存，重叠的仓库不会重复取。
+    _oss_prewarm(items[:6])
+    return len(items)
+
+
+def _kick_oss_week(force=False):
+    """周榜自己的单飞 + 1 小时闸 + 失败节流；抢不到闸就什么都不做。"""
+    if not OSS_ENABLED:
+        return False
+    now = time.time()
+    with _OSS_WEEK_LOCK:
+        if _OSS_WEEK_BUSY[0]:
+            return False
+        # 【2026-11-12 十一修 / 十七修】速榜还没有真实净增时，把周榜对比间隔临时缩到
+        # 3 分钟，让第一份真值尽快出来（十七修从 15 分钟收紧，解决部署交接态空窗）；
+        # 真值一出现立刻恢复常态 1 小时一批。
+        # 磁盘基准已跨重启保留，所以只需再换一批就能算出 delta，不用等 6 小时。
+        with _OSS_SPEED_LOCK:
+            _seeding = not _OSS_SPEED["items"]
+        _ttl = OSS_SPEED_SEED_TTL if _seeding else OSS_WEEK_TTL
+        # 【2026-11-13】不到 20 条同样立刻重抓（理由同 _kick_oss：老缓存只有 18 条）。
+        _short = len(_OSS_WEEK["items"]) < OSS_WEEK_LIMIT
+        if not force and not _short and (now - _OSS_WEEK["ts"] < _ttl
+                                          or now < _OSS_WEEK["next_try"]):
+            return False
+        _OSS_WEEK_BUSY[0] = True
+
+    def _bg():
+        try:
+            _oss_week_refresh()
+        except Exception as ex:
+            print("[warn] 开源周榜后台异常: %s" % type(ex).__name__)
+        finally:
+            with _OSS_WEEK_LOCK:
+                _OSS_WEEK_BUSY[0] = False
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return True
+
+
+# ---------- 开源涨速榜（2026-11-12 三修；第三档，零额外请求） ----------
+# 用户点破「和 7 天周榜会不会重复」：只把周榜那 20 条重排，切过去还是同一批项目。
+# 改成 7 天周榜 ∪ 30 天榜 的并集（两榜上一轮端到端实测零重合），每条按自己
+# 那一路的快照间隔算「净增星 ÷ 间隔小时 × 24 = 星/天」（用户 11-12 要求单位从小时改到天；
+# ×24 是线性换算，排序不变；卡片同时写出真实净增与间隔小时，不冒充等了一整天）。
+# 两路各存一份基准，谁换批谁更新。
+
+
+def _oss_speed_fallback(it, now_ts):
+    """首轮没有上一批可对比时，按「建库至今的日均涨星」兜底。
+
+    **纯函数**：只用条目自带的公开字段（累计星标 / 建库时刻）算，不碰时钟、网络、磁盘。
+    这个值只是排序占位，卡片上会写明「首轮暂无对比」，绝不拿 0 冒充真实涨速。
+    """
+    try:
+        stars = max(0, int(it.get("stars") or 0))
+        born = float(it.get("published") or 0)
+        age = max(0.5, (now_ts - born) / 86400.0) if born else 30.0
+        return int(round(stars / age))
+    except Exception:
+        return 0
+
+
+def _oss_speed_measure(items, prev, now_ts, window):
+    """某一路刚换批：拿这一路上一次的星标快照算每条的净增速度。**纯函数**。
+
+    prev = {"ts": 上批换批时刻, "stars": {仓库名: 星标数}}；ts 为 0 就是首轮。
+    """
+    stars_map = (prev or {}).get("stars") or {}
+    pts = float((prev or {}).get("ts") or 0)
+    hours = 0.0
+    if pts and now_ts and now_ts > pts:
+        hours = max(OSS_SPEED_MIN_HOURS, (now_ts - pts) / 3600.0)
+    rows = []
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        d = dict(it)
+        base = stars_map.get(d.get("title"))
+        has = bool(hours and base is not None)
+        delta = 0
+        if has:
+            try:
+                delta = max(0, int(d.get("stars") or 0) - int(base))
+            except Exception:
+                delta = 0
+        speed = round(delta / hours, 1) if has else 0.0
+        speed_day = round(delta / hours * 24, 1) if has else 0.0
+        d["delta"] = delta
+        d["speed"] = speed                # 星/小时：内部排序用（与星/天线性等价）
+        d["speed_day"] = speed_day        # 星/天：页面展示与摘要用（用户 11-12 定）
+        d["speed_hours"] = round(hours, 2)
+        d["has_speed"] = has
+        d["speed_window"] = int(window)
+        d["velocity"] = 0   # 这一档按净增排，别再显示周榜那颗「日均涨星」徽章
+        d["fallback"] = _oss_speed_fallback(d, now_ts)
+        tail = (d.get("desc") or "").split("｜", 1)
+        suffix = ("｜" + tail[1]) if len(tail) > 1 else ""
+        if has:
+            head = "GitHub 近 %d 天新建 · 近 %.1f 小时净增 %d 星（折合 %.1f 星/天）" % (
+                int(window), hours, delta, speed_day)
+        else:
+            head = "GitHub 近 %d 天新建 · 首轮暂无对比，暂按日均涨星 %d" % (
+                int(window), d["fallback"])
+        d["desc"] = (head + suffix)[:240]
+        rows.append(d)
+    return rows
+
+
+def _oss_speed_merge(week_rows, month_rows, limit=OSS_SPEED_LIMIT, keep_rows=None):
+    """两路并集去重 → **只留真实净增且这一批确实涨了星**的 → 按星/天降序。**纯函数**。
+
+    同一个仓库两路都出现时优先留 7 天周榜那条（它更新得更勤）。
+
+    【2026-11-12 十一修 · 用户「速榜和周榜内容又高度重叠 / 都是待对比」】
+    十修把首轮回退成「周榜∪月榜按日均涨星排」，和周榜同一套算法、同一批项目，
+    于是速榜变成周榜的复制品，还挂满「待对比」标签。用户重新拍板「只认真实净增」：
+      · 只留 has_speed=True 且 delta>0 的条目 —— 即上一批到这一批**真的涨了星**的；
+      · delta=0（这批没涨）也不摆，避免「净增 0 星/天」的空榜凑数；
+      · 一条都没有 → 返回空榜，页面写「正在积累首批对比数据」，绝不拿日均涨星
+        这个平均数冒充排名（那正是与周榜重叠的根源）。
+    这样速榜的排序依据（最近一个换批间隔的真实净增）与周榜（建库至今日均）、
+    月榜（累计星标）三者互不相同，内容自然错开。
+    """
+    seen, rows = set(), []
+    for r in list(week_rows or []) + list(month_rows or []):
+        if not isinstance(r, dict):
+            continue
+        k = (r.get("title") or "").lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        rows.append(dict(r))
+
+    # 真实净增且这一批确实涨了星；没有真值就整档留空，不掺任何平均数。
+    rows = [x for x in rows
+            if x.get("has_speed") and int(x.get("delta") or 0) > 0]
+    rows.sort(key=lambda x: (-float(x.get("speed") or 0),
+                             -int(x.get("stars") or 0),
+                             (x.get("title") or "").lower()))
+    out = rows[:max(1, int(limit))]
+    # 【2026-11-13】本批真值不够 20 条时，用上一次真值里还成立的行补位 ——
+    # 它们同样是「真实净增」的观测结果，只是测量时刻早一批。用户要求三榜都 20 条，
+    # 宁可把上一批的真值接在后面，也不摆 0 星/天的空位或日均冒充。
+    if keep_rows and len(out) < int(limit):
+        _have = {(x.get("title") or "").lower() for x in out}
+        for r in list(keep_rows or []):
+            if len(out) >= int(limit):
+                break
+            if not isinstance(r, dict):
+                continue
+            k = (r.get("title") or "").lower()
+            if not k or k in _have or not r.get("has_speed"):
+                continue
+            _have.add(k)
+            d = dict(r)
+            d["speed_fill"] = True          # 早一批的真值，排在本批后面
+            out.append(d)
+    for i, r in enumerate(out, 1):
+        r["rank"] = i
+    return out
+
+
+def _oss_speed_normalize(rows):
+    """旧版缓存（写的是「星/小时」、没有 speed_day）读回后补齐星/天展示字段与文案。
+
+    **纯函数**：只补展示字段，不动 delta / speed / 名次 / 星标基准，不发任何请求。
+    2026-11-12 部署复核抓出来的真问题：旧 exe 写下的 20 条涨速榜缓存没有 speed_day，
+    页面按钮已是「星/天」，卡片却会显示 undefined —— 启动读回时先过这一道。
+    """
+    out = []
+    for it in (rows or []):
+        if not isinstance(it, dict):
+            continue
+        d = dict(it)
+        if "speed_day" not in d:
+            try:
+                if d.get("has_speed") and float(d.get("speed_hours") or 0) > 0:
+                    d["speed_day"] = round(
+                        int(d.get("delta") or 0) / float(d["speed_hours"]) * 24, 1)
+                else:
+                    d["speed_day"] = round(float(d.get("speed") or 0) * 24, 1)
+            except Exception:
+                d["speed_day"] = 0.0
+        desc = d.get("desc") or ""
+        m = re.search(r"（([0-9]+(?:\.[0-9]+)?) 星/小时）", desc)
+        if m:
+            d["desc"] = (desc[:m.start()] + "（折合 %.1f 星/天）" % float(d["speed_day"])
+                         + desc[m.end():])
+        out.append(d)
+    return out
+
+
+def _oss_speed_load_disk():
+    """上次派生出的涨速榜 + 两路当前条目 + 两路星标基准，一起读回来（跨重启不断档）。"""
+    global _OSS_SPEED_PREV
+    try:
+        if not os.path.exists(_OSS_SPEED_CACHE_FILE):
+            return 0
+        with open(_OSS_SPEED_CACHE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        items = _oss_speed_normalize(d.get("items") or [])
+        if not isinstance(items, list):
+            return 0
+        # 【2026-11-12 十一修】旧缓存里可能留着十修写下的「待对比」观察行
+        # （has_speed=False / delta=0）。新版速榜只认真实净增，读盘时直接滤掉，
+        # 免得用户升级 / 重启后还看见一屏「待对比」。
+        items = [x for x in items
+                 if x.get("has_speed") and int(x.get("delta") or 0) > 0]
+        # 【十一修 · 关键】基准必须**先于** items 空判断恢复。旧代码在 items 为空时
+        # 直接 return 0，磁盘里辛苦攒下的 prev_week/prev_month 星标快照一个都读不回来，
+        # 于是每次重启 seed 又拿空基准重算 —— 这就是「真值永远回不来」的根因。
+        # 现在哪怕这一档一条真值都没有，也把两路基准与派生行原样载回内存，
+        # 下一次换批立刻能算出真实净增。
+        _pw = d.get("prev_week") or {}
+        _pm = d.get("prev_month") or {}
+        if not items and not (_pw.get("stars") or _pm.get("stars")):
+            return 0
+        with _OSS_SPEED_LOCK:
+            _OSS_SPEED["items"] = items
+            _OSS_SPEED["ts"] = float(d.get("ts") or 0)
+            # 【十六修】磁盘里存着「最近一次真值」时，stale / real_at 原样恢复；
+            # note 按统一口径重写，旧缓存里「正在积累 / 待对比」这类文案不能
+            # 跟着真值一起显示，否则用户会以为这一档还是没数据。
+            _OSS_SPEED["stale"] = bool(d.get("stale")) and bool(items)
+            _OSS_SPEED["note"] = (
+                ("最近一次真实净增（本批暂无新增）" if _OSS_SPEED["stale"]
+                 else "真实净增") if items else
+                str(d.get("note") or "正在积累首批对比数据，下一批换批后按真实净增排名"))
+            _OSS_SPEED["real"] = len(items)
+            _OSS_SPEED["real_at"] = float(d.get("real_at") or
+                                          (d.get("ts") if items else 0) or 0)
+            _OSS_SPEED["week_rows"] = _oss_speed_normalize(d.get("week_rows") or [])
+            _OSS_SPEED["month_rows"] = _oss_speed_normalize(d.get("month_rows") or [])
+            _OSS_SPEED_PREV = {
+                "week": {"ts": float(_pw.get("ts") or 0),
+                         "stars": _pw.get("stars") or {}},
+                "month": {"ts": float(_pm.get("ts") or 0),
+                          "stars": _pm.get("stars") or {}}}
+        return len(items)
+    except Exception:
+        return 0
+
+
+def _oss_speed_save_disk():
+    try:
+        os.makedirs(os.path.dirname(_OSS_SPEED_CACHE_FILE), exist_ok=True)
+        with _OSS_SPEED_LOCK:
+            blob = {"ts": _OSS_SPEED["ts"], "items": _OSS_SPEED["items"],
+                    "note": _OSS_SPEED["note"], "real": _OSS_SPEED["real"],
+                    "real_at": _OSS_SPEED.get("real_at", 0.0),
+                    "stale": bool(_OSS_SPEED.get("stale")),
+                    "week_rows": _OSS_SPEED["week_rows"],
+                    "month_rows": _OSS_SPEED["month_rows"],
+                    "prev_week": _OSS_SPEED_PREV["week"],
+                    "prev_month": _OSS_SPEED_PREV["month"]}
+        with open(_OSS_SPEED_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(blob, f, ensure_ascii=False)
+    except Exception as ex:
+        print("[warn] 开源涨速榜缓存写盘失败: %s" % type(ex).__name__)
+
+
+def _oss_speed_snapshot():
+    with _OSS_SPEED_LOCK:
+        return (list(_OSS_SPEED["items"]), float(_OSS_SPEED["ts"]),
+                _OSS_SPEED["note"], int(_OSS_SPEED["real"]))
+
+
+def _oss_speed_meta():
+    """速榜展示用的两个附加事实：当前是不是「最近一次真值」、那次真值的时间。"""
+    with _OSS_SPEED_LOCK:
+        return (bool(_OSS_SPEED.get("stale")),
+                float(_OSS_SPEED.get("real_at") or 0),
+                bool(_OSS_SPEED["items"]))
+
+
+def _oss_speed_rebuild(channel, items):
+    """某一路榜单换批成功 → 用基准算这一路的真实净增，再与另一路合并成速榜。
+
+    【2026-11-12 十六修 · 修「速榜恒空」】旧版每次换批都无条件把星标基准推进到
+    「刚抓的这一批」，而 GitHub 星标 15 分钟内常常一颗不动（本机实测 20 条里
+    16 条不变、仅 1 条 +3），于是 delta 恒为 0、速榜被反复清空 —— 日志里真值
+    出现一次，下一批就没了。现在：
+      · 基准按 OSS_SPEED_BASE_MAX_AGE（24 小时）滚动，**不随零净增批次推进**，
+        让窗口内的真实净增累积到能观测到；满 24 小时才换基准，不拖成长期平均数；
+      · 基准为空（首轮 / 该路第一次换批）时用本批建立，不伪造真值；
+      · 本批一条真值都没有时**不清空速榜**，保留最近一次真值并标 stale，
+        写明「本批暂无新增，显示最近一次真实净增」，绝不摆观察榜 / 平均数。
+    """
+    global _OSS_SPEED_PREV
+    if channel not in ("week", "month"):
+        return 0
+    now = time.time()
+    win = OSS_WEEK_DAYS if channel == "week" else OSS_WINDOW_DAYS
+    with _OSS_SPEED_LOCK:
+        prev = _OSS_SPEED_PREV[channel] or {}
+        pts = float(prev.get("ts") or 0)
+        measured = _oss_speed_measure(items, prev, now, win)
+        _OSS_SPEED[channel + "_rows"] = measured
+        rows = _oss_speed_merge(_OSS_SPEED["week_rows"], _OSS_SPEED["month_rows"], keep_rows=_OSS_SPEED["items"], limit=OSS_SPEED_LIMIT + 10)
+        # 基准只在「首轮建立」「本路确实观测到涨星」「窗口满 24 小时」时推进；
+        # 零净增批次一律不推进，让净增继续累积到下一批，而不是每批把 delta 抹成 0。
+        gained = any(x.get("has_speed") and int(x.get("delta") or 0) > 0
+                     for x in measured)
+        if not pts or not (prev.get("stars") or {}) or gained \
+                or (now - pts) >= OSS_SPEED_BASE_MAX_AGE:
+            _OSS_SPEED_PREV[channel] = {
+                "ts": now,
+                "stars": {x.get("title"): int(x.get("stars") or 0)
+                          for x in (items or []) if x.get("title")}}
+        if rows:
+            _OSS_SPEED["items"] = rows
+            _OSS_SPEED["ts"] = now
+            _OSS_SPEED["real"] = len(rows)
+            _OSS_SPEED["real_at"] = now
+            _OSS_SPEED["stale"] = False
+            _OSS_SPEED["note"] = "真实净增"
+        else:
+            # 本批没涨星：保留最近一次真值，如实标注，不清空、不摆观察榜。
+            _OSS_SPEED["stale"] = bool(_OSS_SPEED["items"])
+            _OSS_SPEED["real"] = len(_OSS_SPEED["items"])
+            _OSS_SPEED["note"] = ("最近一次真实净增（本批暂无新增）"
+                                  if _OSS_SPEED["items"] else
+                                  "正在积累首批对比数据，下一批换批后按真实净增排名")
+        shown = list(_OSS_SPEED["items"])
+        stale = bool(_OSS_SPEED["stale"])
+    _note_item_hosts(shown)
+    _oss_speed_save_disk()
+    print("[ok] 开源涨速榜: %d 条真实净增%s（按最近窗口净增排，基准不随空批推进）"
+          % (len(shown), " · 本批暂无新增，保留最近一次" if stale else ""))
+    return len(shown)
+
+
+def _oss_speed_seed(month_items, week_items, month_ts=0.0, week_ts=0.0):
+    """冷启动：用磁盘已恢复的基准 + 刚读回的两榜**重算**，不复用旧的「待对比」行。
+
+    【2026-11-12 十六修】旧版 seed 只在派生行缺失时才 measure，磁盘里存着一批
+    has_speed=False 的旧行就原样复用 —— 于是每次重启都必然是空榜，用户看到
+    「一直打不开」。现在无条件用磁盘基准重算两路派生行；某路基准确实为空时，
+    用该路缓存时刻建立初始基准（不伪造 now），下一次换批就能算出真实净增。
+    重算后没有真值也**不清空**磁盘里保留的最近一次真值，只标 stale。
+    """
+    now = time.time()
+    with _OSS_SPEED_LOCK:
+        kept = list(_OSS_SPEED["items"])
+        for ch, its, cts in (("week", week_items, week_ts),
+                             ("month", month_items, month_ts)):
+            prev = _OSS_SPEED_PREV.get(ch) or {}
+            if not (prev.get("stars") or {}):
+                _OSS_SPEED_PREV[ch] = {
+                    "ts": float(cts or 0) or now,
+                    "stars": {x.get("title"): int(x.get("stars") or 0)
+                              for x in (its or []) if x.get("title")}}
+        _OSS_SPEED["week_rows"] = _oss_speed_measure(
+            week_items, _OSS_SPEED_PREV["week"], now, OSS_WEEK_DAYS)
+        _OSS_SPEED["month_rows"] = _oss_speed_measure(
+            month_items, _OSS_SPEED_PREV["month"], now, OSS_WINDOW_DAYS)
+        rows = _oss_speed_merge(_OSS_SPEED["week_rows"], _OSS_SPEED["month_rows"], keep_rows=_OSS_SPEED["items"], limit=OSS_SPEED_LIMIT + 10)
+        if rows:
+            _OSS_SPEED["items"] = rows
+            _OSS_SPEED["ts"] = now
+            _OSS_SPEED["real"] = len(rows)
+            _OSS_SPEED["real_at"] = now
+            _OSS_SPEED["stale"] = False
+            _OSS_SPEED["note"] = "真实净增"
+        else:
+            _OSS_SPEED["items"] = kept
+            _OSS_SPEED["stale"] = bool(kept)
+            _OSS_SPEED["real"] = len(kept)
+            _OSS_SPEED["note"] = ("最近一次真实净增（本批暂无新增）" if kept else
+                                  "正在积累首批对比数据，下一批换批后按真实净增排名")
+        shown = list(_OSS_SPEED["items"])
+        stale = bool(_OSS_SPEED["stale"])
+    _note_item_hosts(shown)
+    _oss_speed_save_disk()
+    print("[ok] 开源涨速榜: 冷启动按磁盘基准重算，真实净增 %d 条%s"
+          % (len(shown), "（本批暂无新增，保留最近一次）" if stale else ""))
+    return len(shown)
+
+
 @app.get("/api/oss")
 def api_oss():
     """开源热榜接口。**只读缓存优先**：缓存没过期就直接回，一条网络请求都不发；
@@ -11376,7 +13795,22 @@ def api_oss():
     """
     _kick_oss()
     items, ts, note = _oss_snapshot()
+    week_items, week_ts, week_note = _oss_week_snapshot()
+    speed_items, speed_ts, speed_note, speed_real = _oss_speed_snapshot()
+    # 【十六修】本批没有新增涨星时，页面显示的是「最近一次真实净增」，必须如实
+    # 标出时间，不能让人以为这是刚刷出来的实时数据。
+    speed_stale, speed_real_at, speed_has = _oss_speed_meta()
+    # 【2026-11-12 十四修 + 十五修】三份榜都在出口补 intro、并只留有中文说明的
+    # 条目：前端描述行只显示 intro，不再照抄 desc 里那串榜单元信息；没有中文说明
+    # 的卡片直接不列，名次连续重排。只增字段 / 只减空白卡，磁盘缓存不受影响。
+    # 【2026-11-13】出口先按"有中文简介"筛，再按各榜上限截 —— 候选池故意多备 10 条，
+    # 这样筛掉的 1~2 条不会让榜单变成 18/19 条（用户要求三榜严格 20）。
+    items = _oss_display_rows(items)[:OSS_LIMIT]
+    week_items = _oss_display_rows(week_items)[:OSS_WEEK_LIMIT]
+    speed_items = _oss_display_rows(speed_items)[:OSS_SPEED_LIMIT]
     _note_item_hosts(items)
+    _note_item_hosts(week_items)
+    _note_item_hosts(speed_items)
     return JSONResponse({
         "version": VERSION,
         "cls": OSS_CLS,
@@ -11387,12 +13821,48 @@ def api_oss():
         "loading": bool(OSS_ENABLED) and not items,
         "enabled": bool(OSS_ENABLED),
         "items": items,
+        # 【2026-11-12】周榜与 30 天榜一起回：只**新增**字段，老调用方读 items 一个字不用改。
+        "week_window_days": OSS_WEEK_DAYS,
+        "week_count": len(week_items),
+        "week_updatedAt": int(week_ts),
+        "week_source": week_note or ("本机缓存" if week_items else "等待抓取"),
+        "week_items": week_items,
+        # 【2026-11-12 三修】涨速榜也是只增字段：两榜并集按星/天降序（星/小时 ×24），零额外请求。
+        "speed_count": len(speed_items),
+        "speed_updatedAt": int(speed_ts),
+        "speed_source": speed_note or ("本机缓存" if speed_items else "等待抓取"),
+        "speed_real": speed_real,
+        # 【十六修】stale=true 表示「本批暂无新增，显示最近一次真实净增」，
+        # real_at 是那次真值的时间戳（epoch 秒），页面据此标注，不冒充实时。
+        "speed_stale": bool(speed_stale and speed_has),
+        "speed_real_at": int(speed_real_at),
+        "speed_items": speed_items,
     }, media_type="application/json; charset=utf-8")
 
 
+@app.post("/api/balloon/play")
+async def api_balloon_play(request: Request):
+    """【2026-11-13】页面上的「气泡试播」按钮：立刻在右下角投一轮气泡。
+
+    用户要"看得见"的效果，不能等 10 分钟节流那一轮：这里走的是和托盘双击
+    同一条入口（_balloon_play_now 自己另起线程，HTTP 线程不碰窗口）。
+    """
+    _deny = _guard_mutating(request)
+    if _deny is not None:
+        return _deny
+    try:
+        _balloon_play_now("控制台按钮")
+    except Exception as ex:
+        print("[warn] 气泡试播失败: %s: %s" % (type(ex).__name__, ex))
+        return JSONResponse({"ok": False, "msg": "没有弹出来：%s" % type(ex).__name__},
+                            media_type="application/json; charset=utf-8")
+    return JSONResponse({"ok": True,
+                         "msg": "气泡正在右下角播出；滚轮切上一条/下一条，右键这一类 24 小时不再推"},
+                        media_type="application/json; charset=utf-8")
+
+
 @app.get("/api/version")
-def api_version():
-    # 【2026-10-09 修 中-5 / 中-6】多带三个诊断字段（只增不减，不影响老调用方）：
+def api_version():    # 【2026-10-09 修 中-5 / 中-6】多带三个诊断字段（只增不减，不影响老调用方）：
     #   pid / uptime    —— 二次启动时 app.py 用它判断"对面是不是一个正常服务的实例"
     #   poolTimeouts    —— 连接池排队超时的累计次数，排查"偶发丢源"时一眼就能看到
     return JSONResponse({"version": VERSION,
@@ -11977,6 +14447,20 @@ def index(request: Request):
             _oss_snap = _oss_snapshot()
         except Exception:
             _oss_snap = ([], 0.0, "")
+        # 【2026-11-12】周榜也是只读快照，首屏不发任何外部请求。
+        try:
+            _oss_week_snap = _oss_week_snapshot()
+        except Exception:
+            _oss_week_snap = ([], 0.0, "")
+        # 【2026-11-12 三修】涨速榜同样只读本机快照，首屏这一步不发任何外部请求。
+        try:
+            _oss_speed_snap = _oss_speed_snapshot()
+        except Exception:
+            _oss_speed_snap = ([], 0.0, "", 0)
+        try:
+            _sp_meta = _oss_speed_meta()
+        except Exception:
+            _sp_meta = (False, 0.0, False)
         payload = {
             "version": VERSION,
             "region": "cn",
@@ -11991,12 +14475,26 @@ def index(request: Request):
             # 抓取由 _warmup / /api/oss 的后台线程负责）。没有就是空数组，前端收起这一栏。
             # oss_win / oss_at 一起带：窗口天数只有服务端一个常量说了算，别让前端硬写 30，
             # 改了 OSS_WINDOW_DAYS 首屏那句「近 N 天新建」才跟得上。
-            "oss": _oss_snap[0], "oss_win": OSS_WINDOW_DAYS, "oss_at": int(_oss_snap[1]),
+            # 【十四修 + 十五修】首屏 SSR 与 /api/oss 走同一份 _oss_display_rows，
+            # 避免首屏先露出旧描述 / 空白卡、等接口回来才跳成中文说明。
+            "oss": _oss_display_rows(_oss_snap[0]), "oss_win": OSS_WINDOW_DAYS, "oss_at": int(_oss_snap[1]),
+            # 【2026-11-12】周榜：窗口天数仍只由服务端常量说了算，前端不硬写 7。
+            "oss_week": _oss_display_rows(_oss_week_snap[0]), "oss_week_win": OSS_WEEK_DAYS,
+            "oss_week_at": int(_oss_week_snap[1]),
+            # 【2026-11-12 三修】第三档：两榜并集派生的涨速榜，快照只读。
+            "oss_speed": _oss_display_rows(_oss_speed_snap[0]), "oss_speed_at": int(_oss_speed_snap[1]),
+            "oss_speed_real": int(_oss_speed_snap[3]),
+            # 【十六修】首屏也要带上「最近一次真值」标记，避免接口回来后文案跳一下。
+            "oss_speed_stale": bool(_sp_meta[0] and _oss_speed_snap[0]),
+            "oss_speed_real_at": int(_sp_meta[1]),
+            "oss_speed_source": _oss_speed_snap[2],
         }
         # 【修 高-1】首屏这几条的图片域名也登记进 /img 白名单
         _note_item_hosts(payload["items"])
         # 【2026-10-28】开源热榜的题图在 opengraph.githubassets.com 上，同样要登记
         _note_item_hosts(payload["oss"])
+        _note_item_hosts(payload["oss_week"])
+        _note_item_hosts(payload["oss_speed"])
         blob = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
         ssr = tpl.replace("__SSR_DATA__", blob)
         ssr = ssr.replace('__SSR_REGION__', "cn")

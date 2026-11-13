@@ -422,8 +422,15 @@ def main():
           "fresh = [x for x in fresh if _has_cjk(x.get('title'))]" in code_src)
     check("内容口径没被 force 松动：栏目配额挑选照旧（不因为手动就一个栏目占满）",
           "picked = _pick_balloon_items(fresh)" in code_src)
-    check("手动那一轮不许报「本次共新增 N 条」（N 会是整个池子，看着像一分钟冒出来的）",
-          "if not force and len(added) > len(entries)" in code_src)
+    # 【2026-11-12 用户要求】原来是「只挡手动那一轮、自动那轮照样挂」，现在收紧成
+    # 任何一轮都不许往新闻正文末尾追加条数提示（它会挤占正文、干扰阅读）。
+    # 断言跟着收紧：不看有没有那段 if，而是整段里连「共新增」和改最后一条都不许有。
+    # 2026-11-12 七修：entries[-1] 现在是「把最后一条换成 GitHub 开源席」（用户要轮播必出开源），
+    # 不是在正文末尾追加条数提示；「共新增」这类字数提示仍然一律不许有。
+    check("气泡正文末尾一律不追加「本次共新增 N 条」（2026-11-12 用户：影响新闻内容读取）",
+          "if not force and len(added) > len(entries)" not in code_src
+          and "共新增" not in code_src
+          and "entries[-1] = (" not in code_src)
 
     print("---- 4b) 真跑 _notify_news：手动轮播不许重播（用户原话「不能重复，反复」）----")
     played = run_notify_news()

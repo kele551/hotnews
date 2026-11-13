@@ -43,8 +43,9 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 8. **署名与产品名不要改**：`海风（kele551）`；产品名「热点新闻 hotnews」。
 9. **仓库里不许出现本机路径、私人邮箱、令牌**（`tools/preflight_release.py` 的 ⑥ 节会拦，且已把 `tools/*.py` 一起纳入扫描）。
 10. **严禁向 Gitee 推送任何内容**（代码 / tag / Release 附件）：该仓库早已被平台禁止上传（内容审查返回 451），
-    `git push gitee ...` 一律不许执行，上传附件、重发 Release 同样不许。本机 remote 里留着 `gitee`
-    只为历史对照，不是可推目标；发布只走下面「平台」一节列出的三个。
+    `git push gitee ...` 一律不许执行，上传附件、重发 Release 同样不许。2026-11-11 线上仓库已全部清空，
+    本机 `gitee` remote 与跟踪引用也已全部删除、禁止再添加 —— **它既不是对照平台，也不是可推目标**。
+    实际推送目标一律以 `git remote -v` 实测为准（现为 `gitcode` / `origin` 两个），别照抄下面「平台」一节的历史命令。
 
 ## 提交与验收
 
@@ -62,7 +63,8 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 ```powershell
 # 远端名字按本机 config 为准：gitcode=主源、origin=GitHub 镜像、atomgit=代码镜像
 # ⛔ Gitee 早已禁止上传（451），严禁 `git push gitee ...`，也严禁往它传附件 / 发 Release；
-#    本机 remote 里留着这个名字只为历史对照，不是可推目标，更别在对外文案里写它的地址。
+#    线上仓库已清空、本机 remote 与跟踪引用已删除且禁止再添加；对外文案里也不要写它的地址。
+#    下面三条命令是历史记录，推之前一律先 `git remote -v` 看现存远端。
 git push gitcode main --tags                    # GitCode（主源，升级源就从这里读）
 git push origin main --tags                     # GitHub（镜像；本机 remote 名叫 origin）
 git push atomgit main --tags                    # AtomGit（令牌走 GIT_ASKPASS，不会出现在命令行）
@@ -88,7 +90,8 @@ GitHub Issues 里带 `good first issue` / `help wanted` 标签的条目，每条
   - **don't hand-edit `version.json` before building** — `launcher.url/sha256/size` are written
     *after* the exe is final (the exe bundles this file, so writing its own hash first is a loop);
   - **never push anything to Gitee** (code / tags / release assets): that repo is banned from uploads (451);
-    `git push gitee ...` is forbidden — only gitcode / origin (GitHub) / atomgit are valid targets;
+    `git push gitee ...` is forbidden; no Gitee remote or tracking ref remains locally (removed 2026-11-11,
+    online repos deleted) and it must never be re-added. Check `git remote -v` for the actual push targets;
   - **never force-push** (`git push -f`) any remote/branch: the full signed `version.json` (+`.sig`)
     on `main` is the update data every installed client reads;
   - write `hotnews_update.vbs` as **UTF-16** (UTF-8 with BOM makes Windows Script Host fail and breaks updates);

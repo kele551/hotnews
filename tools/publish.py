@@ -83,8 +83,9 @@ GC_API = 'https://gitcode.com/api/v5'
 GC_WEB = 'https://gitcode.com'
 GH_REPO = '%s/%s' % (OWNER, REPO)
 # 推送目标：GitCode（国内主源）+ GitHub（国外镜像）。
-# ⚠ 本仓库的 remote **名字**是历史遗留：GitHub 那台叫 origin，另外还留着已停更的 gitee
-# 和按分钟自动镜像 GitHub 的 atomgit。所以这里**按 URL 认远端、不按名字写死**
+# ⚠ 本仓库的 remote **名字**是历史遗留：GitHub 那台叫 origin。gitee 早已禁止上传（451），
+# 2026-11-11 线上仓库已清空、本机 remote 与跟踪引用也已全部删除、禁止再添加；其它历史入口
+# （atomgit）的 remote 同样已删除。所以这里**按 URL 认远端、不按名字写死**
 # （见 remotes_by_host()）—— 按名字写死会推错地方，而把升级源推回 gitee 就等于
 # "用户点了个 404"。没被认出来的 remote 一律不推。
 # ---- 本机私有配置（可选，永不进仓库）----------------------------------------
@@ -405,8 +406,9 @@ def _git_raw(args):
 def remotes_by_host():
     """按 **URL** 挑出要推的两个远端（GitCode 主源 + GitHub 镜像），返回 remote 名字列表。
 
-    本仓库的 remote 名字是历史遗留：GitHub 叫 `origin`，还留着停更的 `gitee` 和自动镜像的
-    `atomgit`。按名字写死会推错地方；按 URL 认则无论谁将来改名、重指，都只会推到这两个平台，
+    本仓库的 remote 名字是历史遗留：GitHub 叫 `origin`。`gitee` 早已禁止上传（451），
+    2026-11-11 线上仓库已清空、本机 remote 与跟踪引用全部删除且禁止再添加；`atomgit` 入口的
+    remote 也已删除。按名字写死会推错地方；按 URL 认则无论谁将来改名、重指，都只会推到这两个平台，
     **gitee 永远不会被推到**（升级源要是回到那个 451 的死仓库，用户就升不上来了）。
     """
     got, other = {}, []

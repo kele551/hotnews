@@ -241,8 +241,9 @@ check("命令号区间按表长算，加档不用再改分支",
 print("── 4. 控制台不再挂第二份样式入口（用户指定的位置是右下角菜单）")
 check("外观面板里没有样式下拉（两处入口会互相把对方的选择冲掉）",
       "apStyle" not in PAGE_SRC and "ui-balloon" not in PAGE_SRC, "")
-check("页面回报 /api/ui 时也不带 balloon（不接管这个键）",
-      "balloon" not in PAGE_SRC, "")
+_PAGE_NO_BTN = PAGE_SRC.replace("balloonPlay", "").replace("/api/balloon/play", "")
+check("页面回报 /api/ui 时也不带 balloon（不接管这个键；只允许「试播」按钮）",
+      "balloon" not in _PAGE_NO_BTN, "")
 
 print("── 5. 渲染器：分派 + 兜底 + 没有进度条")
 # 框出整段"播报版式"源码：从总入口到 _finish_paint 之前
@@ -435,8 +436,13 @@ print("── 5c. 标题字号各档共用（用户：「这个字体换成，�
 # 提前砍字。实测 200 条真标题：速递 18/600 那版砍 81 条（40.5%），只修单位就掉到 31 条；
 # 再把题图从标题右边挪到底部左角、标题带宽给到 436，字号大一档反而只砍 14 条（7%）。
 _fonts = segment(SRC, "            self.font_title = g.CreateFontW(")
-check("共用标题字体只有一支（font_title = BALLOON_HEAD_PX / 700 真粗体）",
-      "self.font_title = g.CreateFontW(-int(round(BALLOON_HEAD_PX * s)), 0, 0, 0, 700" in SRC
+# 【廿三修】2026-11-13 用户「应该是字体的原因，还是看着不舒服」+ 粗黑体参考图：
+# 标题字族可以在有 NotoSansSC-VF.ttf 的机器上切到 "Noto Sans SC Black"（真最粗一级），
+# 此时 GDI 按 400 建（不再叠合成加粗），没有就退回雅黑 700。闸门钉的是"只有一支标题字体、
+# 字号仍是 BALLOON_HEAD_PX"，字重允许 `400 if _heavy else 700` 这一种写法。
+check("共用标题字体只有一支（font_title = BALLOON_HEAD_PX，有粗黑体就 Black 字族、否则雅黑 700）",
+      "self.font_title = g.CreateFontW(-int(round(BALLOON_HEAD_PX * s)), 0, 0, 0," in SRC
+      and ("400 if _heavy else 700" in SRC)
       and "self.font_spot" not in SRC and "self.font_t18" not in SRC and bool(_fonts),
       "HEAD_PX=%s" % ns.get("BALLOON_HEAD_PX"))
 check("字号就是一档 21.6（和当年聚光灯那档逐字相同，不是另配一支近似值）",

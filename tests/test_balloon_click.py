@@ -166,6 +166,8 @@ def build_namespace(opens):
           "threading": __import__("threading"), "webbrowser": __import__("webbrowser"),
           "APP_URL": "http://localhost:8000", "BALLOON_HEADLINE_TAG": "【头条】",
           "BALLOON_PER_ITEM_MS": 5600, "BALLOON_RESUME_MS": 8000,
+          # 2026-11-12 四修：停留时长改成按栏目分流，普通条目仍走 5600
+          "_toast_per_item_ms": lambda pl: 5600,
           "BALLOON_W": 440, "BALLOON_H": 152,
           # 真几何在 tests/test_balloon_layout.py 里逐个矩形断言；这里不画，只测消息处理
           "_balloon_rects": lambda w=440, h=152, total=1, idx=0: {},
@@ -239,8 +241,8 @@ def main():
     check("点「退出」没有去开任何东西", opens == [], "opens=%r" % (opens,))
     check("点「退出」把排在后面的两组也丢掉（不然 300 毫秒后又弹出来）", fs.q == [],
           "q=%r" % (fs.q,))
-    check("点「关闭」把四个计时器都杀了（2 停留 / 3 轮换 / 4 打开后唤醒 / 5 播报动画）",
-          sorted([c[2] for c in fs.u.calls if c[0] == "KillTimer"]) == [2, 3, 4, 5],
+    check("点「关闭」把计时器都杀了（2 停留 / 3 轮换 / 4 打开后唤醒 / 5 播报动画 / 6 换条淡入）",
+          sorted([c[2] for c in fs.u.calls if c[0] == "KillTimer"]) == [2, 3, 4, 5, 6],
           "KillTimer=%r" % ([c[2] for c in fs.u.calls if c[0] == "KillTimer"],))
 
     # ── 3. 行为：点「打开」/点正文 = 开当前那条，且不在消息线程里开 ──
@@ -292,7 +294,7 @@ def main():
           "KillTimer=%r" % ([c[2] for c in fs.u.calls if c[0] == "KillTimer"],))
     check("计时器 4：把剩下那组重新亮出来（SW_SHOWNOACTIVATE=4，不抢焦点）",
           any(c[0] == "ShowWindow" and c[2] == 4 for c in fs.u.calls), "")
-    check("计时器 4：重新架起停留/轮换计时器（2 条 → 停留 2×5600、轮换 5600）",
+    check("计时器 4：普通条目重新架起停留/轮换计时器（2 条 → 2×5600、5600；开源榜走 12 秒分流）",
           [c[2] for c in fs.u.calls if c[0] == "SetTimer"] == [2, 3]
           and [c[3] for c in fs.u.calls if c[0] == "SetTimer"] == [5600 * 2, 5600],
           "SetTimer=%r" % ([c[1:] for c in fs.u.calls if c[0] == "SetTimer"],))
@@ -310,7 +312,7 @@ def main():
     fs.hover = True
     fs.paused = True
     fs._wndproc(1234, 0x02A3, 0, 0)              # WM_MOUSELEAVE
-    check("鼠标移开：停留/轮换计时器重新架上、paused 放掉",
+    check("鼠标移开：普通条目停留/轮换计时器重新架上（开源榜走 12 秒分流）、paused 放掉",
           {2, 3} <= {c[2] for c in fs.u.calls if c[0] == "SetTimer"}
           and fs.paused is False, "SetTimer=%r" % ([c[1:] for c in fs.u.calls if c[0] == "SetTimer"],))
 

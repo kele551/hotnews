@@ -62,7 +62,7 @@
 | 我想… | 去哪 |
 |---|---|
 | 加一个新闻源 | `server.py` 顶部的来源表（每条含 id / 名称 / 地址 / 栏目 / 地区），加完要实测：能连通 + 带图 + 有当天内容 |
-| 改「开源热榜」（GitHub 榜，非新闻栏） | `server.py` 的「开源热榜」一节（窗口 / 条数 / 题材闸门 / `OSS_ENABLED` 总开关）＋ `static/index.html` 里 `OSS_*` 那几处。它**不在** `SOURCES` 里，单独一条链路与一个 `/api/oss` 接口，改它不该碰新闻口径 |
+| 改「开源热榜」（GitHub 榜，非新闻栏） | `server.py` 的「开源热榜」一节：30 天榜（窗口 / 条数 / 累计星标 / `OSS_TTL`）、7 天周榜（`OSS_WEEK_*` / 日均涨星 / 独立缓存与桌面播报）、涨速榜（`OSS_SPEED_*` / 两榜并集 / 按各路快照间隔折算成星/天 / 零额外请求），共用题材闸门与 `OSS_ENABLED` 总开关；＋ `static/index.html` 里 `OSS_*` / `activeOss()` / `data-osstab` 那几处。它**不在** `SOURCES` 里，单独一条链路与一个 `/api/oss` 接口（回带 `items` / `week_items` / `speed_items` 三份榜），改它不该碰新闻口径 |
 | 改"国内 / 国际"怎么分 | `server.py` 的判定函数：`_has_cn_marker_title()`（标题里的中国标记）、`_is_domestic_for_intl()`（各栏目分支）、出口 `api_news()` 再兜一道；纯外国宏观财经由 `_is_foreign_macro()` 判 |
 | 改关键词表 | `data/keywords.txt`（纯数据，不用改代码） |
 | 改界面版式 / 配色 | `static/index.html`、`static/intl.html` |
