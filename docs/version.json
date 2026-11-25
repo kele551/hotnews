@@ -1,0 +1,10 @@
+{
+  "version": "1.6.2",
+  "launcher": {
+    "url": "https://github.com/kele551/hotnews/releases/download/v1.6.2/hotnews-v1.6.2.exe",
+    "pages_url": "https://kele551.github.io/hotnews/hotnews-v1.6.2.exe",
+    "sha256": "B4D4FD76EDBC08F5DD4CE2BF1B1C6047FD4F453D35FCADB76E2A82F5B2CB3E5F",
+    "size": 17352182
+  },
+  "notes": "更新内容\n在线升级链路加固\n· 下载支持断点续传：断流后从已下到的位置接着下，最多续传 5 轮；建连等待与空闲读超时分开，轮间稍候再试，不再一次断流就整包从头重来。\n· 读取版本清单与签名小文件增加 3 轮重试；验签不通过属安全问题，不重试，直接换下一条候选线路。\n· 版本清单与安装包都增加 GitHub Pages 稳定线路作为兜底：主线路（Release / raw）不通或抖动时自动切到 Pages；跨线路不续传，换源从头下载。\n· 安全闸原样保留：安装包尺寸与 SHA256 两道校验、Ed25519 签名验签都不变，任何一项对不上都不会替换正在用的旧版。"
+}
