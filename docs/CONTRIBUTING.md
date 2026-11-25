@@ -1,6 +1,6 @@
 # 参与贡献（CONTRIBUTING）
 
-作者：**海风（kele551）** · 仓库：https://github.com/kele551/hotnews （GitCode 同名镜像）
+作者：**海风（kele551）** · 仓库：https://github.com/kele551/hotnews
 
 hotnews（热点新闻检索）是一个人维护的小项目：Windows 单文件 exe + 本机 FastAPI 后端
 + 原生前端（HTML / CSS / JS，无框架、无打包器）。欢迎反馈与 PR，
@@ -59,7 +59,7 @@ hotnews（热点新闻检索）是一个人维护的小项目：Windows 单文�
 5. 不要提交构建产物：`dist/`、`build/`、`runtime/`、`*.exe`、`*.zip`、`*.log` 都在 `.gitignore` 里，
    请保持这样。附件请用 Issue 传，别进仓库。
 
-> `main` 分支只由维护者合并。维护者推 GitCode（主源）时会同步 GitHub 与 AtomGit 镜像。
+> `main` 分支只由维护者合并。维护者推 GitHub 主源；GitCode/AtomGit 由平台自动镜像跟随。
 
 ---
 
@@ -293,7 +293,7 @@ python build.py --list
   不全绿不许发布**；红项（`[FAIL]`）先修再发，跳过项（`[SKIP]`，本机没装依赖或没联网）
   不算失败，但要在发布记录里写明原因。
 - **发布流程**（维护者执行，顺序见 5.2 第 4 条）：改版本号 → 打包 → 生成升级源 `version.json`
-  （并用离线私钥做 Ed25519 签名）→ 推 tag → 建 GitCode / GitHub 发行版并上传附件 →
+  （并用离线私钥做 Ed25519 签名）→ 推 tag → 建 GitHub 发行版并上传附件 →
   回下载核对 SHA256 → 最后推 main → 跑 `python tools/verify_release.py` 复核线上。
   **发布与签名用的私钥不在本仓库内，也不应该被复制进来**；本项目一键发布脚本暂存于维护者本机
   （狐径 / 桌面壁纸那两座仓库已有随库的 `tools/publish.py`，这里补齐是下一件事），
@@ -301,17 +301,16 @@ python build.py --list
 - 发布相关的产物来源、签名计划与 SHA256 核验方法，见
   [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。
 
-### 5.1 升级源与 `version.json`（2026-10-26 随主源迁到 GitCode 重写）
+### 5.1 升级源与 `version.json`（2026-11-25 起只发 GitHub）
 
 > ✅ **只有一份口径**：`version.json` 在任何地方都是**完整版** —— `version` +
-> `launcher.url/sha256/size` + `notes`，仓库里、GitCode `main`、GitHub `main` 三处
-> **逐字节一致**；配套的 `version.json.sig` 是 128 个十六进制字符（一个 64 字节 Ed25519
+> `launcher.url/sha256/size` + `notes`，仓库里与 GitHub `main` 上那份**逐字节一致**；配套的 `version.json.sig` 是 128 个十六进制字符（一个 64 字节 Ed25519
 > 签名的十六进制），签的就是那份原始字节，UTF-8 无 BOM、LF、末尾不加换行。
 > 客户端（`updater.py`）先用内置公钥对**拉回来的原始字节**验签，再比 sha256/size；
 > 所以任何时候改了 `version.json` 都必须**重签**，否则用户端一律拒绝升级（fail-closed）。
 >
 > 早先是"仓库里放精简版、远端多两个提交放完整版"的两份口径 —— 那是老仓库（gitee）
-> `master` 分支的历史包袱，主源换到 GitCode 之后已经并成一份，别再按旧说明操作。
+> `master` 分支的历史包袱；现行只发 GitHub，口径已并成一份，别再按旧说明操作。
 >
 > 字节数不永恒不变（`notes` 写长一点就变了，v1.5.8 是 806 B）。**不要拿文档里的数字对线上**，
 > 用下面这条命令对：
@@ -328,19 +327,17 @@ sha256/size → GitHub 镜像同一个附件再比一遍 → 版本比较），�
 **发布新版本的注意事项**（都是踩过的坑）：
 
 > ⛔ **Gitee 禁止上传**：该仓库早已被平台封禁（内容审查返回 451），严禁
-> `git push gitee ...`、上传附件或在该平台发 Release。代码只推 GitCode（主源）/
-> GitHub（镜像）/ AtomGit（代码镜像）三处，见 `AGENTS.md` 禁区第 10 条。
+> `git push gitee ...`、上传附件或在该平台发 Release。代码只推 GitHub（主源）；
+> GitCode/AtomGit 纯 Pull 被动镜像，见 `AGENTS.md` 禁区第 10 条。
 
 1. `version.json` 的 `notes` 字段**不要写具体事件/地区/机构名** —— 老仓库（gitee）的内容审查
    会整份文件拦下（raw 地址返回 **451** "The content may contain violation information"），
-   升级源当场变哑弹。GitCode / GitHub 目前没这条限制，但写成中性、简短的功能说明本来就更稳：
+   升级源当场变哑弹。GitHub 目前没这条限制，但写成中性、简短的功能说明本来就更稳：
    这份文本会被客户端直接显示给用户。
 2. 重新发布同一版本时**必须替换附件**：本地重新构建后 sha256 变了，
    线上留旧文件会让 `version.json` 里的 sha 与实际不符，用户升级校验失败装不上。
-   平台侧的坑各不同：老仓库的 release 附件对象没有 id，只能**连 release 一起删掉重建**；
-   GitCode 的附件对象在 API 里也**没有可靠的删除口**（`attach_files` 那套端点 404/405），
-   所以同名附件只能"取上传地址 → PUT 原始字节"覆盖，大小不一致时必须**人工到网页删掉旧的**
-   —— 宁可停下来，也不能让线上留两份不同字节的同名包。
+   平台侧的坑：GitHub 同名附件用 `gh release upload --clobber` 覆盖；若覆盖不干净，
+   同名附件字节不一致时必须**人工到网页删掉旧的** —— 宁可停下来，也不能让线上留两份不同字节的同名包。
 3. 替换脚本 `hotnews_update.vbs` 必须写成 **UTF-16**。
    写成 `utf-8-sig`（带 BOM）会让 Windows Script Host 报
    「无效字符 (1,1) 800A0408」，脚本不执行、还弹错误框，**在线升级会整个失效**。
@@ -350,7 +347,7 @@ sha256/size → GitHub 镜像同一个附件再比一遍 → 版本比较），�
    ① 打包（此时 version.json 里的 launcher 段还是上一版的 —— 没关系，打包只读 version 字段）
    ② 算出这个 exe 的真实 sha256/size，补写完整版 version.json 并用离线私钥重签 .sig
    ③ 提交并**只推 tag**（发行版要挂在 tag 上）
-   ④ 建 GitCode / GitHub 发行版、上传附件（附件名必须与清单 url 里那一段一字不差）
+   ④ 建 GitHub 发行版、上传附件（附件名必须与清单 url 里那一段一字不差）
    ⑤ 回下载核对 sha256/size —— 不过就停在这里，**别推 main**
    ⑥ 最后才推 main：这一刻线上升级源才从上一版切到新版
    ⑦ `python tools/verify_release.py` 复核整条链路

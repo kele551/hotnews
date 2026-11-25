@@ -386,8 +386,8 @@ hotnews · 热点新闻检索 v1.6.1
 
 十一、已知取舍
   · 本副本早期按「热点新闻检索 · 项目说明」文档重建，现已接管
-    GitHub 仓库 https://github.com/kele551/hotnews（主源）作为
-    更新源，GitCode 为镜像（https://gitcode.com/kele551/hotnews）。
+    GitHub 仓库 https://github.com/kele551/hotnews（唯一主源）作为
+    更新源；GitCode（=AtomGit）只是 Pull 被动镜像，不作升级通道。
   · httpx 走 trust_env=False 直连：环境里的代理会让 RSS 抓取从
     0.1s 劣化到约 20s，因此全程绕开代理。
   · 启动时后台预热两个 Region，首屏打开即见数据（约 8s 内就绪）。

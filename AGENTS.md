@@ -45,7 +45,7 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 10. **严禁向 Gitee 推送任何内容**（代码 / tag / Release 附件）：该仓库早已被平台禁止上传（内容审查返回 451），
     `git push gitee ...` 一律不许执行，上传附件、重发 Release 同样不许。2026-11-11 线上仓库已全部清空，
     本机 `gitee` remote 与跟踪引用也已全部删除、禁止再添加 —— **它既不是对照平台，也不是可推目标**。
-    实际推送目标一律以 `git remote -v` 实测为准（现为 `gitcode` / `origin` 两个），别照抄下面「平台」一节的历史命令。
+    实际推送目标一律以 `git remote -v` 实测为准（现 GitHub remote 叫 `origin`；`gitcode` 是纯 Pull 被动镜像，不主动 push），别照抄下面「平台」一节的历史命令。
 
 ## 提交与验收
 
@@ -54,21 +54,21 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 - 加分/换源这类改动，请在 PR / 回复里附**实测三连**：能连通、带图（短边 ≥300）、有当天或近日内容；
 - 界面/口径类改动，说明你**怎么验证的**（跑了哪条命令、看了哪个栏目）。
 
-## 平台（GitHub 主源，GitCode/AtomGit 镜像）
+## 平台（只发 GitHub；GitCode/AtomGit 纯 Pull 被动镜像）
 
-代码主线与对外地址以 **GitHub（主源）** 为准；**GitCode（=AtomGit）仅作国内镜像，不再主动维护**。
-二进制发行包发 **GitHub**；升级版本源与下载直链都走 GitHub。
+代码主线与对外地址、Release、附件、升级源与下载直链**一律只走 GitHub**。
+**GitCode（=AtomGit）是纯 Pull 被动镜像**：不建版、不传附件、不验真、不主动 push；Gitee 早已禁推（451）。
 
 ```powershell
-# 远端名字按本机 config 为准：origin=GitHub 主源、gitcode=GitCode 镜像
+# 远端名字按本机 config 为准：origin=GitHub 主源（本机 remote 名叫 origin）
+# ⛔ GitCode/AtomGit 只被动跟随，严禁 `git push gitcode ...`；
 # ⛔ Gitee 早已禁止上传（451），严禁 `git push gitee ...`，也严禁往它传附件 / 发 Release；
 #    线上仓库已清空、本机 remote 与跟踪引用已删除且禁止再添加；对外文案里也不要写它的地址。
 #    推之前一律先 `git remote -v` 看现存远端。
-git push origin main --tags                     # GitHub（主源；本机 remote 名叫 origin）
-git push gitcode main --tags                    # GitCode（被动镜像，不单独维护）
+git push origin main --tags                     # GitHub（唯一可推目标）
 ```
 
-镜像与主源改完都要推，**内容必须逐字节一致**（判定方法：`git diff origin/main gitcode/main` 应为空）。
+只推 GitHub；GitCode 镜像由其侧自行 Pull 跟随，本机不对它做任何写入。
 
 ## 任务从哪来
 

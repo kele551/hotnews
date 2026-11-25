@@ -28,7 +28,7 @@
 
 <p>📰 <b>国内 / 国际热点新闻图库</b>　·　本地抓取，只看标题与原文链接</p>
 
-<p>作者 <b>海风（kele551）</b>　·　<a href="https://github.com/kele551/hotnews">GitHub（主源）</a>　·　<a href="https://gitcode.com/kele551/hotnews">GitCode（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
+<p>作者 <b>海风（kele551）</b>　·　<a href="https://github.com/kele551/hotnews">GitHub（唯一主源）</a>　·　<a href="docs/README_EN.md">English</a></p>
 </div>
 
 
@@ -57,7 +57,7 @@
 - 页面右上角「检查更新」手动触发
 - 右下角气泡提醒（见下文），点气泡可直接打开对应新闻
 
-> **代码主线与下载、Issue / PR 都在 [GitHub](https://github.com/kele551/hotnews)（主源）**；[GitCode](https://gitcode.com/kele551/hotnews) 仅作国内镜像，不主动维护。老仓库已于 2026-10-17 起停更，只留最后一版、不再放新包，故不附链接。
+> **代码主线、下载、Issue / PR 一律只在 [GitHub](https://github.com/kele551/hotnews)（唯一主源）**；GitCode（=AtomGit）只是 Pull 被动镜像，不建版、不传附件、不主动维护。老仓库已于 2026-10-17 起停更，只留最后一版、不再放新包，故不附链接。
 
 ---
 
@@ -575,4 +575,4 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 
 ---
 
-<p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://github.com/kele551/hotnews">GitHub 主仓库</a> · <a href="https://gitcode.com/kele551/hotnews">GitCode 镜像</a></sub></p>
+<p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://github.com/kele551/hotnews">GitHub（唯一主源）</a></sub></p>

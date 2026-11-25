@@ -16,7 +16,7 @@
    ├─ 已有实例在跑 → 直接开浏览器；否则选端口（8000 起）→ uvicorn 起 server:app → 开浏览器
    ├─ server.py：抓取来源 → 去重合并 → 国内/国际分流 → 翻译（带磁盘缓存）→ 图片代理 → api_news()
    ├─ static/index.html、static/intl.html：国内页 / 国际页（含右下角气泡提醒）
-   └─ updater.py：读 GitCode version.json（兜底 GitHub）→ 校验 sha256 + Ed25519 签名 → 下载 → 退出时替换并重启
+   └─ updater.py：读 GitHub main 的 version.json → 校验 sha256 + Ed25519 签名 → 下载 → 退出时替换并重启
 ```
 
 **合规底线**：只聚合**公开的标题与链接**，不存储、不转载正文，每条保留原文跳转；

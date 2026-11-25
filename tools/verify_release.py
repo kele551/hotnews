@@ -9,13 +9,12 @@
     所以把它固化成一条命令，发版前后都能跑；用户报"升不了级"时先跑它，别猜。
 
 它按客户端 updater.py 的口径逐条复刻（口径直接从源码里读，不在这个脚本里二次硬编码）：
-    ① 从 updater.py 解析内置公钥 UPDATE_PUBKEY 与两个升级源地址（GitCode 主 / GitHub 兜底）；
-    ② 取每个源的**原始字节**，再按客户端同样的规则拼出 .sig 地址（?ref=main 时 .sig 要插在 ? 前）；
+    ① 从 updater.py 解析内置公钥 UPDATE_PUBKEY 与升级源地址（只 GitHub）；
+    ② 取源的**原始字节**，再按客户端同样的规则拼出 .sig 地址（?ref=main 时 .sig 要插在 ? 前）；
     ③ 用内置公钥对原始字节做 Ed25519 验签 —— 验不过就是 fail-closed，用户绝不会被提示升级；
     ④ 线上那份 version.json 与仓库里这份是否逐字节一致（顺手给一个"只差换行符"的判定）；
     ⑤ 按 launcher.url 把附件真下载回来，比对 sha256 与 size（清单说 15,249,859 就得是这么多字节）；
-    ⑥ GitHub 镜像侧的同一个附件名也下一遍，两平台字节必须一致；
-    ⑦ 版本比较：清单版本 > 已装版本，用户才会看到"有新版本"（用 --from 传用户手上那个版本号）。
+    ⑥ 版本比较：清单版本 > 已装版本，用户才会看到"有新版本"（用 --from 传用户手上那个版本号）。
 
 用法
     python tools/verify_release.py                 # 验仓库 version.json 里写的那个版本
@@ -42,9 +41,8 @@ _CANDIDATES = (os.path.dirname(HERE), HERE)
 REPO = next(p for p in _CANDIDATES if os.path.exists(os.path.join(p, 'updater.py')))
 UPDATER = os.path.join(REPO, 'updater.py')
 UA = {'User-Agent': 'HotnewsVerifyRelease/1.0'}
-# 本机到 GitHub 的路时通时断（这正是狐径存在的理由）。取不到就走本地代理重试一次，
-# 代理只决定"这台机器怎么把字节拿回来"，比对的仍是字节本身，不影响结论。
-PROXY = os.environ.get('HN_VERIFY_PROXY') or 'http://127.0.0.1:8787'
+# 本机到 GitHub 的路时通时断。默认直连；只有显式给了 HN_VERIFY_PROXY 才把它作备选链路。
+PROXY = os.environ.get('HN_VERIFY_PROXY') or ''
 
 results = []
 
@@ -68,7 +66,7 @@ def fetch(url, timeout=SOCK_TMO, tries=3, deadline=None, expect=0, label=''):
     （2026-10-26 就是这么拖掉二十分钟的）。现在边读边报进度，到预算就明确放弃。
     """
     ops = [urllib.request.build_opener(urllib.request.ProxyHandler({}))]
-    if 'github' in url:
+    if PROXY and 'github' in url:
         ops.append(urllib.request.build_opener(
             urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY})))
     err = ''
@@ -138,15 +136,12 @@ def main():
         return m.group(1) if m else None
 
     pub_hex = _const('UPDATE_PUBKEY')
-    url_gc = _const('REMOTE_VERSION_URL_GC')
     url_gh = _const('REMOTE_VERSION_URL_GH')
     print('升级源（直接取 updater.py 里的常量，不另行硬编码）:')
-    print('   主源 GitCode : %s' % url_gc)
-    print('   兜底 GitHub : %s' % url_gh)
-    if not (pub_hex and url_gc and url_gh):
-        say('updater.py 里能解析出公钥与两个升级源地址', False,
+    print('   GitHub : %s' % url_gh)
+    if not (pub_hex and url_gh):
+        say('updater.py 里能解析出公钥与升级源地址', False,
             '缺 %s' % [n for n, v in (('UPDATE_PUBKEY', pub_hex),
-                                      ('REMOTE_VERSION_URL_GC', url_gc),
                                       ('REMOTE_VERSION_URL_GH', url_gh)) if not v])
         return 1
     pub = bytes.fromhex(pub_hex)
@@ -168,7 +163,7 @@ def main():
         return 1
 
     ok_any = False
-    for label, url in (('GitCode', url_gc), ('GitHub', url_gh)):
+    for label, url in (('GitHub', url_gh),):
         print()
         print('② %s 侧：取原始字节 → 验签 → 比本地 → 下载附件' % label)
         raw, err = fetch(url)
@@ -218,17 +213,6 @@ def main():
         say('%s 附件真实大小 == 清单写的' % label, len(blob) == asz,
             '%d B vs %s B' % (len(blob), asz))
         ok_any = True
-        # GitHub 镜像侧：文件名与主源一致，路径换成 GitHub 的发行下载口
-        if label == 'GitCode':
-            ghu = 'https://github.com/kele551/hotnews/releases/download/v%s/%s' % (
-                ver, urllib.parse.quote(os.path.basename(urllib.parse.urlsplit(au).path)))
-            gb, err4 = fetch(ghu, deadline=DEADLINE_BIG, expect=asz or 0,
-                             label='GitHub 镜像附件')
-            if gb is None:
-                say('GitHub 镜像同名附件也下得回来（用户可能从那边下）', False, err4)
-            else:
-                say('GitHub 镜像附件与主源逐字节一致', hashlib.sha256(gb).hexdigest().upper() == real,
-                    '%d B' % len(gb))
 
     print()
     if a.installed:

@@ -70,8 +70,6 @@ INTL_FINAL = ('要闻', '科技', '财经', '娱乐', '体育', '热榜')
 DOMESTIC_GONE = ('社会', '要闻', '体育')
 
 GITHUB_REPO = 'https://github.com/kele551/hotnews'
-GITCODE_REPO = 'https://github.com/kele551/hotnews'
-GITEE_REPO = GITCODE_REPO      # 历史变量名（部分小节仍按这个名字引用；GitCode 现为镜像）
 UA = 'HotnewsPreflight/1.0 (+%s)' % GITHUB_REPO
 
 USAGE = """热点新闻发版前自检 —— 用法
@@ -917,9 +915,9 @@ else:
             if _st >= 400:
                 _info.append('%s -> HTTP %s（限流/需登录，不算死链）' % (_u, _st))
             say('     · HTTP %s  %s' % (_st, _u))
-        # 平台限速：GitCode 侧间隔拉到 3 秒（2026-10-08 密集抓老平台自己抓出过 451）
+        # 平台限速：只对 GitHub 拉取，统一 0.5 秒间隔（2026-11-25 红线第 36 条后 GitCode 链接已不进 README）
         if _i < len(_urls) - 1:
-            time.sleep(3.0 if 'gitcode.com' in _u else 0.5)
+            time.sleep(0.5)
     check('README 里 %d 条链接都不存在 404/410（这些才是死链）' % len(_urls), not _dead,
           '；'.join(_dead[:3]))
     check_warn('README 里的链接主机都连得上（有没有 DNS/连接层面的失效）', not _netfail,
@@ -954,14 +952,8 @@ else:
         check_warn('GitHub main 的 version.json 版本 == 本地 v%s' % VER,
                    str(_ghv).lstrip('v') == VER,
                    '线上=%s 本地=%s（发布前"仓库更新"属正常）' % (_ghv, VER))
-    time.sleep(3.0)   # GitCode 限速：任何两次请求之间 ≥3 秒
-    # 主源已从 gitee 迁到 gitcode（2026-10-26）：gitcode 的 contents 接口与老平台同形
-    # （返回 {content: base64}），分支名是 main 不是 master。
-    _gtv = _remote_ver('GitCode(main)',
-                       'https://gitcode.com/api/v5/repos/kele551/hotnews/contents/version.json?ref=main')
-    if _gtv:
-        check_warn('GitCode main 的 version.json 版本 == 本地 v%s' % VER,
-                   str(_gtv).lstrip('v') == VER, '线上=%s 本地=%s' % (_gtv, VER))
+    # 【2026-11-25 红线第 36 条】GitCode（=AtomGit）只是 Pull 被动镜像、不再同步，
+    # 不再拿它的版本做比对（那边永远停在旧版，只会误报"镜像没同步"）。
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑨ 端到端抓取（默认不跑；--e2e 才真联网抓一遍）

@@ -47,8 +47,8 @@ REMOTE_VERSION_URL_GH = "https://raw.githubusercontent.com/kele551/hotnews/main/
 REMOTE_VERSION_URLS = (REMOTE_VERSION_URL_GH,)
 
 # 【2026-10-07 升级通道加固】离线生成的 Ed25519 公钥；私钥只在作者机器的密钥目录里，
-# 绝不进仓库。客户端用它验证 version.json 的签名，这样即便 GitCode 账号被盗、或 GitHub
-# 那侧被塞了东西，也推不出恶意版本 —— 签不出合法签名就一律拒绝升级（详见 fetch_remote）。
+# 绝不进仓库。客户端用它验证 version.json 的签名，这样即便 GitHub 账号被盗、或那侧被塞了东西，
+# 也推不出恶意版本 —— 签不出合法签名就一律拒绝升级（详见 fetch_remote）。
 UPDATE_PUBKEY = "f6931bd24749559c36fc14aa8fcdedd638502fec39bb010ef505a120f9a2dfbd"
 
 if getattr(sys, "frozen", False):

@@ -123,8 +123,9 @@ GIT_EXEC_PATH = _find_git_dir()
 # 有绝对路径就用绝对路径: 有的执行环境按名字找不到 git(WinError 2)
 GIT_EXE = (GIT_EXEC_PATH + '/git.exe') if GIT_EXEC_PATH else 'git'
 GH = os.environ.get('HOTNEWS_GH') or _CFG.get('gh') or shutil.which('gh') or 'gh'
-# 【2026-11-25 口径】本机不再常驻本地代理；git 直连为主，代理只在私有配置/环境变量显式给了
-# 才用（见 _push）。原先默认兜 127.0.0.1:8787，代理没起时等于推一条死链路，先清掉这个默认。
+# 【2026-11-25 口径】只发 GitHub；GitCode/AtomGit 纯 Pull 被动镜像，不主动推。
+# git 推送默认直连；只有在 HOTNEWS_GIT_PROXY / ~/.hotnews-publish.json 的 git_proxy 显式给了代理时，
+# 直连失败才带该代理再试一次（不默认兜 127.0.0.1:8787，代理没起时等于推一条死链路）。
 GIT_PROXY = os.environ.get('HOTNEWS_GIT_PROXY') or _CFG.get('git_proxy') or ''
 # git 推送凭据只从本机只读凭据文件取；显式清空系统级 helper，避免残留凭据助手弹框（A 后台推 git 禁弹窗）。
 GIT_CRED = Path(r'F:\Harness\secrets\git-credentials')
@@ -395,11 +396,11 @@ def remotes_by_host():
 
 
 def _push(remote, ref):
-    """推一个 ref；git 直连为主，代理只在私有配置/环境变量显式给了才兜底一次。
+    """推一个 ref；git 默认直连，代理只在私有配置/环境变量显式给了才兜底一次。
 
     凭据：显式清空系统级 helper-selector（避免残留凭据助手弹窗），只从本机只读凭据文件取。
-    代理：GIT_PROXY 为空就**不再**默认兜 127.0.0.1:8787（本机没常驻代理，兜一条死链路只会
-    白等两次超时）；真需要时在 ~/.hotnews-publish.json 或 HOTNEWS_GIT_PROXY 显式给。
+    代理：GIT_PROXY 为空就不默认兜本地代理（本机没常驻代理，兜一条死链路只会白等两次超时）；
+    真需要时在 ~/.hotnews-publish.json 或 HOTNEWS_GIT_PROXY 显式给。
     推完一律用 ls-remote 复核远端 sha：退出码只说明"这条命令没崩"，说明不了"远端变了"。
     """
     if not _remote_exists(remote):
@@ -420,7 +421,7 @@ def _push(remote, ref):
             print('   直连失败(%s)；未配置代理，不再兜底' % out.strip()[-160:])
     # ls-remote 每行是「sha<TAB>refs/...」—— 取第 0 列才是 sha。
     # 2026-10-29 修：这里原来写的是 [1:2]（拿到的是 ref 名），于是每次推完都判"没生效"，
-    # 1.5.9 发版就卡在这句假警报上。另外刚推完 GitCode 偶尔只读节点还没同步，
+    # 1.5.9 发版就卡在这句假警报上。另外刚推完 GitHub 偶尔只读节点还没同步，
     # 所以给它三次、隔 3 秒再看，别把"还没同步"当成"没推上去"。
     remote_sha = ''
     for attempt in range(3):
@@ -708,8 +709,8 @@ def verify_signature(vj, vsig):
     # 带一个时间戳参数是防 CDN 给回半新半旧的缓存。
     bust = int(time.time())
     gh_base = 'https://raw.githubusercontent.com/%s/%s/%s' % (OWNER, REPO, BRANCH)
-    for label, mk in (
-            ('GitHub', lambda f: '%s/%s?v=%d' % (gh_base, f, bust))):
+    sources = [('GitHub', lambda f: '%s/%s?v=%d' % (gh_base, f, bust))]
+    for label, mk in sources:
         # 806 B 与 128 B 两个小文件：单次 recv 60 s、总预算 120 s、最多 3 轮，
         # 最坏也就三分钟出头，不会再出现"一条链路把整轮验真拖没影"的写法。
         raw = _download(mk('version.json'), SOCK_TMO, 3, deadline=120,
