@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""热点新闻 hotnews —— 一键发布流水线（GitHub 主源；GitCode 仅被动镜像）
+r"""热点新闻 hotnews —— 一键发布流水线（只发 GitHub）
 
 与狐径、桌面壁纸的 `tools/publish.py` 同一套路，只是产物名、版本号来源、发布说明来源不同。
 （2026-10-26 移植进仓库：v1.5.8 是照这套顺序**手工**发的，下一版别再靠人记流程。）
@@ -7,17 +7,16 @@ r"""热点新闻 hotnews —— 一键发布流水线（GitHub 主源；GitCode 
 依赖: GitHub 侧走本机登录态的 gh.exe（它自己会挑线路，比手搓 REST 稳）；路径可用
 环境变量 HOTNEWS_GH 或 ~/.hotnews-publish.json 的 "gh" 覆盖。HTTP 层只用 Python 标准库。
 
-【2026-11-25 换目标】GitHub 是唯一对外主源：Release、二进制附件、升级源 version.json/.sig
-只发 GitHub。GitCode（=AtomGit）降为**纯被动镜像**——只随 main/tag 同步源码，不建发行版、
-不传二进制附件、不参与附件与升级源验真。gitee 早已禁止上传（451），严禁 push / 传附件 /
+【2026-11-25 红线第 36 条】只发 GitHub：Release、二进制附件、升级源 version.json/.sig、
+源码/tag 推送一律只走 GitHub。GitCode（=AtomGit）只作 Pull 被动镜像，本脚本**完全不主动碰它**
+（不建版、不传附件、不验真、不 push）。gitee 早已禁止上传（451），严禁 push / 传附件 /
 发 Release，客户端也不再去取（老地址一律不出现）。
 
 用法:
-    python tools/publish.py whoami
-    python tools/publish.py release 1.6.1                # 发 GitHub 主源（GitCode 仅镜像源码）
+    python tools/publish.py release 1.6.1                # 发 GitHub 主源
     python tools/publish.py release 1.6.1 --skip-build   # 已打包，只做发布
     python tools/publish.py release 1.6.1 --notes 文件.md
-    python tools/publish.py verify 1.6.0                 # 只读：线上验真，什么都不发
+    python tools/publish.py verify 1.6.1                 # 只读：线上验真，什么都不发
 
 release 的自检默认**联网**跑（tools/preflight_release.py 会把链接与徽章、线上升级源对齐
 两节都查）。本机网络不通时按同样方式传下去即可，它会把该节跳过并在日志里写明：
@@ -36,10 +35,9 @@ release 依次做:
     ③+ 用 Ed25519 私钥给 version.json 的**原始字节**签名 -> version.json.sig
        私钥位置：环境变量 HOTNEWS_ED25519_KEY → ~/.hotnews-publish.json 的 "ed25519_key"
        → 找不到就中止。⚠ 四款软件**各用一把钥匙**，别拿狐径那把签热点的清单。
-    ④ 提交 + 打 tag + **只推 tag**（GitHub 主源；GitCode 被动镜像同步 tag）
-    ⑤ 跳过 GitCode 建版/传附件（被动镜像，不挂二进制）
-    ⑥ GitHub 建 Release + 上传 hotnews-vX.Y.Z.exe / version.json / version.json.sig
-    ⑦ 验真：GitHub 下载回来比对 SHA256；并**回读线上 version.json + .sig**，
+    ④ 提交 + 打 tag + **只推 tag**（GitHub 主源）
+    ⑤ GitHub 建 Release + 上传 hotnews-vX.Y.Z.exe / version.json / version.json.sig
+    ⑥ 验真：GitHub 下载回来比对 SHA256；并**回读线上 version.json + .sig**，
        用客户端内置公钥真验一遍（验不过就算发布失败 —— 别让用户先发现升级通道是断的）
 
 发版铁律（顺序不能换）：④ 里 **tag 先推、main 最后推**。升级源就是 main 上那份
@@ -74,15 +72,10 @@ except Exception:
 REPO_DIR = Path(__file__).resolve().parent.parent
 OWNER, REPO = 'kele551', 'hotnews'
 BRANCH = 'main'
-GC_API = 'https://gitcode.com/api/v5'
-GC_WEB = 'https://gitcode.com'
 GH_REPO = '%s/%s' % (OWNER, REPO)
-# 【2026-11-25 口径】GitHub 是主源：Release、附件、升级源 version.json/.sig 只发 GitHub；
-# GitCode（=AtomGit）降为**纯被动镜像**——只随 main/tag 同步源码，不在上面建发行版、不传
-# 二进制附件、不参与附件与升级源验真。历史 v1.6.0 及以前 GitCode 上挂过的附件属旧做法，
-# 本版起不再维护。
-GC_PUBLISH = False
-# 推送目标：GitHub（主源）+ GitCode（被动镜像，仅同步源码与 tag）。
+# 【2026-11-25 红线第 36 条】GitHub 是唯一对外主源：Release、附件、升级源 version.json/.sig、
+# 源码/tag 推送一律只发 GitHub。GitCode（=AtomGit）只作 Pull 被动镜像，本脚本**完全不主动碰它**
+# （不建版、不传附件、不验真、不 push）；Gitee 早已禁推（451）。
 # ⚠ 本仓库的 remote **名字**是历史遗留：GitHub 那台叫 origin。gitee 早已禁止上传（451），
 # 2026-11-11 线上仓库已清空、本机 remote 与跟踪引用也已全部删除、禁止再添加；其它历史入口
 # （atomgit）的 remote 同样已删除。所以这里**按 URL 认远端、不按名字写死**
@@ -92,8 +85,8 @@ GC_PUBLISH = False
 # 公开仓库里不写任何维护者本机路径。本机要用的解释器 / git / gh / 令牌位置，
 # 一律按：① 环境变量 → ② 本机私有配置 ~/.hotnews-publish.json → ③ 与机器无关的默认值。
 # 私有配置文件示例（放在用户主目录，文件名前面有个点）：
-#   {"python": "C:\\\\Python313\\\\python.exe", "git_dir": "C:\\\\Program Files\\\\Git\\\\mingw64\\\\bin",
-#    "gh": "C:\\\\tools\\\\gh.exe", "token_file": "D:\\\\private\\\\gitcode_token"}
+#   {"python": "C:\\\\Python315\\\\python.exe", "git_dir": "C:\\\\Program Files\\\\Git\\\\mingw64\\\\bin",
+#    "gh": "C:\\\\tools\\\\gh.exe", "ed25519_key": "F:\\\\Harness\\\\secrets\\\\raw\\\\hotnews-ed25519.key"}
 _CFG_PATH = Path.home() / '.hotnews-publish.json'
 _CFG = {}
 if _CFG_PATH.is_file():
@@ -102,9 +95,6 @@ if _CFG_PATH.is_file():
     except Exception as _e:
         print('警告: %s 解析失败(%s)，按"没有本机配置"继续' % (_CFG_PATH, _e), file=sys.stderr)
 
-_ENV_TOKEN_FILE = os.environ.get('GITCODE_TOKEN_FILE') or _CFG.get('token_file')
-# 都没给就落到仓库内的 .gitcode_token（已 gitignore）；也可以直接用环境变量 GITCODE_TOKEN 传令牌本身
-TOKEN_CANDIDATES = [_ENV_TOKEN_FILE] if _ENV_TOKEN_FILE else [str(REPO_DIR / '.gitcode_token')]
 # 打包用的解释器必须能覆盖 —— 这个 PY 既用来跑 PyInstaller（打包），也用来跑发版前自检。
 # 热点新闻的运行时是 **Python 3.13**（requirements.txt 那四个库都要装齐，见 README「打包」）。
 # ⚠ **打包绝不能用 venv 混搭环境**：那种「一个解释器的 DLL 配另一个 venv 的库」组合，
@@ -133,12 +123,14 @@ GIT_EXEC_PATH = _find_git_dir()
 # 有绝对路径就用绝对路径: 有的执行环境按名字找不到 git(WinError 2)
 GIT_EXE = (GIT_EXEC_PATH + '/git.exe') if GIT_EXEC_PATH else 'git'
 GH = os.environ.get('HOTNEWS_GH') or _CFG.get('gh') or shutil.which('gh') or 'gh'
-# GitHub 的 git 端口在这台机器上时通时断，失败时借本地代理重试（只在命令行 -c 上带，不改 config）
-GIT_PROXY = os.environ.get('HOTNEWS_GIT_PROXY') or _CFG.get('git_proxy') or 'http://127.0.0.1:8787'
+# 【2026-11-25 口径】本机不再常驻本地代理；git 直连为主，代理只在私有配置/环境变量显式给了
+# 才用（见 _push）。原先默认兜 127.0.0.1:8787，代理没起时等于推一条死链路，先清掉这个默认。
+GIT_PROXY = os.environ.get('HOTNEWS_GIT_PROXY') or _CFG.get('git_proxy') or ''
+# git 推送凭据只从本机只读凭据文件取；显式清空系统级 helper，避免残留凭据助手弹框（A 后台推 git 禁弹窗）。
+GIT_CRED = Path(r'F:\Harness\secrets\git-credentials')
 # 打包产物叫 dist/热点新闻.exe（build_exe.spec 里 name="热点新闻"，文件名不带版本号），
 # 而**发出去的附件名必须 ASCII 且带版本号**：hotnews-vX.Y.Z.exe —— 清单 url 里写的、
-# 用户书签与老版本升级逻辑按名字取的都是这个，差一个字就是 404
-# （2026-10-26 三个平台上都是这个名字；中文文件名传上 GitCode 会被破坏）。
+# 用户书签与老版本升级逻辑按名字取的都是这个，差一个字就是 404。
 BUILD_EXE = REPO_DIR / 'dist' / '热点新闻.exe'
 
 
@@ -205,54 +197,6 @@ def _write_version_json(d):
     body = json.dumps(d, ensure_ascii=False, indent=2)
     VERSION_JSON.write_bytes(body.encode('utf-8'))
     return VERSION_JSON
-
-
-# ---------- 令牌 ----------
-def save_token(tok):
-    p = Path(TOKEN_CANDIDATES[0])
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(tok.strip(), encoding='utf-8')
-    print('令牌已存到', p)
-
-
-def load_token():
-    t = os.environ.get('GITCODE_TOKEN')
-    if t:
-        return t.strip()
-    for c in TOKEN_CANDIDATES:
-        p = Path(c)
-        if p.exists():
-            return p.read_text(encoding='utf-8').strip()
-    return None
-
-
-def api(method, path, token, payload=None, timeout=120, raw_body=None, headers=None, extra=None):
-    """GitCode v5 接口：令牌走 access_token 查询参数（本机没有第三方 HTTP 库，纯标准库）。
-
-    payload 走 JSON；raw_body 直接发原始字节。extra 是额外的查询参数（如 file_name）。
-    返回解析后的 dict/list；非 2xx 抛 RuntimeError（带上前 300 字符正文，便于现场判断）。
-    """
-    p = {'access_token': token}
-    p.update(extra or {})
-    url = GC_API + path + '?' + urllib.parse.urlencode(p)
-    hd = {'User-Agent': 'hotnews-publish'}
-    hd.update(headers or {})
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode('utf-8')
-        hd['Content-Type'] = 'application/json'
-    elif raw_body is not None:
-        data = raw_body
-    req = _rq.Request(url, data=data, headers=hd, method=method)
-    try:
-        with _rq.urlopen(req, timeout=timeout) as r:
-            body = r.read()
-    except urllib.error.HTTPError as e:
-        raise RuntimeError('API %s %s -> %s %s'
-                           % (method, path, e.code, e.read()[:300].decode('utf-8', 'replace')))
-    if not body.strip():
-        return {}
-    return json.loads(body.decode('utf-8', 'replace'))
 
 
 # ---------- 本地 ----------
@@ -384,15 +328,28 @@ def _remote_exists(name):
     return name in run(['git', 'remote'], check=False)
 
 
-def _git_raw(args):
-    """跑一条 git，返回 (退出码, 输出)。推送成败只信退出码 —— 管道会把真实状态吞掉（踩过）。"""
+def _git_raw(args, extra_c=None):
+    """跑一条 git，返回 (退出码, 输出)。推送成败只信退出码 —— 管道会把真实状态吞掉（踩过）。
+
+    extra_c: 命令行前置的 git -c 配置（凭据 helper / 代理），只在本次命令上生效，不落 config。
+    """
     e = os.environ.copy()
     if GIT_EXEC_PATH:
         e['GIT_EXEC_PATH'] = GIT_EXEC_PATH
         e['PATH'] = GIT_EXEC_PATH.replace('/', os.sep) + os.pathsep + e.get('PATH', '')
+    # 后台推 git 禁弹窗：不继承任何交互凭据助手。
+    e['GIT_TERMINAL_PROMPT'] = '0'
+    e['GCM_INTERACTIVE'] = 'never'
     args = list(args)
-    if args and args[0] == 'git':
-        args[0] = GIT_EXE.replace('/', os.sep)
+    # 在参数序列里找 'git' 项替换成绝对路径（extra_c 的 -c 会把 git 挤到非首元素）。
+    for i, a in enumerate(args):
+        if a == 'git':
+            args[i] = GIT_EXE.replace('/', os.sep)
+            break
+    if extra_c:
+        # -c 必须放在可执行文件之后：Windows CreateProcess 把列表首元素当 exe，
+        # 若 -c 排在绝对路径 git 之前会被判成可执行文件而 WinError 2。
+        args = [args[0]] + extra_c + args[1:]
     print('   $', ' '.join(args))
     # 加个总超时：凭据弹窗/网络黑洞时别再像 1.5.9 那样静默卡二十分钟（本机踩过）
     try:
@@ -404,12 +361,13 @@ def _git_raw(args):
 
 
 def remotes_by_host():
-    """按 **URL** 挑出要推的远端：GitHub 主源 + GitCode 被动镜像（仅同步源码/tag）。
+    """按 **URL** 挑出要推的远端：**只推 GitHub 主源**。
 
-    本仓库的 remote 名字是历史遗留：GitHub 叫 `origin`。`gitee` 早已禁止上传（451），
-    2026-11-11 线上仓库已清空、本机 remote 与跟踪引用全部删除且禁止再添加；`atomgit` 入口的
-    remote 也已删除。按名字写死会推错地方；按 URL 认则无论谁将来改名、重指，都只会推到这两个平台，
-    **gitee 永远不会被推到**（升级源要是回到那个 451 的死仓库，用户就升不上来了）。
+    【2026-11-25 红线第 36 条】所有程序只发 GitHub：Release、附件、升级源、源码/tag 推送
+    一律只走 GitHub。GitCode（=AtomGit）降为纯 Pull 被动镜像，**发版流水线不再主动 push
+    GitCode**（不建版、不传附件、不验真、也不在推送列表里硬推）；Gitee 早已禁推（451）。
+    本仓库 GitHub 的 remote 名字是历史遗留，叫 `origin`。按 URL 认远端、不按名字写死，
+    **gitee / atomgit 永远不会被推到**。
     """
     got, other = {}, []
     for line in run(['git', 'remote', '-v']).splitlines():
@@ -427,33 +385,39 @@ def remotes_by_host():
             other.append('%s(%s)' % (name, low.split('//')[-1].split('/')[0]))
     if 'github' not in got:
         raise RuntimeError('本仓库没有 GitHub 的 remote —— 拒绝发布（GitHub 是主源，必须在）')
+    # GitCode 被动镜像，发版不主动推；其余历史入口一并跳过。
+    skipped = [got['gitcode']] if 'gitcode' in got else []
     if other:
-        print('   不推这些 remote（已停更或自动镜像）:', ', '.join(other))
-    # GitHub 主源在前；GitCode 是被动镜像，存在才同步源码/tag。
-    order = [got['github']]
-    if 'gitcode' in got:
-        order.append(got['gitcode'])
-    return order
+        skipped += other
+    if skipped:
+        print('   不推这些 remote（GitCode 被动镜像 / 已停更）:', ', '.join(skipped))
+    return [got['github']]
 
 
 def _push(remote, ref):
-    """推一个 ref；GitHub 那条线本机时不时裸连不上，失败就带一次本地代理重试。
+    """推一个 ref；git 直连为主，代理只在私有配置/环境变量显式给了才兜底一次。
 
-    代理地址优先环境变量 HOTNEWS_GIT_PROXY / 本机配置 git_proxy（默认 127.0.0.1:8787，
-    就是狐径自己的本地代理）。代理只在"这次推送"上用 -c 传进去，同样不落 git config。
+    凭据：显式清空系统级 helper-selector（避免残留凭据助手弹窗），只从本机只读凭据文件取。
+    代理：GIT_PROXY 为空就**不再**默认兜 127.0.0.1:8787（本机没常驻代理，兜一条死链路只会
+    白等两次超时）；真需要时在 ~/.hotnews-publish.json 或 HOTNEWS_GIT_PROXY 显式给。
     推完一律用 ls-remote 复核远端 sha：退出码只说明"这条命令没崩"，说明不了"远端变了"。
     """
     if not _remote_exists(remote):
         print('   跳过 %s：本仓库没有这个 remote' % remote)
         return False
     want = _git_raw(['git', 'rev-parse', 'HEAD' if ref == BRANCH else ref])[1].split()[-1]
-    code, out = _git_raw(['git', 'push', remote, ref])
+    cred_c = ['-c', 'credential.helper=',
+              '-c', 'credential.helper=store --file=' + GIT_CRED.as_posix()]
+    code, out = _git_raw(['git', 'push', remote, ref], cred_c)
     if code != 0:
-        print('   裸推失败(%s)，带本地代理 %s 再试一次' % (out.strip()[-160:], GIT_PROXY))
-        code, out = _git_raw(['git', '-c', 'http.https://github.com/.proxy=' + GIT_PROXY,
-                              'push', remote, ref])
-        if code != 0:
-            print('   带代理也失败:', out.strip()[-200:])
+        if GIT_PROXY:
+            print('   直连失败(%s)，带本地代理 %s 再试一次' % (out.strip()[-160:], GIT_PROXY))
+            code, out = _git_raw(['git', '-c', 'http.https://github.com/.proxy=' + GIT_PROXY,
+                                  'push', remote, ref], cred_c)
+            if code != 0:
+                print('   带代理也失败:', out.strip()[-200:])
+        else:
+            print('   直连失败(%s)；未配置代理，不再兜底' % out.strip()[-160:])
     # ls-remote 每行是「sha<TAB>refs/...」—— 取第 0 列才是 sha。
     # 2026-10-29 修：这里原来写的是 [1:2]（拿到的是 ref 名），于是每次推完都判"没生效"，
     # 1.5.9 发版就卡在这句假警报上。另外刚推完 GitCode 偶尔只读节点还没同步，
@@ -495,75 +459,11 @@ def git_push_branch():
     targets = remotes_by_host()
     for remote in targets:
         _push(remote, BRANCH)
-    print('④+ main 已推 %s（GitCode 主源 + GitHub 镜像）—— 此刻起线上才开始提示升级'
+    print('④+ main 已推 %s（GitHub 主源）—— 此刻起线上才开始提示升级'
           % '+'.join(targets))
 
 
 # ---------- 发行版 ----------
-def _gc_get_release(tag, token):
-    """按 tag 取发行版。注意 GitCode 的响应里**没有 id 字段**（Gitee 有），一切按 tag 寻址。"""
-    try:
-        return api('GET', '/repos/%s/%s/releases/tags/%s' % (OWNER, REPO, quote(tag)), token)
-    except Exception:
-        return None
-
-
-def gitcode_release(ver, token, assets, notes):
-    """GitCode：建发行版 + 逐个附件走"取上传地址 → PUT 原始字节"两步。
-
-    2026-10-26 实测过的正解（Gitee 那套 attach_files 接口在 GitCode 一律 404/405）：
-      ① POST /repos/{o}/{r}/releases                 body 里 target_commitish=main
-      ② GET  /repos/{o}/{r}/releases/{tag}/upload_url?file_name=xxx   → {url, headers}
-      ③ PUT  文件原始字节到那个 OBS url，平台回调把附件登记到发行版上
-    同名附件：先比大小，大小一致就当已传好跳过；**大小不同必须人工到网页上删掉旧的**
-    （GitCode 没有可靠的删除附件接口，宁可停下来也不能让线上留两份不同字节的同名包）。
-    """
-    tag = 'v%s' % ver
-    rel = _gc_get_release(tag, token)
-    if rel and rel.get('tag_name') == tag:
-        print('⑤ GitCode 发行版已存在:', tag, '| 附件', len(rel.get('assets') or []), '个')
-    else:
-        rel = api('POST', '/repos/%s/%s/releases' % (OWNER, REPO), token, payload={
-            'tag_name': tag, 'name': tag, 'body': notes or tag,
-            'target_commitish': BRANCH, 'prerelease': False})
-        if not rel or not rel.get('tag_name'):
-            raise RuntimeError('GitCode 建发行版失败: %s' % json.dumps(rel, ensure_ascii=False)[:300])
-        print('⑤ GitCode 发行版已创建:', rel.get('tag_name'))
-    have = {a.get('name'): a for a in ((_gc_get_release(tag, token) or {}).get('assets') or [])}
-    for path in assets:
-        p = str(path)
-        name = os.path.basename(p)
-        size = os.path.getsize(p)
-        old = have.get(name)
-        if old and old.get('size') == size:
-            print('   附件已在（同名同大小，跳过）:', name, size, 'B')
-            continue
-        if old:
-            raise RuntimeError('GitCode 上同名附件字节不同（线上 %s B / 本地 %d B）：%s\n'
-                               '请到 %s/%s/%s/releases/tag/%s 删掉旧附件再重发。'
-                               % (old.get('size'), size, name, GC_WEB, OWNER, REPO, tag))
-        j = api('GET', '/repos/%s/%s/releases/%s/upload_url' % (OWNER, REPO, quote(tag)),
-                token, extra={'file_name': name}, timeout=120)
-        up = (j or {}).get('url') or ((j or {}).get('data') or {}).get('url')
-        hd = (j or {}).get('headers') or ((j or {}).get('data') or {}).get('headers') or {}
-        if not up:
-            raise RuntimeError('拿不到上传地址: %s' % json.dumps(j, ensure_ascii=False)[:200])
-        data = io.open(p, 'rb').read()
-        h = dict(hd)
-        h['Content-Length'] = str(len(data))
-        req = _rq.Request(up, data=data, headers=h, method='PUT')
-        with _rq.urlopen(req, timeout=1800) as r:
-            if r.status not in (200, 201, 204):
-                raise RuntimeError('附件 PUT 失败 %s -> %s' % (name, r.status))
-        print('   附件已上传:', name, size, 'B')
-    chk = _gc_get_release(tag, token) or {}
-    names = [a.get('name') for a in (chk.get('assets') or [])]
-    missing = [os.path.basename(str(p)) for p in assets if os.path.basename(str(p)) not in names]
-    if missing:
-        raise RuntimeError('GitCode 回读缺少附件（平台没登记上）:', ', '.join(missing))
-    print('   下载页:', '%s/%s/%s/releases/tag/%s' % (GC_WEB, OWNER, REPO, tag))
-
-
 def sync_github(ver, assets, notes_file):
     """GitHub 侧走 gh.exe（本机登录态自己挑线路），不用 github.com 的 git 端口。
 
@@ -595,7 +495,8 @@ def _gh(args):
 
 
 # ---------- 验真 ----------
-VERIFY_PROXY = os.environ.get('HOTNEWS_VERIFY_PROXY') or GIT_PROXY
+# 【2026-11-25】本机不再常驻本地代理；默认直连取字节，代理只在显式配置时作为备选链路。
+VERIFY_PROXY = os.environ.get('HOTNEWS_VERIFY_PROXY') or GIT_PROXY or ''
 
 
 # 超时的两条口径要分开写，这是 2026-10-26 拿一脚坑换来的：
@@ -618,10 +519,10 @@ def _progress(label, got, expect, secs):
 
 
 def _download(url, timeout=SOCK_TMO, tries=2, headers=None, deadline=None, expect=0, label=''):
-    """取一个 URL 的原始字节；失败重试，github 那侧再借一次本地代理。
+    """取一个 URL 的原始字节；失败重试，github 那侧在显式配置了代理时再借一次。
 
-    维护机到 GitHub 的路**时通时断**（狐径自己就是为这个存在的），直连拿不到就走
-    HOTNEWS_VERIFY_PROXY（默认 127.0.0.1:8787，即本机狐径的代理端口）。代理只决定这台
+    维护机到 GitHub 的路**时通时断**。默认直连；只有在 HOTNEWS_VERIFY_PROXY /
+    ~/.hotnews-publish.json 的 git_proxy 显式给了代理时，才把它作为备选链路。代理只决定这台
     机器"怎么把字节取回来"，比对的是字节本身，结论不受影响。
 
     边下边攒、每 15 秒报一次进度，到 deadline 就**明确放弃**（换下一条链路，不再重试同一条）。
@@ -725,11 +626,6 @@ def _gh_asset(tag, name, deadline=DEADLINE_BIG, expect=0):
     return None, ''
 
 
-def gc_asset_url(ver, name):
-    """GitCode 附件的下载口形状（2026-10-26 实测：与 Gitee 同名同形，不带令牌也能下）。"""
-    return '%s/%s/%s/releases/download/%s/%s' % (GC_WEB, OWNER, REPO, 'v%s' % ver, quote(name))
-
-
 def verify(ver, assets):
     """把附件下回来比 sha256。GitHub 裸下载口不通时自动改走 API 附件口再试。
 
@@ -746,7 +642,7 @@ def verify(ver, assets):
         dl = DEADLINE_BIG if big else DEADLINE_SMALL
         for label, url in (
                 ('GitHub', 'https://github.com/%s/%s/releases/download/%s/%s'
-                 % (OWNER, REPO, tag, quote(name)))):
+                 % (OWNER, REPO, tag, quote(name))),):
             # GitHub 那条浏览器下载口**只试一次**：它 302 到 objects.githubusercontent.com，
             # 在这台机器上要么几秒回来、要么就慢到没法看 —— 卡在那里重试没有意义。
             # （2026-10-26 一次只读验真就是被 600 s × 2 轮 × 2 条链路拖了二十分钟没出结果。）
@@ -921,9 +817,6 @@ def cmd_release(ver, skip_build=False, notes_file=None, with_github=False):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
-    token = load_token() if GC_PUBLISH else None
-    if GC_PUBLISH and not token:
-        sys.exit('没有令牌, 先跑: python tools/publish.py set-token <令牌>')
     t0 = time.time()
 
     notes = load_notes(ver, notes_file)
@@ -974,10 +867,6 @@ def cmd_release(ver, skip_build=False, notes_file=None, with_github=False):
     #    附件验真 → **main 最后推**（升级源就是 main 上那份 version.json，它一上线
     #    全体老用户立刻开始提示升级；那时附件必须已经躺好，否则用户点了个 404）。
     git_commit_and_tag(ver)
-    if GC_PUBLISH:
-        gitcode_release(ver, token, assets, notes)
-    else:
-        print('⑤ GitCode 为被动镜像，本次不建发行版、不传附件（仅随 main/tag 同步源码）')
     nf = notes_file
     if not nf:
         nf = REPO_DIR / '_notes.md'
@@ -1003,17 +892,7 @@ def main():
         print(__doc__)
         return
     a = sys.argv[1]
-    if a == 'set-token' and len(sys.argv) > 2:
-        save_token(sys.argv[2])
-        u = api('GET', '/user', sys.argv[2].strip())
-        print('令牌有效, 用户 =', u.get('login') or u.get('name'))
-    elif a == 'whoami':
-        t = load_token()
-        if not t:
-            sys.exit('没有存过令牌')
-        u = api('GET', '/user', t)
-        print('用户 =', u.get('login') or u.get('name'))
-    elif a == 'verify' and len(sys.argv) > 2:
+    if a == 'verify' and len(sys.argv) > 2:
         sys.exit(cmd_verify(sys.argv[2]))
     elif a == 'release' and len(sys.argv) > 2:
         sys.exit(cmd_release(sys.argv[2],
