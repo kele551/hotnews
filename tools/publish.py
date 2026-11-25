@@ -73,6 +73,9 @@ REPO_DIR = Path(__file__).resolve().parent.parent
 OWNER, REPO = 'kele551', 'hotnews'
 BRANCH = 'main'
 GH_REPO = '%s/%s' % (OWNER, REPO)
+# GitHub Pages 兜底线路（github.io 官方 CDN，与 Release/raw 走不同段）。
+# 产物随 main 上的 docs/ 发布；验签 / sha256 / 尺寸口径与主源完全一致。
+PAGES_BASE = 'https://%s.github.io/%s' % (OWNER, REPO)
 # 【2026-11-25 红线第 36 条】GitHub 是唯一对外主源：Release、附件、升级源 version.json/.sig、
 # 源码/tag 推送一律只发 GitHub。GitCode（=AtomGit）只作 Pull 被动镜像，本脚本**完全不主动碰它**
 # （不建版、不传附件、不验真、不 push）；Gitee 早已禁推（451）。
@@ -143,6 +146,27 @@ def asset_exe(ver):
     if not dst.is_file() or dst.stat().st_size != BUILD_EXE.stat().st_size:
         shutil.copy2(str(BUILD_EXE), str(dst))
     return dst
+
+
+def stage_pages_assets(exe, vj, vsig):
+    """把本次产物复制进 docs/，供 GitHub Pages 静态托管作下载兜底。
+
+    - 旧版本 exe 先清掉，只留当前版，避免仓库被历史二进制撑大；
+    - version.json / .sig 覆盖同名（Pages 与 raw 是同一份字节、同一套签名）；
+    - 放 .nojekyll 禁用 Jekyll 转换，保证二进制原样发布。
+    """
+    docs = REPO_DIR / 'docs'
+    docs.mkdir(exist_ok=True)
+    for old in docs.glob('hotnews-v*.exe'):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    shutil.copy2(str(exe), str(docs / exe.name))
+    shutil.copy2(str(vj), str(docs / vj.name))
+    shutil.copy2(str(vsig), str(docs / vsig.name))
+    (docs / '.nojekyll').touch(exist_ok=True)
+    print('②+ 产物已入 docs/ 供 Pages 兜底：%s, version.json, version.json.sig' % exe.name)
 
 # ---- Ed25519 签名私钥（升级通道加固，2026-10-16）------------------------------
 # 取值顺序与上面那套完全一致：① 环境变量 HOTNEWS_ED25519_KEY →
@@ -274,6 +298,7 @@ def make_version_json(exe, notes='', sign_key=None):
     ver = str(d.get('version') or '')
     d['launcher'] = {
         'url': 'https://github.com/%s/releases/download/v%s/%s' % (GH_REPO, ver, exe.name),
+        'pages_url': '%s/%s' % (PAGES_BASE, exe.name),
         'sha256': hashlib.sha256(data).hexdigest().upper(),
         'size': len(data),
     }
@@ -837,6 +862,7 @@ def cmd_release(ver, skip_build=False, notes_file=None, with_github=False):
     # 私钥在这一步就定下来（找不到直接中止，不会走到"已经打包/已改版本号"才发现发不了）
     sign_key = resolve_sign_key()
     vj, vsig = make_version_json(exe, notes, sign_key)
+    stage_pages_assets(exe, vj, vsig)
 
     # ── 发版铁律：先自检、后发布（2026-10-08 定，四款一样）────────────────
     # 起因：发完版才发现"升级后程序可能起不来"(杀软拦第一次启动)。

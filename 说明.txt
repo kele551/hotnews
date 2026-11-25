@@ -1,4 +1,4 @@
-hotnews · 热点新闻检索 v1.6.1
+hotnews · 热点新闻检索 v1.6.2
 作者：海风（kele551）   https://github.com/kele551/hotnews
 =====================================
 
@@ -14,7 +14,7 @@ hotnews · 热点新闻检索 v1.6.1
   运行：uvicorn，默认 http://localhost:8000
   入口：app.py（选端口 / 开浏览器 / 单实例检测）
 
-三、数据源（v1.6.1 现役清单）
+三、数据源（v1.6.2 现役清单）
 
   ┌─ 实时热榜 · 国内 ─── 2026-11-10 由三家扩到六家 ────────────
   │ 澎湃新闻   cache.thepaper.cn 官方 contentapi 的 hotNews

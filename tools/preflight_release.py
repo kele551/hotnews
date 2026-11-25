@@ -606,6 +606,216 @@ if _sv is not None:
     except Exception as _e:
         check('升级通道证书兜底断言可执行', False, '%s: %s' % (type(_e).__name__, _e))
 
+    # ⑭-2 升级下载断点续传演练（2026-11-25 事故固化：慢抖动链路单次下载留下 0 字节残包；
+    #      现在必须断流后从已下位置续传、拼接完整且 sha256 对得上。本地起服务模拟，不联网、不碰用户数据目录）
+    try:
+        import hashlib as _hl
+        import http.server as _hsrv
+        import shutil as _shr2
+        import tempfile as _tf3
+        import threading as _thr2
+        import updater as _up2
+
+        _blob = (bytes(range(256)) * 1200)[:300000]
+        _blob_sha = _hl.sha256(_blob).hexdigest().upper()
+
+        class _DrillHandler(_hsrv.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                srv = self.server
+                srv.hits += 1
+                if srv.hits == 1:
+                    # 第一轮：只发前一半就断开，模拟慢链路中途断流
+                    half = len(_blob) // 2
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(half))
+                    self.end_headers()
+                    self.wfile.write(_blob[:half])
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
+                rng = self.headers.get('Range')
+                if rng:
+                    start = int(rng.split('=')[1].split('-')[0])
+                    self.send_response(206)
+                    self.send_header('Content-Range', 'bytes %d-%d/%d'
+                                     % (start, len(_blob) - 1, len(_blob)))
+                    self.send_header('Content-Length', str(len(_blob) - start))
+                    self.end_headers()
+                    self.wfile.write(_blob[start:])
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(_blob)))
+                    self.end_headers()
+                    self.wfile.write(_blob)
+
+        _srv = _hsrv.ThreadingHTTPServer(('127.0.0.1', 0), _DrillHandler)
+        _srv.blob = _blob
+        _srv.hits = 0
+        _thr2.Thread(target=_srv.serve_forever, daemon=True).start()
+
+        _dtmp = _tf3.mkdtemp(prefix='hotnews_up_drill_')
+        _orig_exe = _up2.EXE_PATH
+        _orig_pkg = _up2.UPDATE_PKG
+        try:
+            _up2.EXE_PATH = os.path.join(_dtmp, 'drill.exe')
+            _up2.UPDATE_PKG = os.path.join(_dtmp, 'hotnews_update.exe')
+            _remote = {"version": "9.9.9-drill", "launcher": {
+                "url": "http://127.0.0.1:%d/drill.exe" % _srv.server_address[1],
+                "size": len(_blob), "sha256": _blob_sha}}
+            _ok, _msg = _up2.download_and_prepare(_remote)
+            _pkg = _up2.UPDATE_PKG
+            _size_ok = os.path.exists(_pkg) and os.path.getsize(_pkg) == len(_blob)
+            _sha_ok = _size_ok and _up2._sha256(_pkg) == _blob_sha
+            check('断流后断点续传拼接完整且 sha256 对得上',
+                  bool(_ok) and _size_ok and _sha_ok,
+                  'ok=%s msg=%s hits=%d' % (_ok, _msg, _srv.hits))
+            check('续传确实发生了重试（不止一次请求）', _srv.hits >= 2,
+                  'hits=%d' % _srv.hits)
+        finally:
+            _up2.EXE_PATH = _orig_exe
+            _up2.UPDATE_PKG = _orig_pkg
+            _srv.shutdown()
+            for _f in ('hotnews_update.vbs', 'hotnews_update.bat', 'hotnews_update.exe',
+                       'hotnews_update.exe.part', 'hotnews_update.result'):
+                try:
+                    os.remove(os.path.join(_tf3.gettempdir(), _f))
+                except Exception:
+                    pass
+            _shr2.rmtree(_dtmp, ignore_errors=True)
+    except Exception as _e:
+        check('升级下载断点续传演练可执行', False, '%s: %s' % (type(_e).__name__, _e))
+
+    # ⑭-3 版本源拉取网络重试演练（2026-11-25：raw 段抖动首轮超时/5xx，单次请求会误判「无更新」；
+    #      现在小文件 GET 内部重试若干轮，首轮失败次轮成功仍能拿到 version.json 字节。本地起服务模拟，不联网）
+    try:
+        import http.server as _hsrv3
+        import threading as _thr3
+        import updater as _up3
+
+        class _SrcHandler(_hsrv3.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                srv = self.server
+                srv.hits += 1
+                if srv.hits == 1:
+                    self.send_response(500)
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                body = b'{"version":"9.9.9-drill"}'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        _srv3 = _hsrv3.ThreadingHTTPServer(('127.0.0.1', 0), _SrcHandler)
+        _srv3.hits = 0
+        _thr3.Thread(target=_srv3.serve_forever, daemon=True).start()
+        try:
+            _url3 = 'http://127.0.0.1:%d/version.json' % _srv3.server_address[1]
+            _content, _why = _up3._http_get_bytes(_url3)
+            check('版本源首轮失败后重试拿到字节', _content == b'{"version":"9.9.9-drill"}',
+                  'why=%s hits=%d' % (_why, _srv3.hits))
+            check('版本源确实发生了重试（不止一次请求）', _srv3.hits >= 2,
+                  'hits=%d' % _srv3.hits)
+        finally:
+            _srv3.shutdown()
+    except Exception as _e:
+        check('版本源重试演练可执行', False, '%s: %s' % (type(_e).__name__, _e))
+
+    # ⑭-4 下载候选 Pages 兜底演练（2026-11-25：Release 段被卡时自动转 Pages 稳定段；
+    #      主源 500/不通，备源 Pages 正常，最终拼接完整且 sha256 对得上。本地起两个服务模拟，不联网）
+    try:
+        import hashlib as _hl4
+        import http.server as _hsrv4
+        import shutil as _shr4
+        import tempfile as _tf4
+        import threading as _thr4
+        import updater as _up4
+
+        _blob4 = (bytes(range(256)) * 240)[:60000]
+        _blob4_sha = _hl4.sha256(_blob4).hexdigest().upper()
+
+        class _DeadHandler(_hsrv4.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.server.hits += 1
+                self.send_response(500)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+
+        class _OkHandler(_hsrv4.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.server.hits += 1
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(_blob4)))
+                self.end_headers()
+                self.wfile.write(_blob4)
+
+        _srvA = _hsrv4.ThreadingHTTPServer(('127.0.0.1', 0), _DeadHandler)
+        _srvA.hits = 0
+        _srvB = _hsrv4.ThreadingHTTPServer(('127.0.0.1', 0), _OkHandler)
+        _srvB.hits = 0
+        _thr4.Thread(target=_srvA.serve_forever, daemon=True).start()
+        _thr4.Thread(target=_srvB.serve_forever, daemon=True).start()
+
+        _dtmp4 = _tf4.mkdtemp(prefix='hotnews_pages_drill_')
+        _orig_exe4 = _up4.EXE_PATH
+        _orig_pkg4 = _up4.UPDATE_PKG
+        try:
+            _up4.EXE_PATH = os.path.join(_dtmp4, 'drill.exe')
+            _up4.UPDATE_PKG = os.path.join(_dtmp4, 'hotnews_update.exe')
+            _remote4 = {"version": "9.9.9-drill", "launcher": {
+                "url": 'http://127.0.0.1:%d/a.exe' % _srvA.server_address[1],
+                "pages_url": 'http://127.0.0.1:%d/b.exe' % _srvB.server_address[1],
+                "size": len(_blob4), "sha256": _blob4_sha}}
+            _ok4, _msg4 = _up4.download_and_prepare(_remote4)
+            _pkg4 = _up4.UPDATE_PKG
+            _size_ok4 = os.path.exists(_pkg4) and os.path.getsize(_pkg4) == len(_blob4)
+            _sha_ok4 = _size_ok4 and _up4._sha256(_pkg4) == _blob4_sha
+            check('主源失败后转 Pages 兜底下载完整且 sha256 对得上',
+                  bool(_ok4) and _size_ok4 and _sha_ok4,
+                  'ok=%s msg=%s 主hits=%d 备hits=%d' % (_ok4, _msg4, _srvA.hits, _srvB.hits))
+            check('确实先试过主源再转备源', _srvA.hits >= 1 and _srvB.hits >= 1,
+                  '主hits=%d 备hits=%d' % (_srvA.hits, _srvB.hits))
+        finally:
+            _up4.EXE_PATH = _orig_exe4
+            _up4.UPDATE_PKG = _orig_pkg4
+            _srvA.shutdown()
+            _srvB.shutdown()
+            for _f in ('hotnews_update.vbs', 'hotnews_update.bat', 'hotnews_update.exe',
+                       'hotnews_update.exe.part', 'hotnews_update.result'):
+                try:
+                    os.remove(os.path.join(_tf4.gettempdir(), _f))
+                except Exception:
+                    pass
+            _shr4.rmtree(_dtmp4, ignore_errors=True)
+    except Exception as _e:
+        check('Pages 兜底演练可执行', False, '%s: %s' % (type(_e).__name__, _e))
+
+    # ⑭-5 Pages 兜底线路静态配对照（2026-11-25：客户端候选 / 流水线入 docs / gitignore 例外，三处缺一不可）
+    try:
+        _up_src = read(os.path.join(REPO, 'updater.py'))
+        _pub_src = read(os.path.join(REPO, 'tools', 'publish.py'))
+        _gi_src = read(os.path.join(REPO, '.gitignore'))
+        check('客户端带 Pages 版本源与下载候选',
+              'kele551.github.io/hotnews/version.json' in _up_src and 'pages_url' in _up_src)
+        check('流水线写 pages_url 并把产物入 docs',
+              'PAGES_BASE' in _pub_src and 'pages_url' in _pub_src and 'stage_pages_assets' in _pub_src)
+        check('gitignore 放行 docs 下当前版 exe', '!docs/*.exe' in _gi_src)
+    except Exception as _e:
+        check('Pages 线路静态配对照可执行', False, '%s: %s' % (type(_e).__name__, _e))
+
     # ⑮ 静态界面文件自愈（2026-10-18 事故固化：%TEMP%\_MEIxxxx\static 被清理后，
     #    页面只剩兜底文字、用户报「打开没有显示」—— 服务其实一直正常）
     try:
@@ -902,9 +1112,16 @@ else:
         # GitHub 对**脚本请求**的这几个页面一律回 404（实测连 torvalds/linux/stargazers
         # 都是 404），浏览器里其实打得开 —— 拿它判死链会假红，只打印、不计红。
         _bot404 = bool(re.search(r'github\.com/[^/]+/[^/]+/(stargazers|watchers|graphs/.*)$', _u))
+        # 升级源清单 / 兜底包地址：发版流水线 stage 后才上线，发版前自检时 404 属正常时序，
+        # 不算死链（同 bot404：只打印、不计红）。
+        _src404 = bool(re.search(r'(raw\.githubusercontent\.com|github\.io)', _u)
+                       and re.search(r'/(version\.json(\.sig)?|hotnews-v[^/]*\.exe)$', _u))
         if _st in (404, 410) and _bot404:
             _info.append('%s -> HTTP %s（GitHub 对脚本请求的已知 404，浏览器可打开）' % (_u, _st))
             say('     · HTTP %s  %s（GitHub 对脚本请求的已知 404）' % (_st, _u))
+        elif _st in (404, 410) and _src404:
+            _info.append('%s -> HTTP %s（升级源地址，发版 stage 后上线，发版前 404 属正常时序）' % (_u, _st))
+            say('     · HTTP %s  %s（升级源兜底地址，待发版 stage）' % (_st, _u))
         elif _st in (404, 410):
             _dead.append('%s -> HTTP %s' % (_u, _st))
             say('     · HTTP %s  %s' % (_st, _u))

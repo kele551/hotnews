@@ -4,13 +4,15 @@
 hotnews 自动更新模块
 --------------------------------------------------------------
 版本来源：GitHub 主仓库的 version.json（下载与校验只走 GitHub）
-  https://raw.githubusercontent.com/kele551/hotnews/main/version.json
+  主源 raw：https://raw.githubusercontent.com/kele551/hotnews/main/version.json
+  兜底 Pages：https://kele551.github.io/hotnews/version.json
 
 version.json 结构（含 launcher 字段才支持自动下载）：
   {
     "version": "1.2.0",
     "launcher": {
-      "url":    "https://github.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
+      "url":        "https://github.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
+      "pages_url":  "https://kele551.github.io/hotnews/hotnews-v1.2.0.exe",
       "sha256": "大写十六进制，64 位",
       "size":   14234524
     },
@@ -28,6 +30,7 @@ import os
 import ssl
 import sys
 import json
+import time
 import hashlib
 import subprocess
 import shutil
@@ -44,7 +47,10 @@ except ImportError:
 # 候选拿到 **原始字节** 后统一走同一套 Ed25519 验签，验不过就拒绝 —— 没有私钥照样签不出来。
 # ⚠ GitHub 侧必须也放**完整版** version.json（带 launcher）+ 与之配套的 version.json.sig。
 REMOTE_VERSION_URL_GH = "https://raw.githubusercontent.com/kele551/hotnews/main/version.json"
-REMOTE_VERSION_URLS = (REMOTE_VERSION_URL_GH,)
+# Pages 兜底线路（github.io 官方 CDN，与 raw 走不同段；raw 抖动/超时后转这里）。
+# 两份 version.json 是同一份字节、同一套 Ed25519 签名，验签口径不变。
+REMOTE_VERSION_URL_PAGES = "https://kele551.github.io/hotnews/version.json"
+REMOTE_VERSION_URLS = (REMOTE_VERSION_URL_GH, REMOTE_VERSION_URL_PAGES)
 
 # 【2026-10-07 升级通道加固】离线生成的 Ed25519 公钥；私钥只在作者机器的密钥目录里，
 # 绝不进仓库。客户端用它验证 version.json 的签名，这样即便 GitHub 账号被盗、或那侧被塞了东西，
@@ -68,6 +74,23 @@ RESULT_FILE = os.path.join(tempfile.gettempdir(), "hotnews_update.result")
 # （如 ConnectionError / CERTIFICATE_VERIFY_FAILED），check() 会把它拼进提示 ——
 # 以前一律是"无法连接更新源"六个字，真实原因（网络？证书？验签？）只能靠猜。
 _last_reason = {"why": ""}
+
+# 【2026-11-25 慢抖动链路加固】家宽到 GitHub 常是「头能回来、body 又慢又断流」：
+# 单次 stream 在空闲读超时内拿不到多少字节，断流后把 .part 删掉从头再来，反复 0 字节。
+# 现在下载段改成：断点续传（Range，服务器回 206 就接着写）+ 多轮重试 + 空闲超时判流，
+# 已经下下来的字节不丢；最后仍然过「尺寸 + sha256」两道闸，安全口径不变。
+_dl_lock = threading.Lock()        # 防止检查更新 / 自动升级两个后台线程并发写同一个 .part
+DL_MAX_ROUNDS = 5                  # 断流后最多续传几轮
+DL_CONNECT_TIMEOUT = 8             # 建连超时（秒）
+DL_READ_IDLE_TIMEOUT = 30         # 两次收到数据之间的空闲超时（秒）——慢流不算断，30s 一个字节不来才算断
+DL_RETRY_GAP = 2                   # 两轮之间等待（秒）
+
+# 版本源（version.json / .sig）是小文件，但走同一条抖动段：建连或首包偶尔超时。
+# 网络层重试若干轮；验签失败属安全问题，不重试、直接换下一个候选。
+SRC_MAX_ROUNDS = 3                 # 单个候选网络异常/非 200 时最多重试几轮
+SRC_CONNECT_TIMEOUT = 5            # 建连超时（秒）
+SRC_READ_TIMEOUT = 10              # 两次收数据间空闲超时（秒）
+SRC_RETRY_GAP = 1.5                # 两轮之间等待（秒）
 
 
 def _fetch_reason():
@@ -148,6 +171,30 @@ def _sha256(path):
     return h.hexdigest().upper()
 
 
+def _http_get_bytes(url):
+    """带网络重试的小文件 GET（version.json / .sig）。
+
+    返回 (content, None) 成功；(None, 原因) 所有轮次都失败。
+    只对网络异常 / 非 200 重试；内容是否可信交给上层验签判断。
+    """
+    timeout = httpx.Timeout(connect=SRC_CONNECT_TIMEOUT, read=SRC_READ_TIMEOUT,
+                            write=SRC_CONNECT_TIMEOUT, pool=SRC_CONNECT_TIMEOUT)
+    last = ""
+    for round_no in range(1, SRC_MAX_ROUNDS + 1):
+        try:
+            r = httpx.get(url, timeout=timeout, follow_redirects=True, trust_env=False,
+                          verify=_updater_verify(),
+                          headers={"User-Agent": "hotnews-updater"})
+            if r.status_code == 200:
+                return r.content, None
+            last = f"HTTP {r.status_code} {url.split('/')[2]}"
+        except Exception as ex:
+            last = f"{type(ex).__name__} {url.split('/')[2]}"
+        if round_no < SRC_MAX_ROUNDS:
+            time.sleep(SRC_RETRY_GAP)
+    return None, last
+
+
 def fetch_remote():
     """拉远端 version.json，**验签通过**才返回 dict；失败/被篡改返回 None。
 
@@ -162,33 +209,24 @@ def fetch_remote():
         return None
     _last_reason["why"] = ""
     # 候选按顺序试（当前仅 GitHub 主源）；每个都要求「HTTP 200 + Ed25519 验签通过」才采用，
-    # 任一环节不过就换下一个。
+    # 任一环节不过就换下一个。网络抖动在 _http_get_bytes 内部重试，验签失败不重试。
     for url in REMOTE_VERSION_URLS:
-        try:
-            # trust_env=False：不走系统/环境代理，直连 Gitee 更快更稳（同 server._fetch）
-            # verify=_updater_verify()：见上面注释 —— certifi 文件被清走时自动退到系统证书库。
-            r = httpx.get(url, timeout=5, follow_redirects=True, trust_env=False,
-                          verify=_updater_verify(),
-                          headers={"User-Agent": "hotnews-updater"})
-            if r.status_code != 200:
-                _last_reason["why"] = f"HTTP {r.status_code} {url.split('/')[2]}"
-                continue
-            raw = r.content                      # 验签必须用**原始字节**，不能用重新序列化的
-            # 2026-10-17: 升级源可能带查询串（GitCode 的 ?ref=main），.sig 要插在 ? 之前
-            if "?" in url:
-                _p, _q = url.split("?", 1)
-                _sig_url = _p + ".sig?" + _q
-            else:
-                _sig_url = url + ".sig"
-            ok, why = _verify_sig(raw, _sig_url)
-            if not ok:
-                _last_reason["why"] = why
-                print(f"[warn] 升级源验签失败（{why}），已忽略这次更新信息")
-                continue
-            return json.loads(raw.decode("utf-8"))
-        except Exception as ex:
-            _last_reason["why"] = f"{type(ex).__name__} {url.split('/')[2]}"
+        raw, why = _http_get_bytes(url)
+        if raw is None:
+            _last_reason["why"] = why
             continue
+        # 2026-10-17: 升级源可能带查询串（GitCode 的 ?ref=main），.sig 要插在 ? 之前
+        if "?" in url:
+            _p, _q = url.split("?", 1)
+            _sig_url = _p + ".sig?" + _q
+        else:
+            _sig_url = url + ".sig"
+        ok, why = _verify_sig(raw, _sig_url)
+        if not ok:
+            _last_reason["why"] = why
+            print(f"[warn] 升级源验签失败（{why}），已忽略这次更新信息")
+            continue
+        return json.loads(raw.decode("utf-8"))
     return None
 
 
@@ -199,12 +237,10 @@ def _verify_sig(raw, sig_url):
     except Exception:
         return False, "验签模块缺失"    # fail-closed：宁可不让升级，也绝不放行未验签的更新
     try:
-        s = httpx.get(sig_url, timeout=5, follow_redirects=True, trust_env=False,
-                      verify=_updater_verify(),
-                      headers={"User-Agent": "hotnews-updater"})
-        if s.status_code != 200:
-            return False, f"拿不到签名 HTTP {s.status_code}"
-        sig = bytes.fromhex(s.text.strip())
+        sig_bytes, why = _http_get_bytes(sig_url)
+        if sig_bytes is None:
+            return False, why or "拿不到签名"
+        sig = bytes.fromhex(sig_bytes.decode("utf-8").strip())
         if _ed25519.checkvalid(sig, raw, bytes.fromhex(UPDATE_PUBKEY)):
             return True, ""
         return False, "签名不匹配"
@@ -270,6 +306,77 @@ def _read_local_version():
         return "1.1.0"
 
 
+def _download_one(src, part, total, expect, timeout):
+    """从单个源续传下载到 part，并过尺寸 / sha256 两道闸。
+
+    返回 None 表示成功（part 已校验通过，待调用方原子改名）；
+    返回错误原因字符串表示失败（残缺 part 已清掉，不碰已装的包）。
+    """
+    # 本地残留的 part 若比远端还大（旧版 / 损坏），清掉重来
+    if os.path.exists(part) and total and os.path.getsize(part) > total:
+        try:
+            os.remove(part)
+        except Exception:
+            pass
+    last_err = ""
+    for round_no in range(1, DL_MAX_ROUNDS + 1):
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        if total and have >= total:
+            break
+        headers = {"User-Agent": "hotnews-updater"}
+        if have > 0:
+            headers["Range"] = f"bytes={have}-"
+        try:
+            with httpx.stream("GET", src, timeout=timeout, follow_redirects=True,
+                              verify=_updater_verify(), headers=headers) as r:
+                if r.status_code == 200:
+                    # 服务器忽略 Range（从头给全量）：必须重置 part，否则新旧两段拼错位
+                    mode = "wb"; have = 0
+                elif r.status_code == 206:
+                    mode = "ab"
+                elif r.status_code == 416:
+                    # 本地偏移越界：part 比远端大，清掉下一轮从头来
+                    try:
+                        os.remove(part)
+                    except Exception:
+                        pass
+                    last_err = "本地残留分片越界，已重置"
+                    time.sleep(DL_RETRY_GAP)
+                    continue
+                else:
+                    return f"下载失败 HTTP {r.status_code}"
+                with open(part, mode) as f:
+                    for chunk in r.iter_bytes(65536):
+                        f.write(chunk)
+                        have += len(chunk)
+            if total and have >= total:
+                break
+            last_err = f"下载不完整 {have}/{total} 字节（第 {round_no} 轮）"
+        except Exception as ex:
+            cur = os.path.getsize(part) if os.path.exists(part) else 0
+            last_err = f"{type(ex).__name__}（第 {round_no} 轮，已下 {cur} 字节）"
+        if round_no < DL_MAX_ROUNDS:
+            time.sleep(DL_RETRY_GAP)
+
+    if not os.path.exists(part):
+        return last_err or "下载失败：未拿到文件"
+    got = os.path.getsize(part)
+    if total and got != total:
+        try:
+            os.remove(part)
+        except Exception:
+            pass
+        return last_err or f"下载不完整 {got}/{total} 字节"
+    if expect:
+        if _sha256(part) != expect:
+            try:
+                os.remove(part)
+            except Exception:
+                pass
+            return "校验失败，文件可能被篡改"
+    return None
+
+
 def download_and_prepare(remote):
     """
     下载新版 exe 到临时目录并校验，成功后生成替换脚本。
@@ -279,7 +386,9 @@ def download_and_prepare(remote):
         return False, "当前非打包环境，无法自动更新"
     launcher = remote.get("launcher") or {}
     url = launcher.get("url")
-    if not url:
+    pages_url = launcher.get("pages_url")
+    cands = [u for u in (url, pages_url) if u]
+    if not cands:
         return False, "远端未提供下载地址"
 
     tmp_exe = UPDATE_PKG
@@ -300,38 +409,31 @@ def download_and_prepare(remote):
             _write_replace_scripts(tmp_exe)
             return True, "新版本已就绪"
 
-    # 下载到 .part，**校验全部通过后才原子改名** —— 中途任何失败都不会碰已有的包
+    # 下载到 .part，**校验全部通过后才原子改名** —— 中途任何失败都不会碰已有的包。
+    # 【2026-11-25 慢抖动链路加固】断点续传（Range，206 接着写）+ 多轮重试 + 空闲超时判流；
+    # 下载候选按 Release → Pages 顺序兜底，单个源走完整续传，全失败才放弃。尺寸 / sha256 两道闸照旧。
     part = tmp_exe + ".part"
+    if not _dl_lock.acquire(blocking=False):
+        return False, "正在下载新版本，请稍候"
+    last_err = ""
     try:
-        try:
-            os.remove(part)
-        except Exception:
-            pass
-        with httpx.stream("GET", url, timeout=60, follow_redirects=True,
-                          verify=_updater_verify(),
-                          headers={"User-Agent": "hotnews-updater"}) as r:
-            if r.status_code != 200:
-                return False, f"下载失败 HTTP {r.status_code}"
-            got = 0
-            with open(part, "wb") as f:
-                for chunk in r.iter_bytes(65536):
-                    f.write(chunk)
-                    got += len(chunk)
-            if total and got != total:
-                os.remove(part)
-                return False, f"下载不完整 {got}/{total} 字节"
-        if expect:
-            actual = _sha256(part)
-            if actual != expect:
-                os.remove(part)
-                return False, "校验失败，文件可能被篡改"
-        os.replace(part, tmp_exe)          # 原子替换，Windows 上是同盘改名
-    except Exception as ex:
-        try:
-            os.remove(part)
-        except Exception:
-            pass
-        return False, f"下载失败: {type(ex).__name__}"
+        timeout = httpx.Timeout(connect=DL_CONNECT_TIMEOUT, read=DL_READ_IDLE_TIMEOUT,
+                                write=DL_CONNECT_TIMEOUT, pool=DL_CONNECT_TIMEOUT)
+        for src in cands:
+            # 跨源不续传：清掉上一个源留下的 part 从头来，避免两段不同源字节拼错位
+            if os.path.exists(part):
+                try:
+                    os.remove(part)
+                except Exception:
+                    pass
+            last_err = _download_one(src, part, total, expect, timeout)
+            if last_err is None:
+                os.replace(part, tmp_exe)          # 原子替换，Windows 上是同盘改名
+                break
+        else:
+            return False, last_err or "下载失败"
+    finally:
+        _dl_lock.release()
 
     # 写替换脚本：等待主程序退出 → 覆盖 → 重启（VBS 由 wscript 跑，无黑窗）
     # 【2026-10-09 修 低-5】.bat 与 .vbs **一起写出**：原来只写 .vbs，

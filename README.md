@@ -50,7 +50,7 @@
 
 ## 使用
 
-下载 [最新 Release](https://github.com/kele551/hotnews/releases) 里的 `hotnews-v1.6.1.exe`，双击运行，自动打开浏览器。
+下载 [最新 Release](https://github.com/kele551/hotnews/releases) 里的 `hotnews-v1.6.2.exe`，双击运行，自动打开浏览器。
 
 - 自动选端口（8000 起，被占则顺延）
 - 启动时自动检查更新（可关闭，见 `config.json`）
@@ -61,10 +61,10 @@
 
 ---
 
-## 数据源（v1.6.1）
+## 数据源（v1.6.2）
 
 <details>
-<summary><b>数据源（v1.6.1）</b>（点击展开）</summary>
+<summary><b>数据源（v1.6.2）</b>（点击展开）</summary>
 
 
 每个源都是**实测连通 + 带图**之后才加入的；实测失败的（无法访问、无图、停更）一律没有采用。
@@ -447,9 +447,10 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 > **只有出问题才提示一次**，并且始终保留旧版本可继续使用。详见下面「升级体验」一节。
 
 - 启动时后台静默检查 `version.json`
-- 更新源只走 GitHub 主源，**必须通过 Ed25519 验签**才被采用：
+- 更新源走 GitHub，**必须通过 Ed25519 验签**才被采用；主源不通或抖动时自动切下一条候选：
   1. `https://raw.githubusercontent.com/kele551/hotnews/main/version.json`（GitHub 主源）
-- 发现新版 → 后台下载 exe → 校验 sha256 → 自动替换重启（替换前还会再校验一次尺寸与 sha256）
+  2. `https://kele551.github.io/hotnews/version.json`（Pages 稳定线路兜底）
+- 发现新版 → 后台下载 exe（主线路 Release，不通时自动切 Pages 兜底；下载支持断点续传）→ 校验 sha256 → 自动替换重启（替换前还会再校验一次尺寸与 sha256）
 - 也可点页面「检查更新」按钮手动触发（手动触发同样不再弹确认框）
 
 ### 升级体验：默认自动、失败才提示

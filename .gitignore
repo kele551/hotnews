@@ -3,6 +3,8 @@ build_tmp/
 runtime/
 dist/
 *.exe
+# Pages 兜底线路：docs/ 里的当前版 exe 要入库供 github.io 静态托管
+!docs/*.exe
 *.zip
 *.log
 __pycache__/
