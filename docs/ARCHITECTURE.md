@@ -1,7 +1,7 @@
 # 项目结构与上手路线（热点新闻 hotnews）
 
 > 给想改代码的人：**15 分钟看懂这个项目从哪进、改哪儿、改完怎么验。**
-> 作者：海风（kele551） · 仓库：https://gitcode.com/kele551/hotnews
+> 作者：海风（kele551） · 仓库：https://github.com/kele551/hotnews
 
 ---
 
@@ -66,7 +66,7 @@
 | 改"国内 / 国际"怎么分 | `server.py` 的判定函数：`_has_cn_marker_title()`（标题里的中国标记）、`_is_domestic_for_intl()`（各栏目分支）、出口 `api_news()` 再兜一道；纯外国宏观财经由 `_is_foreign_macro()` 判 |
 | 改关键词表 | `data/keywords.txt`（纯数据，不用改代码） |
 | 改界面版式 / 配色 | `static/index.html`、`static/intl.html` |
-| 改翻译后端 | `config.json` 里的 `backend`（mymemory 免费兜底 / baidu / deepl），实现见 `server.py` 翻译段 |
+| 改翻译后端 | `config.json` 里的 `backend`（baidu 境内默认 / deepl），凭证只写本机私有覆盖文件；实现见 `server.py` 翻译段 |
 | 改图片代理白名单 | `server.py` 的 `/img` 段（**重定向落地后必须再过一次白名单**，这是修过的安全点） |
 | 改升级逻辑 | `updater.py`（版本来源、校验、替换脚本）；替换脚本 `hotnews_update.vbs` 必须写成 **UTF-16**（写成 UTF-8 会让升级整个失效） |
 

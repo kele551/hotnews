@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
+# 作者: 海风（kele551）   https://github.com/kele551/hotnews
 """气泡题图缓存清理 _balloon_img_prune 的单测 —— 2026-11-12「只涨不清」的修复。
 
 背景（装机态实测，2026-11-12 21:4x）：

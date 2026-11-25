@@ -5,8 +5,7 @@
   },
   "translate": {
     "enabled": false,
-    "backend": "mymemory",
-    "contact": "",
+    "backend": "baidu",
     "baidu": { "appid": "", "secret": "" },
     "deepl": { "auth_key": "" }
   }

@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
+# 作者: 海风（kele551）   https://github.com/kele551/hotnews
 """
 hotnews 自动更新模块
 --------------------------------------------------------------
-版本来源：Gitee 仓库的 version.json（国内下载稳定，GitHub 仅作镜像）
-  https://gitcode.com/api/v5/repos/kele551/hotnews/raw/version.json?ref=main
+版本来源：GitHub 主仓库的 version.json（下载与校验只走 GitHub）
+  https://raw.githubusercontent.com/kele551/hotnews/main/version.json
 
 version.json 结构（含 launcher 字段才支持自动下载）：
   {
     "version": "1.2.0",
     "launcher": {
-      "url":    "https://gitcode.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
+      "url":    "https://github.com/kele551/hotnews/releases/download/v1.2.0/hotnews-v1.2.0.exe",
       "sha256": "大写十六进制，64 位",
       "size":   14234524
     },
@@ -40,17 +40,11 @@ try:
 except ImportError:
     httpx = None
 
-# 【2026-10-23】按用户要求去掉 Gitee 兜底；主源 GitCode，兜底 GitHub。
-# GitCode 没有 Gitee 那种 raw 直链，用它的 API raw：/raw/version.json?ref=main
-REMOTE_VERSION_URL_GC = "https://gitcode.com/api/v5/repos/kele551/hotnews/raw/version.json?ref=main"
-# 【2026-10-09 修 低-4】GitHub 侧作为**兜底候选**：GitCode 万一取不到（网络不通 /
-# 仓库临时维护），还能落到 GitHub 的 raw。
-# 候选都拿到 **原始字节** 后统一走同一套 Ed25519 验签，验不过就换下一个 ——
-# 所以加这个候选不会削弱升级安全（没有私钥照样签不出来）。
-# ⚠ GitHub 侧必须也放**完整版** version.json（带 launcher）+ 与之配套的 version.json.sig，
-#   否则验签必失败。2026-10-26 起两平台都是**逐字节一致**的完整版：tools/publish.py 用同一份
-#   字节发两平台，发完各自回读验签，所以这条兜底**现在是真生效的**（以前那句"待同步"作废）。
+# 【2026-11-25】下载与版本源只走 GitHub 主源；GitCode 降为镜像、不再作为升级通道。
+# 候选拿到 **原始字节** 后统一走同一套 Ed25519 验签，验不过就拒绝 —— 没有私钥照样签不出来。
+# ⚠ GitHub 侧必须也放**完整版** version.json（带 launcher）+ 与之配套的 version.json.sig。
 REMOTE_VERSION_URL_GH = "https://raw.githubusercontent.com/kele551/hotnews/main/version.json"
+REMOTE_VERSION_URLS = (REMOTE_VERSION_URL_GH,)
 
 # 【2026-10-07 升级通道加固】离线生成的 Ed25519 公钥；私钥只在作者机器的密钥目录里，
 # 绝不进仓库。客户端用它验证 version.json 的签名，这样即便 GitCode 账号被盗、或 GitHub
@@ -167,9 +161,9 @@ def fetch_remote():
     if httpx is None:
         return None
     _last_reason["why"] = ""
-    # 【2026-10-09 修 低-4】三个候选按顺序试：Gitee 主地址 → Gitee 备用地址 → GitHub 兜底。
-    # 每个都要求「HTTP 200 + Ed25519 验签通过」才采用，任一环节不过就换下一个。
-    for url in (REMOTE_VERSION_URL_GC, REMOTE_VERSION_URL_GH):
+    # 候选按顺序试（当前仅 GitHub 主源）；每个都要求「HTTP 200 + Ed25519 验签通过」才采用，
+    # 任一环节不过就换下一个。
+    for url in REMOTE_VERSION_URLS:
         try:
             # trust_env=False：不走系统/环境代理，直连 Gitee 更快更稳（同 server._fetch）
             # verify=_updater_verify()：见上面注释 —— certifi 文件被清走时自动退到系统证书库。

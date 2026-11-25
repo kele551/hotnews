@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
+# 作者: 海风（kele551）   https://github.com/kele551/hotnews
 """
 hotnews —— 热点新闻检索（国内 / 国际）
 FastAPI 后端：抓取 RSS、解析题图、图片代理、翻译、SSR 首屏
@@ -193,7 +193,7 @@ APP_URL = "http://localhost:8000"
 #   但**不把浏览器 UA 整个换掉** —— 实测部分源（如 mefcl）会按 UA 判断是不是
 #   普通浏览器访问，纯 bot UA 会被挡在门外（等于把源打挂）。故采用「浏览器 UA + 追加标识」：
 #   既保留了兼容性，又满足自报身份的要求。
-BOT_ID = "HotnewsAggregator/1.5 (+https://gitcode.com/kele551/hotnews)"
+BOT_ID = "HotnewsAggregator/1.5 (+https://github.com/kele551/hotnews)"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 " + BOT_ID)
 
@@ -628,13 +628,14 @@ def _load_config():
         #   auto_update —— **默认开**：发现新版本就静默下载 + 验签 + 自动替换（不弹确认框）。
         #                   关掉后回到"只提示、不自动升级"，由用户自己在页面点「检查更新」。
         "update": {"enabled": True, "auto_update": True},
-        # contact：MyMemory 用邮箱标识身份，带上可把免费额度从 5k/天 提到 50k/天。
-        # 【2026-10-07 改动】原来写死的是假邮箱（kele551@example.com），既拿不到提额，
-        # 又会被一起打进 exe 分发出去。
-        # 现在怎么填真实邮箱：**不要**改仓库里的 config.json（那会进版本库、公开仓库里
-        # 就露出私人邮箱了），而是写本机私有覆盖文件（见下面 _LOCAL_CONFIG）。
-        "translate": {"backend": "mymemory", "contact": "",
+        # 翻译后端默认百度（境内，需用户在本机私有 config.local.json 填自备 appid/secret）；
+        # 凭证只存本机私有覆盖文件，不进版本库、不随安装包分发。
+        "translate": {"backend": "baidu",
                       "baidu": {"appid": "", "secret": ""}, "deepl": {"auth_key": ""}, "enabled": True},
+        # 【2026-11-25 自定义关注榜】盯本机方向的关键词 + 锚定仓库。只存公开仓库名与
+        # 站方一句话简介，不存正文；清单写本机私有 config.local.json，不进版本库。
+        # keywords: 走 GitHub 搜索的方向词；repos: 直接盯的 owner/repo 锚定仓库。
+        "watchlist": {"enabled": True, "keywords": [], "repos": []},
     }
     # 配置读取顺序（后者覆盖前者）：
     #   1) 程序自带/同级的 config.json（在版本库里，**不要往这里写私人信息**）
@@ -660,6 +661,10 @@ def _load_config():
     data.setdefault("translate", dict(default["translate"]))
     for k, v in default["translate"].items():
         data["translate"].setdefault(k, v)
+    data.setdefault("watchlist", dict(default["watchlist"]))
+    data["watchlist"].setdefault("enabled", True)
+    data["watchlist"].setdefault("keywords", [])
+    data["watchlist"].setdefault("repos", [])
     return data
 
 
@@ -10545,7 +10550,7 @@ def _split_hot_by_scope(items):
             d["region"] = "intl"
             d["channel"] = "cn-intl-hot"      # 标明「来自国内综合源的国际条目」
             # 【2026-10-07 修】这些条目本来就是中文（凤凰/澎湃/红星是国内媒体），
-            # 标成「待翻译」既白占 MyMemory 额度，界面也会把它算进「未中文化」。
+            # 标成「待翻译」既白占翻译额度，界面也会把它算进「未中文化」。
             d["translated"] = True
             intl.append(d)
         else:
@@ -10943,6 +10948,13 @@ def _warmup():
         # 再 kick 一轮后台抓取。它排在新闻抓取之前，是因为它只有一个请求、
         # 一两秒就回来，不跟三十多个新闻源抢时间。
         try:
+            # 【2026-11-25】本机推荐榜先把磁盘缓存读进内存，再做题图预热。
+            # 读盘是纯本机动作、毫秒级；题图预热是串行网络拉取（每张最长 20 秒），
+            # 若排在它后面，冷启动那一长段预热会把本机榜压到几十秒后才出现，页面「本机」按钮一直不画。
+            try:
+                _oss_watch_load_disk()
+            except Exception as ex:
+                print("[warn] 本机推荐榜读盘失败: %s" % type(ex).__name__)
             _n, _ = _oss_load_disk()
             if _n:
                 print("[ok] 开源热榜: 本机缓存载入 %d 条" % _n)
@@ -10981,6 +10993,11 @@ def _warmup():
             except Exception as ex:
                 print("[warn] 开源涨速榜预热失败: %s" % type(ex).__name__)
             _kick_oss()
+            # 【2026-11-25】本机推荐榜磁盘缓存已在预热最前面读入；这里只 kick 后台补一轮。
+            try:
+                _kick_oss_watch()
+            except Exception as ex:
+                print("[warn] 开源关注榜预热失败: %s" % type(ex).__name__)
         except Exception as ex:
             print("[warn] 开源热榜预热失败: %s" % type(ex).__name__)
         # 【2026-10-09 修 中-4】cleanup_leftovers 现在会**返回上一次替换脚本留下的回执**
@@ -11034,8 +11051,10 @@ def _warmup():
                 # 翻译慢且常被限流：不阻塞抓取，后台补齐译文
                 if not _TRANS_BUSY[0]:
                     threading.Thread(target=_translate_intl_bg, args=(items,), daemon=True).start()
-            except Exception:
-                pass
+                else:
+                    print("[ok] 预热 intl: 上一轮后台翻译仍在进行，本轮不重复启动")
+            except Exception as ex:
+                print(f"[warn] 启动后台翻译线程失败: {type(ex).__name__}: {ex}")
             try:
                 # 【2026-10-07】气泡要按板块分配名额（国际/国内/热榜各 2 席），
                 # 所以**不能按板块分别调用** —— 那样每次都只看到半边，国际永远是 0。
@@ -12331,6 +12350,63 @@ OSS_TTL = 6 * 3600         # 榜单一天挪不了几次，6 小时抓一次足�
 OSS_FAIL_TTL = 600         # 抓不到时 10 分钟内不再撞（境内直连不通时别每轮都试一遍）
 OSS_TIMEOUT = 12           # 实测 0.9~1.6 秒，给到 12 秒兜抖动；比它长的抖动就当失败
 OSS_SEARCH_URL = "https://api.github.com/search/repositories"
+
+
+def _github_token():
+    """本机私有的 GitHub PAT（只读，不打印、不进仓库、不打进分发包）。
+
+    读两处，任一命中即用：① 本机私有 config.local.json 的 github_token；
+    ② git-credentials 里 github.com 那一行的口令。都没有就回空串 → 匿名兜底。
+    匿名搜索只有 10 次/分、core 60/小时；带 PAT 是 30 次/分、5000/小时，
+    三榜 + 关注榜共用额度，鉴权后才不容易撞限流。令牌绝不写进响应 / 日志 / 页面。
+    """
+    try:
+        wl = CONFIG.get("github_token")
+        if isinstance(wl, str) and wl.strip():
+            return wl.strip()
+    except Exception:
+        pass
+    for path in (os.path.join(os.getenv("LOCALAPPDATA") or os.path.expanduser("~"),
+                              "hotnews", "config.local.json"),
+                 "F:/Harness/secrets/git-credentials"):
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8-sig") as f:
+                text = f.read()
+        except Exception:
+            continue
+        if path.endswith("config.local.json"):
+            try:
+                j = json.loads(text)
+                t = (j.get("github_token") or "").strip() if isinstance(j, dict) else ""
+                if t:
+                    return t
+            except Exception:
+                continue
+        else:
+            for line in text.splitlines():
+                if "github.com" not in line or "://" not in line:
+                    continue
+                try:
+                    parts = urllib.parse.urlsplit(line.strip())
+                    if parts.password:
+                        return urllib.parse.unquote(parts.password)
+                except Exception:
+                    continue
+    return ""
+
+
+def _github_headers(extra=None):
+    """带 PAT 的 GitHub 请求头；无令牌时只留 Accept。"""
+    h = {"Accept": "application/vnd.github+json"}
+    tok = _github_token()
+    if tok:
+        h["Authorization"] = "Bearer " + tok
+    if extra:
+        h.update(extra)
+    return h
+
 OSS_IMAGE_BASE = "https://opengraph.githubassets.com/1/"
 # 【2026-11-12 十修】气泡背景改用项目 owner 的 GitHub 头像：分享卡（上面那一行）
 # 自己就印着大号英文仓库名 + 英文简介，白底压不住，用户截图里「中文介绍」被它盖光
@@ -12348,6 +12424,45 @@ _OSS_BLOCK_RX = re.compile(
         "漏洞利用", "exploit", "0day", "zero-day", "botnet", "malware", "ransomware",
         "keylogger", "钓鱼", "phishing", "scam",
     )), re.I)
+# 【2026-11-25 准确性】机器人 / 官方集成账号开的仓库：不是人维护的项目，不进新锐榜。
+_OSS_BOT_OWNER_RX = re.compile(
+    r"^(?:.*[-_])?bot$|^bot[-_].*|github-actions|github-pages|dependabot|renovatebot|"
+    r"copilot|codesandbox|netlify|vercel|readme-bot", re.I)
+# 【2026-11-25 准确性】站方简介写了等于没写：占位 / 整活刷星，读者点开不知道干什么，
+# 与「空简介准入」同一道闸，只认 description 文本本身，不猜 README。
+_OSS_PLACEHOLDER_RX = re.compile(
+    r"^\s*(?:readme|repo\s*name|your[\s-]?repo|project\s*name|untitled|test(?:ing)?\s*repo|"
+    r"some\s*project|new\s*repo|hello\s*world|first\s*commit|sample\s*repo)\s*$", re.I)
+# 【2026-11-25 准确性】本机推荐只推"能当同类用的应用/工具"；教程、学习清单、资料合集
+# 不是可替代的软件，混进来会霸榜（awesome-python / system-design-primer 这类）。
+_OSS_NONAPP_RX = re.compile(
+    r"awesome[- ]?list|awesome[- ]|system[- ]design|learning[- ]?path|tutorial|"
+    r"roadmap|interview|curated\s*(?:list|collection)|books?\s*collection|"
+    r"course|learn[- ]|learning\s*resource|handbook|cheatsheet", re.I)
+# 【2026-11-25 准确性】同一热点题材（某次游戏移植 / 某款模拟器 / 某个 AI 助手…）会被
+# 一窝蜂刷出好几个仓库，前半屏全是同一件事，看着像重复。按简介关键词归题材，
+# 每个题材最多留 2 个，给别的方向腾位置。关键词只认明确的专有题材词，普通通用词
+# （player / manager / tool）不算题材，避免把不同软件误并成一类。
+_OSS_TOPIC_KEYWORDS = {
+    "gta": ("gta",), "xbox": ("xbox",), "playstation": ("playstation", "ps5", "ps4"),
+    "switch": ("switch", "nintendo"), "wine/proton": ("wine", "proton"),
+    "android-emulator": ("android emulator", "bluestacks", "waydroid"),
+    "youtube-dl": ("youtube downloader", "yt-dlp", "yt_dlp"),
+    "telegram": ("telegram",), "whatsapp": ("whatsapp",), "discord": ("discord",),
+    "instagram": ("instagram",), "twitter": ("twitter", "x.com"),
+    "notion": ("notion",), "obsidian": ("obsidian",), "jellyfin": ("jellyfin",),
+    "kodi": ("kodi",), "iptv": ("iptv", "m3u"), "mpv": ("mpv",),
+    "container": ("container runtime", "docker", "kubernetes", "k8s"),
+    "music": ("music player", "music streaming", "navidrome"),
+}
+_OSS_TOPIC_MAX = 2
+# 【2026-11-25 准确性】同类延伸只取"用途类"标签；技术栈 / 语言 / 平台标签太泛，
+# 按它搜会召回框架、AI 工具、跨平台壳，不是本机软件的同类应用。
+_OSS_TOPIC_SKIP = {"cross-platform", "android", "ios", "linux", "windows", "macos",
+                   "web", "python", "c", "cpp", "c++", "rust", "javascript", "typescript",
+                   "java", "kotlin", "swift", "go", "lua", "shell", "ffmpeg", "vue",
+                   "react", "electron", "framework", "library", "cli", "api", "http",
+                   "self-hosted", "docker", "docker-compose", "github", "git"}
 _OSS_CACHE_FILE = os.path.join(
     os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "oss_cache.json")
 _OSS = {"ts": 0.0, "items": [], "note": "", "next_try": 0.0}
@@ -12412,6 +12527,20 @@ _OSS_SPEED_PREV = {"week": {"ts": 0.0, "stars": {}},
 _OSS_SPEED = {"ts": 0.0, "items": [], "note": "", "real": 0,
               "week_rows": [], "month_rows": [], "real_at": 0.0, "stale": False}
 _OSS_SPEED_LOCK = threading.Lock()
+
+# 【2026-11-25 自定义关注榜】按本机方向关键词 + 锚定仓库拉的第四档。清单来自本机私有
+# 配置 watchlist；不参与三榜的窗口/涨速口径，只按累计星标排。6 小时一批，失败保留上一批。
+OSS_WATCH_TTL = 6 * 3600
+OSS_WATCH_LIMIT = 20
+OSS_WATCH_PER_QUERY = 10
+# 同类延伸：每个锚定仓取前几个主题标签，按 topic: 标签搜同标签开源项目。
+OSS_WATCH_TOPIC_TAGS = 2
+OSS_WATCH_TOPIC_PER_TAG = 6
+_OSS_WATCH_CACHE_FILE = os.path.join(
+    os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "oss_watch_cache.json")
+_OSS_WATCH = {"ts": 0.0, "items": [], "note": "", "next_try": 0.0, "matched": []}
+_OSS_WATCH_LOCK = threading.Lock()
+_OSS_WATCH_BUSY = [False]
 
 
 def _oss_window_date(days=OSS_WINDOW_DAYS, today=None):
@@ -12499,8 +12628,21 @@ def _oss_desc(r, days=OSS_WINDOW_DAYS, zh="", velocity=0):
     return head
 
 
+def _oss_topic_of(hay):
+    """按简介/仓库名/标签归一个题材（命中 _OSS_TOPIC_KEYWORDS 里第一个匹配的）。
+
+    返回题材键名；没命中任何专有题材词返回 ""。只认明确的专有题材词，普通通用词
+    不算题材，避免把不同软件误并成一类。"""
+    low = (hay or "").lower()
+    for topic, kws in _OSS_TOPIC_KEYWORDS.items():
+        if any(kw in low for kw in kws):
+            return topic
+    return ""
+
+
 def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
-                            today=None, translate=None, velocity=False):
+                            today=None, translate=None, velocity=False,
+                            keep_pinned=False):
     """search 响应 → 卡片条目。
 
     **纯函数**：不发网络请求、不读真实时钟（`today` 可注入）、翻译器由调用方注入
@@ -12514,12 +12656,24 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
     rows = (payload or {}).get("items") or []
     keep = []
     seen, blocked, badlink = set(), 0, 0
+    topic_count = {}
     for r in rows:
         if not isinstance(r, dict) or r.get("archived"):
             continue
         name = (r.get("full_name") or "").strip()
         if not OSS_NAME_RX.match(name):
             badlink += 1
+            continue
+        # 【2026-11-25 准确性】fork 是别人项目的拷贝（增量与星标都不归原作者），模板仓库
+        # 是给人照着建的空架子，机器人账号开的不是人维护的项目 —— 三类都不进新锐榜。
+        if r.get("fork") or r.get("is_template"):
+            blocked += 1
+            continue
+        owner_login = ((r.get("owner") or {}).get("login") or "").strip()
+        if not owner_login:
+            owner_login = name.split("/", 1)[0].strip()
+        if _OSS_BOT_OWNER_RX.match(owner_login):
+            blocked += 1
             continue
         key = name.lower()
         if key in seen:
@@ -12536,6 +12690,19 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
         # 由出口 _oss_display_rows 挡掉（双保险）。不抓 README、不硬编中文。
         if not base:
             continue
+        # 【2026-11-25 准确性】简介是占位词 / 整活刷星（"readme"、"test repo"…）同样等于
+        # 说不清干什么，与空简介一道挡掉。
+        if _OSS_PLACEHOLDER_RX.match(base):
+            blocked += 1
+            continue
+        # 【2026-11-25 准确性】教程 / 学习清单 / 资料合集不是可当同类用的应用：
+        # awesome-python、system-design-primer、interview-roadmap 这类会凭高星霸榜，
+        # 读者点开是文档不是软件。三榜与本机推荐共用这道闸。
+        nonapp = " ".join([(r.get("language") or "").strip(), name, base,
+                           " ".join(r.get("topics") or [])])
+        if _OSS_NONAPP_RX.search(nonapp):
+            blocked += 1
+            continue
         # 闸门看的是"这条会以什么面目出现"的所有字段：仓库名、简介、站方打的标签、
         # 还有语言分类 —— GitHub 的语言桶里就有 Porn/NSFW 这类，只查简介会漏过去。
         hay = " ".join([(r.get("language") or "").strip(), name, base,
@@ -12543,6 +12710,14 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
         if _OSS_BLOCK_RX.search(hay):
             blocked += 1
             continue
+        # 【2026-11-25 准确性】同题材扎堆：一个热点事件刷出一堆同名/同主题仓库，
+        # 每个题材最多留 _OSS_TOPIC_MAX 个，余下的让位给别的方向。
+        topic = _oss_topic_of(hay)
+        if topic:
+            if topic_count.get(topic, 0) >= _OSS_TOPIC_MAX:
+                blocked += 1
+                continue
+            topic_count[topic] = topic_count.get(topic, 0) + 1
         try:
             stars = max(0, int(r.get("stargazers_count") or 0))
         except Exception:
@@ -12607,6 +12782,7 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
             "lang": lang,
             "source": "%s 开源热榜" % OSS_SOURCE_LABEL,
             "translated": bool(zh),
+            "pinned": bool(r.get("_pinned")),
         })
     # 接口说按星标排，但闸门剔除过条目、也防它哪天改口 —— 这里自己再按星标定一次序，
     # 同数按仓库名，保证 rank 稳定可复现（测试就靠这一条断言名次连续）。
@@ -12616,7 +12792,16 @@ def _oss_items_from_payload(payload, days=OSS_WINDOW_DAYS, limit=OSS_LIMIT,
         keep.sort(key=lambda x: (-x["velocity"], -x["stars"], x["title"].lower()))
     else:
         keep.sort(key=lambda x: (-x["stars"], x["title"].lower()))
-    out = keep[:max(1, int(limit))]
+    # 锚定条目保底：本机同类代表不能被高星头部项目在截断时挤掉；先留 pinned 再按星标补足。
+    # 注意：保底只保证入选，不占前排——截断后整体再按星标降序排（整榜同一把尺）。
+    if keep_pinned:
+        pinned = [x for x in keep if x.get("pinned")]
+        rest = [x for x in keep if not x.get("pinned")]
+        keep = (pinned + rest)[:max(1, int(limit))]
+        keep.sort(key=lambda x: (-x["stars"], x["title"].lower()))
+    else:
+        keep = keep[:max(1, int(limit))]
+    out = keep
     for i, it in enumerate(out, 1):
         it["rank"] = i
     if blocked or badlink:
@@ -12707,8 +12892,7 @@ def _oss_refresh():
     url = _oss_search_url()
     _meta = _oss_meta()
     try:
-        raw = _fetch(url, timeout=OSS_TIMEOUT,
-                     extra_headers={"Accept": "application/vnd.github+json"})
+        raw = _fetch(url, timeout=OSS_TIMEOUT, extra_headers=_github_headers())
     except Exception as ex:
         raw = None
         print("[warn] 开源热榜抓取异常: %s" % type(ex).__name__)
@@ -12932,6 +13116,54 @@ def _oss_pick_boom(week_rows, speed_rows, shown, now_ts, limit=OSS_BOOM_TOAST_PI
     return picked
 
 
+def _oss_watch_pick(watch_rows, shown, now_ts, limit=1):
+    """从自定义关注榜里挑进气泡的条目（纯函数，不碰时钟/网络/磁盘）。
+
+    【2026-11-25 用户「加」】关注榜原本只供网页「软件 → 关注」档，气泡三通道都不读。
+    现在接进来作为开源席 / 暴涨播报的**最后一档兜底**：速榜 → 周榜 → 月榜都被 24h
+    去重挡光、且候选不足时，才从这里按累计星标补位。口径与三榜一致：
+      · 关注榜按累计星标排（无涨速真值），星标高的优先；
+      · 有中文用途说明的一律排前面；只有整档都没中文内容时才回退标签式兜底；
+      · 同一仓库 24 小时内不重复（复用 shown 那把尺子）；
+      · 条目标 boom_watch=True，文案如实标「关注 · 按累计星标排」，不冒充涨速。
+    """
+    try:
+        limit = max(1, int(limit))
+    except Exception:
+        limit = 1
+    pool = []
+    for it in (watch_rows or []):
+        if not isinstance(it, dict):
+            continue
+        name = it.get("title") or ""
+        if not name:
+            continue
+        d = dict(it)
+        d["boom_real"] = False
+        d["boom_val"] = 0.0
+        d["boom_watch"] = True
+        d["stars_val"] = float(it.get("stars") or 0)
+        d["_cn"] = _oss_cn_usable(it)
+        d["_fresh"] = (now_ts - float((shown or {}).get(name) or 0) >= OSS_WEEK_SHOWN_TTL)
+        pool.append(d)
+    pool.sort(key=lambda x: (0 if x["_cn"] else 1, -x["stars_val"],
+                             (x.get("title") or "").lower()))
+    usable = [x for x in pool if x["_cn"]]
+    fresh = [x for x in usable if x["_fresh"]]
+    fresh_any = [x for x in pool if x["_fresh"]]
+    if fresh:
+        choose_from = fresh
+    elif fresh_any:
+        choose_from = fresh_any
+    else:
+        choose_from = []
+    picked = [dict(x) for x in choose_from[:limit]]
+    for x in picked:
+        x.pop("_fresh", None)
+        x.pop("_cn", None)
+    return picked
+
+
 def _oss_cn_intro(it, limit=30):
     """从开源条目的 desc 里抽一句「这项目是干什么的」中文简介（纯函数）。
 
@@ -12957,6 +13189,10 @@ def _oss_cn_intro(it, limit=30):
     fallback = ("%s 开源项目" % lang) if lang else "GitHub 开源项目"
     if not intro:
         return fallback
+    # 【2026-11-25】「简介原文：」只是服务端贴英文站方说明时打的标记前缀，不是正文；
+    # 剥掉后剩下的若是纯英文（翻译额度用尽、暂无中文译文），下面切段会整段丢、走兜底标签，
+    # 绝不能把这个前缀词本身当成中文用途说明吐进气泡大字（实测大字显示成「简介原文」）。
+    intro = re.sub(r"^简介原文[:：]\s*", "", intro).strip()
     intro = re.sub(r"\s+", " ", intro).strip()
     # ① 括号只是补充：整段删掉，绝不「砍到第一个括号为止」把主句后半截丢掉
     intro = re.sub(r"[（(][^）)]*[）)]", " ", intro)
@@ -13147,13 +13383,20 @@ def _oss_boom_entry(it, head="【开源速榜】GitHub 暴涨"):
     """
     name = it.get("title") or ""
     real = bool(it.get("boom_real"))
+    watch = bool(it.get("boom_watch"))
     val = float(it.get("boom_val") or 0)
     intro = _oss_cn_intro(it)
     # 正文只留中文用途说明；涨星数字单独走右下角，由绘制端排版。
     msg = intro[:90]
-    growth = (("日增%s星/天" if real else "日均+%s星/天") % _fmt_num(val))
+    if watch:
+        # 关注档按累计星标排、无涨速真值：右下角不画「日增/日均」，避免冒充涨速。
+        growth = ""
+    else:
+        growth = (("日增%s星/天" if real else "日均+%s星/天") % _fmt_num(val))
     badge = _balloon_split_head(head)[0] or "开源速榜"
-    if badge == "开源速榜":
+    if watch:
+        src_note = "关注 · 按累计星标排"
+    elif badge == "开源速榜":
         # 【十一修】速榜已不摆观察榜：没有真实净增时这一条实际来自周榜日均回退，
         # 如实标成「周榜 · 按日均涨星排」，不再写「速榜 · 首批观察中」误导用户。
         src_note = "速榜 · 按真实净增排" if real else "周榜 · 按日均涨星排"
@@ -13219,15 +13462,23 @@ def _oss_carousel_seat(now_ts=None, shown=None, mark=False):
                                        0 if _oss_cn_usable(x) else 1,
                                        -int(x.get("stars") or 0)))
         if not ranked:
-            try:
-                print("[气泡] 开源席：候选 24 小时内都播过，本轮不出（挡掉 %d 条）"
-                      % len(_blocked))
-            except Exception:
-                pass
-            return (None, "")
-        d = dict(ranked[0])
-        d["boom_real"] = False
-        d["boom_val"] = d.get("velocity") or int(d.get("stars") or 0)
+            # 【2026-11-25】月榜也被 24h 去重挡光时，最后从自定义关注榜按累计星标兜底补位；
+            # 同样跳过 24h 内播过的，一个都挑不出本轮不放开源席。
+            watch_items, _, _, _ = _oss_watch_snapshot()
+            wpick = _oss_watch_pick(watch_items, seen, now, 1)
+            if wpick and (wpick[0].get("title") or "") not in _blocked:
+                d = dict(wpick[0])
+            else:
+                try:
+                    print("[气泡] 开源席：候选 24 小时内都播过，本轮不出（挡掉 %d 条）"
+                          % len(_blocked))
+                except Exception:
+                    pass
+                return (None, "")
+        else:
+            d = dict(ranked[0])
+            d["boom_real"] = False
+            d["boom_val"] = d.get("velocity") or int(d.get("stars") or 0)
     name = d.get("title") or ""
     try:
         print("[气泡] 开源席：选中 %s（最近 40 分钟挡掉 %d 条，候选 %d 条）"
@@ -13266,6 +13517,13 @@ def _oss_boom_announce():
                 if now - float(t or 0) < OSS_WEEK_SHOWN_TTL}
     picked = [x for x in (picked or [])
               if (x.get("title") or "") not in _blocked][:OSS_BOOM_TOAST_PICK]
+    if not picked:
+        # 【2026-11-25】速/周榜被 24h 去重挡光时，最后从自定义关注榜按累计星标补位，
+        # 保证这一组仍能出一条关注方向的项目；同样跳过 24h 内播过的。
+        watch_items, _, _, _ = _oss_watch_snapshot()
+        wpick = _oss_watch_pick(watch_items, _OSS_WEEK_SHOWN, now, OSS_BOOM_TOAST_PICK)
+        picked = [x for x in (wpick or [])
+                  if (x.get("title") or "") not in _blocked][:OSS_BOOM_TOAST_PICK]
     if not picked:
         return
     entries = [_oss_boom_entry(it) for it in picked]
@@ -13366,8 +13624,7 @@ def _oss_week_refresh():
     today = datetime.now(CST)
     url = _oss_search_url(OSS_WEEK_DAYS, OSS_WEEK_LIMIT, today)
     try:
-        raw = _fetch(url, timeout=OSS_TIMEOUT,
-                     extra_headers={"Accept": "application/vnd.github+json"})
+        raw = _fetch(url, timeout=OSS_TIMEOUT, extra_headers=_github_headers())
     except Exception as ex:
         raw = None
         print("[warn] 开源周榜抓取异常: %s" % type(ex).__name__)
@@ -13691,6 +13948,428 @@ def _oss_speed_meta():
                 bool(_OSS_SPEED["items"]))
 
 
+# ---------- 自定义关注榜（2026-11-25 新增：盯本机方向的关键词 + 锚定仓库） ----------
+
+# 【2026-11-25】本机已装开源软件 → GitHub 方向映射表。
+# 每条：匹配关键词（DisplayName / Publisher 里出现任一即命中，小写包含匹配）、
+# 对应 GitHub 搜索方向词、可直接锚定的 owner/repo。只收录能对应到公开开源项目的软件；
+# 商业软件、运行库、驱动、输入法、社交/网盘/下载工具一律不进表（映射不到方向，硬凑只会推一堆不相关项目）。
+# 表是纯数据，匹配规则在 _oss_installed_map()，单测钉假清单断言命中与去重。
+_OSS_INSTALLED_MAP = [
+    # 媒体播放器 / 影音（视频）：锚定同类高口碑开源播放器（社区配对，按星标口碑排序）。
+    (["yaoplayer", "mpv", "potplayer", "vlc", "iina"],
+     ["media player", "video player", "mpv player"],
+     ["Yaozhil/mpv-Yaozhi", "mpv-player/mpv", "iina/iina", "clsid2/mpc-hc"]),
+    # 音乐播放器（SPlayer 系是音频播放器，别和视频套壳混到一起）
+    (["splayer"],
+     ["music player", "audio player", "music streaming"],
+     ["imsyy/SPlayer-Next", "navidrome/navidrome", "beetbox/beets"]),
+    (["firefox"],
+     ["open source web browser", "browser engine"],
+     ["mozilla-firefox/firefox"]),
+    (["thunderbird"],
+     ["open source email client", "email client"],
+     ["thunderbird/thunderbird-android"]),
+    (["libreoffice"],
+     ["open source office suite", "office productivity suite"],
+     ["LibreOffice/core", "onlyoffice/documentserver", "collaboraonline/online"]),
+    (["bili23", "bilibili downloader", "yt-dlp", "yt-dlp-gui"],
+     ["video downloader", "media downloader"],
+     ["yt-dlp/yt-dlp", "aria2/aria2"]),
+    (["filee"],
+     ["file manager", "file explorer"],
+     []),
+    (["bandizip", "7-zip", "7zip", "winrar"],
+     ["file archiver", "archive compression"],
+     ["ip7z/7zip"]),
+    # Python 只是运行时环境（不是用户在用的应用），不给方向词、不推 Python 生态头部。
+    (["python"],
+     [],
+     []),
+]
+
+# 【2026-11-25】兜底表：本机没扫到上面那些开源软件时，按在用软件的类别找**同类开源替代品**。
+# 商业软件自己不开源（微信/迅雷/网盘这类），不硬推它本身；只取它所属用途，去 GitHub 找能干同样事的开源项目。
+# 每条：匹配关键词、对应开源方向词、可锚定的代表开源仓库。纯数据，规则同主表。
+_OSS_FALLBACK_MAP = [
+    (["wechat", "微信", "qq", "telegram"],
+     ["open source instant messenger", "self hosted chat"],
+     ["signalapp/Signal-Desktop"]),
+    (["thunder", "迅雷", "downloader", "bili23"],
+     ["open source downloader", "aria2 download manager"],
+     ["aria2/aria2"]),
+    (["bandizip", "7-zip", "7zip", "winrar", "压缩", "解压"],
+     ["open source file archiver", "archive extraction"],
+     ["ip7z/7zip"]),
+    (["firefox", "chrome", "edge", "browser", "浏览器"],
+     ["open source web browser"],
+     ["mozilla-firefox/firefox"]),
+    (["webtype", "输入法", "wetype"],
+     ["open source input method", "ime"],
+     []),
+    (["backup", "备份", "aomei", "傲梅"],
+     ["open source backup software", "disk imaging"],
+     ["restic/restic"]),
+    (["note", "笔记", "obsidian", "notion"],
+     ["open source note taking", "personal knowledge base"],
+     ["TriliumNext/Trilium"]),
+    (["剪映", "premiere", "pr ", "vegas", "剪辑", "video edit", "video editor"],
+     ["open source video editor", "lossless video cutting"],
+     ["mifi/lossless-cut"]),
+    (["potplayer", "vlc", "mpv", "播放器", "media player", "视频播放"],
+     ["open source media player", "self hosted media server"],
+     ["jellyfin/jellyfin", "xbmc/xbmc"]),
+    (["vscode", "visual studio code", "sublime", "编辑器", "text editor", "ide", "notepad++"],
+     ["open source code editor", "terminal editor"],
+     ["neovim/neovim", "vscodium/vscodium"]),
+    (["网盘", "cloud drive", "onedrive", "百度网盘", "天翼云盘", "alipan", "syncthing"],
+     ["self hosted file sync", "open source cloud storage"],
+     ["syncthing/syncthing", "nextcloud/server"]),
+    (["pdf", "阅读器", "reader", "福昕", "foxit"],
+     ["open source pdf reader", "document viewer"],
+     ["sumatrapdfreader/sumatrapdf"]),
+    (["git", "github desktop", "gitkraken", "sourcetree"],
+     ["open source git client", "version control"],
+     []),
+]
+
+
+def _oss_installed_map(names):
+    """把本机已装软件名清单映射成 GitHub 方向词 + 锚定仓库（纯函数）。
+
+    names: [(display_name, publisher), ...]，注册表读不到时由调用方给空。
+    返回 (keywords, repos, matched)：matched 是命中的本机软件名（用于页面说明"按哪些本机项目推"）。
+    先按主表认开源软件；主表一条都没命中时，再按兜底表按软件类别找同类开源替代品。
+    """
+    kws, repos, matched = [], [], []
+    seen_kw, seen_repo, seen_match = set(), set(), set()
+    lowered = [("%s %s" % (n or "", p or "")).lower() for n, p in names]
+
+    # 附属运行项（文档/测试套件/路径组件/Tcl/Tk/pip 引导/标准库/开发库/启动器）不单独进脚注，
+    # 避免一套 Python 拆出十几条同名条目把说明撑满；主程序本身照常记录。
+    _SUBKEY = ("test suite", "documentation", "add to path", "tcl/tk", "core interpreter",
+               "pip bootstrap", "standard library", "development libraries", "launcher")
+
+    def _is_subitem(label, hay):
+        return any(k in hay for k in _SUBKEY)
+
+    def _consume(rows, record_match=True):
+        for keys, kws0, repos0 in rows:
+            hit_idx = [i for i, hay in enumerate(lowered)
+                       if any(k in hay for k in keys)]
+            if not hit_idx:
+                continue
+            if record_match:
+                for i in hit_idx:
+                    label = (names[i][0] or names[i][1]).strip()
+                    if label in seen_match:
+                        continue
+                    if _is_subitem(label, lowered[i]):
+                        continue
+                    seen_match.add(label)
+                    matched.append(label)
+            for k in kws0:
+                if k not in seen_kw:
+                    seen_kw.add(k)
+                    kws.append(k)
+            for r in repos0:
+                if r not in seen_repo:
+                    seen_repo.add(r)
+                    repos.append(r)
+
+    _consume(_OSS_INSTALLED_MAP)
+    if not kws and not repos:
+        # 主表没扫到开源软件：退一步按在用软件类别找同类开源替代品。
+        _consume(_OSS_FALLBACK_MAP)
+    return kws, repos, matched
+
+
+def _oss_installed_programs():
+    """读注册表卸载项，返回 [(DisplayName, Publisher), ...]（纯本机、不发网络请求）。
+
+    三个卸载根都扫（64 位 / 32 位 / 当前用户）；读不到任何一项就回空列表，不抛异常。
+    只取名字，不读安装路径以外的隐私信息；结果只用于方向匹配，不落盘、不外发。
+    """
+    out = []
+    try:
+        import winreg
+    except Exception:
+        return out
+    roots = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    for hive, sub in roots:
+        try:
+            with winreg.OpenKey(hive, sub) as base:
+                for i in range(winreg.QueryInfoKey(base)[0]):
+                    try:
+                        with winreg.OpenKey(base, winreg.EnumKey(base, i)) as k:
+                            name = winreg.QueryValueEx(k, "DisplayName")[0]
+                            pub = ""
+                            try:
+                                pub = winreg.QueryValueEx(k, "Publisher")[0]
+                            except Exception:
+                                pass
+                            if name and str(name).strip():
+                                out.append((str(name).strip(), str(pub or "").strip()))
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+    return out
+
+
+def _oss_watch_config():
+    """关注方向完全由本机已装开源项目自动扫描决定（用户 2026-11-25 定调：不要手工填清单）。
+
+    扫注册表卸载项 → 内置映射表转 GitHub 方向词 / 锚定仓库；不再并入 watchlist 手工
+    keywords/repos（手工列的方向不如本机已装软件准）。watchlist.enabled=false 时整档关闭、回空。
+    """
+    wl = CONFIG.get("watchlist") or {}
+    if not wl.get("enabled", True):
+        return [], [], []
+    kws, repos, matched = _oss_installed_map(_oss_installed_programs())
+    return kws, repos, matched
+
+
+def _oss_watch_load_disk():
+    """断网 / 重启首屏也有上一批关注榜。"""
+    try:
+        if not os.path.exists(_OSS_WATCH_CACHE_FILE):
+            print("[warn] 本机推荐榜缓存不存在: %s" % _OSS_WATCH_CACHE_FILE)
+            return 0
+        with open(_OSS_WATCH_CACHE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        items = d.get("items") or []
+        if not isinstance(items, list) or not items:
+            print("[warn] 本机推荐榜缓存为空: %s" % _OSS_WATCH_CACHE_FILE)
+            return 0
+        with _OSS_WATCH_LOCK:
+            _OSS_WATCH["items"] = items
+            _OSS_WATCH["ts"] = float(d.get("ts") or 0)
+            _OSS_WATCH["note"] = "本机缓存"
+            _OSS_WATCH["matched"] = list(d.get("matched") or [])
+        print("[ok] 本机推荐榜: 本机缓存载入 %d 条" % len(items))
+        return len(items)
+    except Exception as ex:
+        print("[warn] 本机推荐榜读盘失败: %s" % type(ex).__name__)
+        return 0
+
+
+def _oss_watch_save_disk():
+    try:
+        os.makedirs(os.path.dirname(_OSS_WATCH_CACHE_FILE), exist_ok=True)
+        with _OSS_WATCH_LOCK:
+            d = {"ts": _OSS_WATCH["ts"], "items": _OSS_WATCH["items"],
+                 "matched": _OSS_WATCH.get("matched") or []}
+        with open(_OSS_WATCH_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _oss_watch_search_one(keyword):
+    """单个关键词走 GitHub 搜索，返回原始 payload items（纯网络，不做闸门）。"""
+    q = urllib.parse.urlencode({"q": keyword, "sort": "stars", "order": "desc",
+                                "per_page": OSS_WATCH_PER_QUERY})
+    url = OSS_SEARCH_URL + "?" + q
+    try:
+        raw = _fetch(url, timeout=OSS_TIMEOUT, extra_headers=_github_headers())
+    except Exception as ex:
+        print("[warn] 关注榜搜索异常(%s): %s" % (keyword, type(ex).__name__))
+        return []
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception:
+        return []
+    return payload.get("items") or []
+
+
+def _oss_watch_repo_raw(full_name):
+    """直取单个锚定仓库；不存在 / 取不到回 None。"""
+    if not OSS_NAME_RX.match(full_name):
+        return None
+    url = "https://api.github.com/repos/" + urllib.parse.quote(full_name)
+    try:
+        raw = _fetch(url, timeout=OSS_TIMEOUT, extra_headers=_github_headers())
+    except Exception:
+        return None
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8", "ignore"))
+    except Exception:
+        return None
+
+
+def _oss_watch_topics(full_name):
+    """读锚定仓的 GitHub 主题标签（topics）；取不到回空列表。"""
+    if not OSS_NAME_RX.match(full_name):
+        return []
+    url = "https://api.github.com/repos/" + urllib.parse.quote(full_name) + "/topics"
+    try:
+        raw = _fetch(url, timeout=OSS_TIMEOUT, extra_headers=_github_headers())
+    except Exception:
+        return []
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        return []
+    try:
+        names = json.loads(raw.decode("utf-8", "ignore")).get("names") or []
+    except Exception:
+        return []
+    tags = [str(t).strip() for t in names if str(t).strip().lower() not in _OSS_TOPIC_SKIP]
+    return tags[:OSS_WATCH_TOPIC_TAGS]
+
+
+def _oss_watch_topic_search(topic):
+    """按 topic:<标签> 搜同标签项目，返回原始 payload items（纯网络，不过闸门）。"""
+    q = urllib.parse.urlencode({"q": "topic:" + topic, "sort": "stars",
+                                "order": "desc", "per_page": OSS_WATCH_TOPIC_PER_TAG})
+    url = OSS_SEARCH_URL + "?" + q
+    try:
+        raw = _fetch(url, timeout=OSS_TIMEOUT, extra_headers=_github_headers())
+    except Exception as ex:
+        print("[warn] 同类主题搜索异常(%s): %s" % (topic, type(ex).__name__))
+        return []
+    if isinstance(raw, tuple):
+        raw = raw[0]
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw.decode("utf-8", "ignore"))
+    except Exception:
+        return []
+    return payload.get("items") or []
+
+
+def _oss_better_peer(bench, stars):
+    """同类更优判定（纯函数）：星标达到锚定基准的 1.5 倍、且至少高出 1000 星才算更优。"""
+    bench, stars = int(bench or 0), int(stars or 0)
+    return bench > 0 and stars >= max(bench * 1.5, bench + 1000)
+
+
+def _oss_watch_refresh():
+    """抓一轮关注榜：关键词搜索 ∪ 锚定仓库，复用三榜同一道准入闸门与条目映射。
+
+    成功 → 换掉内存 / 磁盘缓存；失败保留上一批，不抛异常。清单为空直接回 0（这一档不出现）。
+    """
+    keywords, repos, matched = _oss_watch_config()
+    if not keywords and not repos:
+        with _OSS_WATCH_LOCK:
+            _OSS_WATCH["items"] = []
+            _OSS_WATCH["note"] = "未扫到可参考的开源方向"
+            _OSS_WATCH["matched"] = []
+        return 0
+    raw_rows = []
+    seen_name = set()
+    # 锚定仓库先打标并入：若它同时被关键词搜索命中，也以锚定标记为准（保底占位），
+    # 不能被后到的普通搜索条目覆盖掉 pinned。
+    pinned_raw = []
+    for name in repos:
+        r = _oss_watch_repo_raw(name)
+        if isinstance(r, dict):
+            r["_pinned"] = True
+            seen_name.add(name)
+            raw_rows.append(r)
+            pinned_raw.append(r)
+    # 同类延伸：读每个锚定仓的主题标签，按 topic: 标签搜同标签开源项目并入池。
+    def _nonapp(r):
+        hay = " ".join([(r.get("full_name") or ""), (r.get("description") or ""),
+                        " ".join(r.get("topics") or [])])
+        return bool(_OSS_NONAPP_RX.search(hay))
+    for r in pinned_raw:
+        slug = r.get("full_name") or ""
+        for tag in _oss_watch_topics(slug):
+            for cand in _oss_watch_topic_search(tag):
+                if isinstance(cand, dict) and cand.get("full_name") not in seen_name:
+                    if _nonapp(cand):
+                        continue
+                    seen_name.add(cand.get("full_name"))
+                    raw_rows.append(cand)
+    for kw in keywords:
+        for r in _oss_watch_search_one(kw):
+            if isinstance(r, dict) and r.get("full_name") not in seen_name:
+                if _nonapp(r):
+                    continue
+                seen_name.add(r.get("full_name"))
+                raw_rows.append(r)
+    use_tr = bool(CONFIG.get("translate", {}).get("enabled", False))
+    items = _oss_items_from_payload(
+        {"items": raw_rows}, days=OSS_WINDOW_DAYS, limit=OSS_WATCH_LIMIT,
+        today=datetime.now(CST), translate=(_translate_text if use_tr else None),
+        keep_pinned=True)
+    # 锚定条目保底入选（构造时已留位）；整榜统一按累计星标降序，锚定不占固定前排。
+    items.sort(key=lambda x: (-int(x.get("stars") or 0), str(x.get("title") or "").lower()))
+    items = items[:OSS_WATCH_LIMIT]
+    # 对比建议：本机锚定项目是"你现在用的方向代表"，同榜里星标 / 被收藏明显更高的同类，
+    # 标成「同类更优」；阈值取锚定星标的 1.5 倍且至少高出 1000 星，避免小差距也喊更优。
+    pinned_stars = [int(x.get("stars") or 0) for x in items if x.get("pinned")]
+    bench = max(pinned_stars) if pinned_stars else 0
+    for it in items:
+        if it.get("pinned"):
+            it["better_peer"] = False
+            continue
+        stars = int(it.get("stars") or 0)
+        it["better_peer"] = _oss_better_peer(bench, stars)
+    for rank, it in enumerate(items, 1):
+        it["rank"] = rank
+    with _OSS_WATCH_LOCK:
+        _OSS_WATCH["items"] = items
+        _OSS_WATCH["ts"] = time.time()
+        _OSS_WATCH["note"] = "实时" if items else "清单暂无可用仓库"
+        _OSS_WATCH["matched"] = matched
+        _OSS_WATCH["next_try"] = 0.0
+    _note_item_hosts(items)
+    _oss_watch_save_disk()
+    print("[ok] 开源关注榜: %d 条（关键词 %d · 锚定 %d · 本机命中 %d）"
+          % (len(items), len(keywords), len(repos), len(matched)))
+    return len(items)
+
+
+def _kick_oss_watch(force=False):
+    """后台补一轮关注榜：过期 / 清单为空占位时敲门，本轮先回旧榜。"""
+    keywords, repos, _ = _oss_watch_config()
+    if not keywords and not repos:
+        return False
+    now = time.time()
+    with _OSS_WATCH_LOCK:
+        if _OSS_WATCH_BUSY[0]:
+            return False
+        _short = len(_OSS_WATCH["items"]) < 1
+        if not force and not _short and (now - _OSS_WATCH["ts"] < OSS_WATCH_TTL
+                                         or now < _OSS_WATCH["next_try"]):
+            return False
+        _OSS_WATCH_BUSY[0] = True
+
+    def _bg():
+        try:
+            _oss_watch_refresh()
+        except Exception as ex:
+            print("[warn] 开源关注榜后台异常: %s" % type(ex).__name__)
+        finally:
+            with _OSS_WATCH_LOCK:
+                _OSS_WATCH_BUSY[0] = False
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return True
+
+
+def _oss_watch_snapshot():
+    with _OSS_WATCH_LOCK:
+        return (list(_OSS_WATCH["items"]), float(_OSS_WATCH["ts"]),
+                _OSS_WATCH["note"], list(_OSS_WATCH.get("matched") or []))
+
+
 def _oss_speed_rebuild(channel, items):
     """某一路榜单换批成功 → 用基准算这一路的真实净增，再与另一路合并成速榜。
 
@@ -13803,9 +14482,11 @@ def api_oss():
     前端拿不到条目就把这一栏整块收起 —— 这一栏是加料，不该在任何情况下报错。
     """
     _kick_oss()
+    _kick_oss_watch()
     items, ts, note = _oss_snapshot()
     week_items, week_ts, week_note = _oss_week_snapshot()
     speed_items, speed_ts, speed_note, speed_real = _oss_speed_snapshot()
+    watch_items, watch_ts, watch_note, watch_matched = _oss_watch_snapshot()
     # 【十六修】本批没有新增涨星时，页面显示的是「最近一次真实净增」，必须如实
     # 标出时间，不能让人以为这是刚刷出来的实时数据。
     speed_stale, speed_real_at, speed_has = _oss_speed_meta()
@@ -13819,9 +14500,11 @@ def api_oss():
     # 三榜严格 20 是用户 10-25 定死的展示口径，扩池只为让播报有得轮换。
     week_items = _oss_display_rows(week_items)[:OSS_LIMIT]
     speed_items = _oss_display_rows(speed_items)[:OSS_LIMIT]
+    watch_items = _oss_display_rows(watch_items)[:OSS_WATCH_LIMIT]
     _note_item_hosts(items)
     _note_item_hosts(week_items)
     _note_item_hosts(speed_items)
+    _note_item_hosts(watch_items)
     return JSONResponse({
         "version": VERSION,
         "cls": OSS_CLS,
@@ -13848,6 +14531,13 @@ def api_oss():
         "speed_stale": bool(speed_stale and speed_has),
         "speed_real_at": int(speed_real_at),
         "speed_items": speed_items,
+        # 【2026-11-25】自定义关注榜：本机方向关键词 + 锚定仓库，独立一档。清单为空时
+        # watch_count=0，前端不显示「关注」按钮。
+        "watch_count": len(watch_items),
+        "watch_updatedAt": int(watch_ts),
+        "watch_source": watch_note or ("本机缓存" if watch_items else "等待抓取"),
+        "watch_matched": watch_matched,
+        "watch_items": watch_items,
     }, media_type="application/json; charset=utf-8")
 
 
@@ -14158,13 +14848,22 @@ def api_quit(request: Request):
 
 
 # ---------------- 翻译（国际栏目 英 → 中） ----------------
-# MyMemory 免费免 key 但有每日额度，故译文永久缓存到本地磁盘：
+# 翻译后端有每日/每月额度限制，故译文永久缓存到本地磁盘：
 # 同一条原文一辈子只翻译一次，后续刷新与重启都直接命中缓存。
 _TRANS_CACHE_FILE = os.path.join(
     os.getenv("LOCALAPPDATA") or tempfile.gettempdir(), "hotnews", "translate_cache.json")
 _TRANS_CACHE = {}
 _TRANS_DIRTY = [False]
 _TRANS_LOCK = threading.Lock()
+# 有道演示端点是免 key 兜底，并发会瞬间触发 411「请求频率过快」；这把锁把
+# 走有道的请求压成串行，两段之间留一个节流间隔，避免整批被限频掐断。
+_YD_LOCK = threading.Lock()
+_YD_LAST = [0.0]
+_YD_FAIL = [0]              # 有道连续失败计数；连续两条才判整批熔断
+# 百度通用翻译：标准版 QPS=1，并发会撞 54003 限流；这把锁把百度请求压成串行，
+# 两段之间留节流间隔。高级版 QPS=10 后可放宽，但串行也够用、不踩限频。
+_BD_LOCK = threading.Lock()
+_BD_LAST = [0.0]
 # 翻译熔断：本批一旦撞上限流/额度用尽就置位，后续条目直接放原文。
 # 额度按天重置，所以每批任务开始时复位一次（给后端一次机会），而不是永久性熔断。
 _TRANS_BREAK = [False]
@@ -14192,15 +14891,15 @@ def _save_trans_cache():
 
 
 def _translate_backend(text):
-    """调用配置的翻译后端（baidu / deepl / mymemory）。
+    """调用配置的翻译后端（baidu / deepl）。
 
     返回 (译文, 状态)：状态为 ok / quota / err。
-      quota = 当日免费额度用尽或被限流（429 / MYMEMORY WARNING），再试也没用 → 调用方熔断；
+      quota = 当日免费额度用尽或被限流（429 / 54003 等），再试也没用 → 调用方熔断；
       err   = 网络抖动等可重试错误。
-    早期版本失败一律返回空串并盲目重试，实测 MyMemory 额度耗尽时会让 45 段各重试 3 次、
+    早期版本失败一律返回空串并盲目重试，实测免费额度耗尽时会让几十段各重试 3 次、
     每段白等数秒，单次抓取被拖到 90s 以上。区分出 quota 才能第一时间停手。"""
     cfg = CONFIG.get("translate", {})
-    backend = cfg.get("backend", "mymemory")
+    backend = cfg.get("backend", "baidu")
     try:
         if backend == "baidu":
             bd = cfg.get("baidu", {})
@@ -14209,14 +14908,24 @@ def _translate_backend(text):
             salt = str(int(time.time()))
             sign = hashlib.md5((bd["appid"] + text + salt + bd["secret"])
                                .encode("utf-8")).hexdigest()
-            with httpx.Client(timeout=15, trust_env=False) as c:
-                r = c.get("https://fanyi-api.baidu.com/api/trans/vip/translate", params={
-                    "q": text, "from": "en", "to": "zh",
-                    "appid": bd["appid"], "salt": salt, "sign": sign})
-                js = r.json()
+            with _BD_LOCK:
+                gap = 1.1 - (time.time() - _BD_LAST[0])
+                if gap > 0:
+                    time.sleep(gap)
+                with httpx.Client(timeout=15, trust_env=False) as c:
+                    r = c.get("https://fanyi-api.baidu.com/api/trans/vip/translate", params={
+                        "q": text, "from": "en", "to": "zh",
+                        "appid": bd["appid"], "salt": salt, "sign": sign})
+                    js = r.json()
+                _BD_LAST[0] = time.time()
             if js.get("trans_result"):
                 return js["trans_result"][0]["dst"], "ok"
-            return "", "quota" if r.status_code == 429 else "err"
+            # 54003=访问/频率受限（服务未开通或超 QPS）；54004=额度耗尽；54005/54006 计费类。
+            # 这些再试也是同样结果，按 quota 熔断，别每段白等重试。
+            ec = str(js.get("error_code") or "")
+            if ec in ("54003", "54004", "54005", "54006") or r.status_code == 429:
+                return "", "quota"
+            return "", "err"
         if backend == "deepl":
             dk = cfg.get("deepl", {})
             if not dk.get("auth_key"):
@@ -14228,22 +14937,49 @@ def _translate_backend(text):
             if js.get("translations"):
                 return js["translations"][0]["text"], "ok"
             return "", "quota" if r.status_code == 429 else "err"
-        # mymemory：免费免 key。配了 contact(邮箱) 可把额度从 5k/天 提到 50k/天
-        params = {"q": text[:480], "langpair": "en|zh-CN"}
-        if cfg.get("contact"):
-            params["de"] = cfg["contact"]
-        with httpx.Client(timeout=15, trust_env=False) as c:
-            r = c.get("https://api.mymemory.translated.net/get", params=params)
-            if r.status_code == 429:
-                return "", "quota"
-            js = r.json()
-        t = (js.get("responseData") or {}).get("translatedText", "")
-        if t and "MYMEMORY WARNING" not in t.upper():
-            return html.unescape(t), "ok"          # 接口返回的是 HTML 实体
-        # 返回体里带 MYMEMORY WARNING 就是那句「今日免费额度已用完」
-        return "", ("quota" if "MYMEMORY WARNING" in t.upper() else "err")
+        return "", "err"
     except Exception:
         return "", "err"
+
+
+def _translate_youdao(text):
+    """有道公开演示端点（免 key，境内直连）。返回 (译文, 状态)。
+
+    与桌面壁纸同款端点 aidemo.youdao.com；演示档短时高频会回 411「请求频率过快」，
+    冷却几秒即恢复，所以这里退避重试两次。返回译文里夹着 `%20` 占位空格，
+    统一还原成普通空格并压掉多余空白。errorCode 411/412/413 按 quota 处理。"""
+    q = urllib.parse.quote(text[:480])
+    with _YD_LOCK:
+        # 两段之间至少隔 1.2 秒，单线程限速；撞 411 再退避重试。
+        gap = 1.6 - (time.time() - _YD_LAST[0])
+        if gap > 0:
+            time.sleep(gap)
+        for attempt in range(3):
+            try:
+                with httpx.Client(timeout=10, trust_env=False,
+                                  headers={"User-Agent": "Mozilla/5.0"}) as c:
+                    r = c.get("https://aidemo.youdao.com/trans",
+                              params={"q": q, "from": "en", "to": "zh-CHS"})
+                _YD_LAST[0] = time.time()
+                if r.status_code == 429:
+                    return "", "quota"
+                js = r.json()
+                code = str(js.get("errorCode") or "0")
+                if code in ("411", "412", "413"):
+                    time.sleep(2.5 * (attempt + 1))
+                    continue
+                tr = js.get("translation") or []
+                if tr:
+                    out = str(tr[0])
+                    # 演示端点把空格编码成畸形的 `% 20`（百分号+空格+20），unquote 解不开，
+                    # 正则清掉这类残留后再压多余空白。
+                    out = re.sub(r"%\s*20", " ", out)
+                    out = re.sub(r"\s+", " ", html.unescape(out)).strip()
+                    return out, "ok"
+                return "", "err"
+            except Exception:
+                return "", "err"
+    return "", "quota"
 
 
 def _translate_text(text):
@@ -14255,7 +14991,7 @@ def _translate_text(text):
     if hit:
         return hit
     # 【2026-10-10 修 声明不符】默认值从 True 改成 False。
-    # 翻译会把条目标题/摘要发到**第三方服务**（mymemory / deepl 在境外，baidu 在境内），
+    # 翻译会把条目标题/摘要发到**第三方服务**（百度在境内，DeepL 在境外），
     # 这与 docs/COMPLIANCE.md「不采集、不上传任何用户数据」「默认只用境内……」两句容易读成冲突，
     # 也和 docs/SECURITY.md 里承认的"可选机器翻译"口径对不上。
     # 现在：**默认关闭**；用户显式打开才会出网。对应披露写进 docs/COMPLIANCE.md 与 README.md。
@@ -14263,19 +14999,31 @@ def _translate_text(text):
         return ""
     if _TRANS_BREAK[0]:
         return ""                      # 本批已熔断（额度用尽），直接放原文，不再发无效请求
-    # MyMemory 并发稍高会间歇性拒绝（并非额度耗尽），失败后降速重试两次
-    out = ""
-    for attempt in range(3):
-        out, st = _translate_backend(text)
+    # 主后端（百度 / DeepL）额度用尽后，同一批不再每段先撞一遍主接口
+    # （15 秒超时 × 并发，既拖时间又把兜底有道一起打凉）；直接走有道兜底。
+    out, st = "", "err"
+    if not _TRANS_BREAK[0]:
+        for attempt in range(3):
+            out, st = _translate_backend(text)
+            if out:
+                break
+            if st == "quota":
+                break
+            time.sleep(0.6 * (attempt + 1))
+    # 主后端额度用尽 / 抽风时，回退有道公开演示端点（境内直连、免 key）。
+    # 有道演示档偶发 411 限频，重试退避后多半能成；连续两条都被限频才判整批熔断，
+    # 单条失败只跳过本条、放原文，不把整批其余条目一起掐掉。
+    if not out:
+        out, st2 = _translate_youdao(text)
         if out:
-            break
-        if st == "quota":
-            # 额度是按天重置的，同一批剩下的几十段再试也必然失败：立刻熔断，
-            # 把整批的耗时从「每段各等 3 次重试」压到「只失败一次」。
-            _TRANS_BREAK[0] = True
-            print("[warn] 翻译额度用尽/被限流 → 本批熔断，其余条目保留英文原文")
-            return ""
-        time.sleep(0.6 * (attempt + 1))
+            st = "ok"
+            _YD_FAIL[0] = 0
+        else:
+            _YD_FAIL[0] += 1
+            if _YD_FAIL[0] >= 2 and st == "quota" and st2 == "quota":
+                _TRANS_BREAK[0] = True
+                print("[warn] 翻译额度用尽/被限流（主后端 + 有道连续不可用）→ 本批熔断，其余条目保留英文原文")
+                return ""
     if out and out != text:
         with _TRANS_LOCK:
             _TRANS_CACHE[text] = out
@@ -14290,9 +15038,10 @@ def _translate_items(items, max_items=200):
     if not todo:
         return items
     _TRANS_BREAK[0] = False       # 新一批从干净状态开始（额度可能已跨天恢复）
+    _YD_FAIL[0] = 0
     # 【2026-10-07 修「国际娱乐一部分变英文」】原来 title 和 desc 交替入队，
     # 摘要（200 字≈40 词）是标题的 4 倍长，161 条一起译要 8000+ 词，
-    # 直接把 MyMemory 免费额度（匿名 5k 词/天）打爆 → 连标题都没译出来。
+    # 容易把翻译免费额度打爆 → 连标题都没译出来。
     # 改成**两轮：先把所有标题译完，再译摘要**。额度不够时，最显眼的标题一定全中文。
     jobs = []
     for it in todo:
@@ -14314,7 +15063,9 @@ def _translate_items(items, max_items=200):
             pending.append((it, field, src))
     if pending:
         t0 = time.time()
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        # 百度标准版 QPS=1：并发会撞 54003，压成单线程串行；其余后端仍并发。
+        workers = 1 if CONFIG.get("translate", {}).get("backend") == "baidu" else 4
+        with ThreadPoolExecutor(max_workers=workers) as ex:
             outs = list(ex.map(lambda x: _translate_text(x[2]), pending))
         ok = 0
         for (it, field, src), out in zip(pending, outs):
@@ -14324,7 +15075,7 @@ def _translate_items(items, max_items=200):
                 ok += 1
         print(f"[ok] 翻译 {ok}/{len(pending)} 段，耗时 {time.time() - t0:.1f}s")
         if ok < len(pending):
-            # 多半是 MyMemory 当日免费额度用尽（返回 MYMEMORY WARNING）。译不出的保留英文，
+            # 多半是翻译额度用尽或被限流。译不出的保留英文，
             # 且**不写缓存**，下一轮会重试，额度恢复后自动补齐。
             print(f"[warn] 有 {len(pending) - ok} 段未译出（额度用尽或被限流），保留英文原文，稍后重试")
         dirty = True
@@ -14339,13 +15090,14 @@ def _translate_intl_bg(items):
     """后台把国际条目译成中文。就地修改这批 item（与 PRELOAD 里是同一批对象引用），
     所以译文补上后，前端下一次拉数据自然就是中文，用户无需任何操作。"""
     _TRANS_BUSY[0] = True
+    print(f"[ok] 后台翻译线程启动：{len(items)} 条待处理")
     try:
         t0 = time.time()
         _translate_items(items)
         n = sum(1 for it in items if it.get("translated"))
         print(f"[ok] 国际后台翻译：{n}/{len(items)} 条已中文化，耗时 {time.time() - t0:.1f}s")
     except Exception as ex:
-        print(f"[warn] 后台翻译异常: {type(ex).__name__}（保留英文原文）")
+        print(f"[warn] 后台翻译异常: {type(ex).__name__}: {ex}（保留英文原文）")
     finally:
         _TRANS_BUSY[0] = False
 
@@ -14379,7 +15131,7 @@ def api_translate(request: Request, text: str = Query(""), target: str = "zh-CN"
         with _TRANS_LOCK:
             _TRANS_DIRTY[0] = False
             _save_trans_cache()
-        return {"ok": True, "backend": cfg.get("backend", "mymemory"), "text": out}
+        return {"ok": True, "backend": cfg.get("backend", "baidu"), "text": out}
     return {"ok": False, "reason": "翻译失败或额度耗尽"}
 
 
@@ -14428,7 +15180,7 @@ _MISSING_UI_PAGE = """<!doctype html>
 <li>还不行就结束进程后重开：任务管理器里结束 <code>热点新闻.exe</code>，再双击程序。</li>
 </ol>
 <p style="color:#8b93a7;font-size:13px">作者：海风（kele551） ·
-https://gitcode.com/kele551/hotnews</p>
+https://github.com/kele551/hotnews</p>
 </div></body></html>"""
 
 
@@ -14499,6 +15251,11 @@ def index(request: Request):
             "oss_speed_stale": bool(_sp_meta[0] and _oss_speed_snap[0]),
             "oss_speed_real_at": int(_sp_meta[1]),
             "oss_speed_source": _oss_speed_snap[2],
+            # 【2026-11-25】自定义关注榜首屏快照（只读，不发请求）。
+            "oss_watch": _oss_display_rows(_oss_watch_snapshot()[0]),
+            "oss_watch_at": int(_oss_watch_snapshot()[1]),
+            "oss_watch_source": _oss_watch_snapshot()[2],
+            "oss_watch_matched": _oss_watch_snapshot()[3],
         }
         # 【修 高-1】首屏这几条的图片域名也登记进 /img 白名单
         _note_item_hosts(payload["items"])
@@ -14506,6 +15263,7 @@ def index(request: Request):
         _note_item_hosts(payload["oss"])
         _note_item_hosts(payload["oss_week"])
         _note_item_hosts(payload["oss_speed"])
+        _note_item_hosts(payload["oss_watch"])
         blob = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
         ssr = tpl.replace("__SSR_DATA__", blob)
         ssr = ssr.replace('__SSR_REGION__', "cn")
@@ -14581,7 +15339,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 def world_page():
     """国际板的「纯英文版」页面。
 
-    背景：国际源原文是英文，机翻接口（MyMemory）不限流时才可用，慢的时候一组要 90s+，
+    背景：国际源原文是英文，机翻接口不限流时才可用，慢的时候一组要 90s+，
     所以抓取链路已经不等翻译。这一页把内容以真正的英文文档返回（<html lang="en">），
     交给浏览器自带的整页翻译（Edge/Chrome）接管 —— 用的是浏览器自己的翻译服务，
     速度快、没有额度限制，也不需要我们的服务器去做任何请求。

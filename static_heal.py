@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
+# 作者: 海风（kele551）   https://github.com/kele551/hotnews
 """静态界面文件自愈 —— 2026-10-18 事故固化。
 
 事故（用户报「打开没有显示」）：

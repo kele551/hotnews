@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
+# 作者: 海风（kele551）   https://github.com/kele551/hotnews
 """热点新闻 —— 发版前自检闸门（必须全绿才允许发布）
 
 为什么这个文件在仓库里：
@@ -69,10 +69,10 @@ INTL_FINAL = ('要闻', '科技', '财经', '娱乐', '体育', '热榜')
 # 已经**整栏下线**的栏目名（国内不许再登记，国际栏的「要闻 / 体育」是正式栏目、不在其中）
 DOMESTIC_GONE = ('社会', '要闻', '体育')
 
-GITCODE_REPO = 'https://gitcode.com/kele551/hotnews'
-GITEE_REPO = GITCODE_REPO      # 历史变量名（部分小节仍按这个名字引用；主源已迁 GitCode）
 GITHUB_REPO = 'https://github.com/kele551/hotnews'
-UA = 'HotnewsPreflight/1.0 (+%s)' % GITCODE_REPO
+GITCODE_REPO = 'https://github.com/kele551/hotnews'
+GITEE_REPO = GITCODE_REPO      # 历史变量名（部分小节仍按这个名字引用；GitCode 现为镜像）
+UA = 'HotnewsPreflight/1.0 (+%s)' % GITHUB_REPO
 
 USAGE = """热点新闻发版前自检 —— 用法
 
@@ -791,10 +791,10 @@ check('对外文档里没有私人邮箱（已归一化空格/全角；允许 Gi
       not _mail_hits, '；'.join(_mail_hits[:3]))
 
 check('README 里有署名「海风（kele551）」与仓库地址',
-      ('海风（kele551）' in _rm) and ('gitcode.com/kele551/hotnews' in _rm))
+      ('海风（kele551）' in _rm) and ('github.com/kele551/hotnews' in _rm))
 check('docs/COMPLIANCE.md 里有署名与仓库地址',
       ('海风（kele551）' in (_texts.get('docs/COMPLIANCE.md') or ''))
-      and ('gitcode.com/kele551/hotnews' in (_texts.get('docs/COMPLIANCE.md') or '')))
+      and ('github.com/kele551/hotnews' in (_texts.get('docs/COMPLIANCE.md') or '')))
 
 _req = read(os.path.join(REPO, 'requirements.txt')) or ''
 _lack = [d for d in ('fastapi', 'uvicorn', 'feedparser', 'httpx') if d not in _req]

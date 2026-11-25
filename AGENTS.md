@@ -54,23 +54,21 @@ python tools/preflight_release.py    # 发版前自检（发布前必须全绿�
 - 加分/换源这类改动，请在 PR / 回复里附**实测三连**：能连通、带图（短边 ≥300）、有当天或近日内容；
 - 界面/口径类改动，说明你**怎么验证的**（跑了哪条命令、看了哪个栏目）。
 
-## 平台（三个，代码一致）
+## 平台（GitHub 主源，GitCode/AtomGit 镜像）
 
-代码同时镜像到三处：**GitCode（主源）** / **GitHub（镜像）** / **AtomGit（代码镜像）**。
-二进制发行包发 **GitCode 与 GitHub** 两处；AtomGit 会在几分钟内把 GitHub 的发行版**连同附件**
-一起镜像过去（2026-10-26 实测；早期"AtomGit 没有附件上传接口、只能发源码"的说法已过期）。
+代码主线与对外地址以 **GitHub（主源）** 为准；**GitCode（=AtomGit）仅作国内镜像，不再主动维护**。
+二进制发行包发 **GitHub**；升级版本源与下载直链都走 GitHub。
 
 ```powershell
-# 远端名字按本机 config 为准：gitcode=主源、origin=GitHub 镜像、atomgit=代码镜像
+# 远端名字按本机 config 为准：origin=GitHub 主源、gitcode=GitCode 镜像
 # ⛔ Gitee 早已禁止上传（451），严禁 `git push gitee ...`，也严禁往它传附件 / 发 Release；
 #    线上仓库已清空、本机 remote 与跟踪引用已删除且禁止再添加；对外文案里也不要写它的地址。
-#    下面三条命令是历史记录，推之前一律先 `git remote -v` 看现存远端。
-git push gitcode main --tags                    # GitCode（主源，升级源就从这里读）
-git push origin main --tags                     # GitHub（镜像；本机 remote 名叫 origin）
-git push atomgit main --tags                    # AtomGit（令牌走 GIT_ASKPASS，不会出现在命令行）
+#    推之前一律先 `git remote -v` 看现存远端。
+git push origin main --tags                     # GitHub（主源；本机 remote 名叫 origin）
+git push gitcode main --tags                    # GitCode（被动镜像，不单独维护）
 ```
 
-三个平台改完都要推，**内容必须逐字节一致**（判定方法：`git diff github/main gitcode/main` 应为空）。
+镜像与主源改完都要推，**内容必须逐字节一致**（判定方法：`git diff origin/main gitcode/main` 应为空）。
 
 ## 任务从哪来
 

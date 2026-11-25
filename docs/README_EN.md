@@ -1,6 +1,6 @@
 # hotnews — a local news digest for Windows
 
-> Author: **HaiFeng (kele551)** · GitCode (primary): <https://gitcode.com/kele551/hotnews> · GitHub (mirror): <https://github.com/kele551/hotnews> · AtomGit (code mirror): <https://atomgit.com/kele551/hotnews>
+> Author: **HaiFeng (kele551)** · GitHub (primary): <https://github.com/kele551/hotnews> · GitCode (mirror): <https://gitcode.com/kele551/hotnews>
 > 中文说明见 [../README.md](../README.md)
 
 A **local web app in a single exe** (no installer). It fetches **public headlines and links** from Chinese
@@ -23,8 +23,8 @@ news sources, groups them into domestic / international columns, and serves the 
 
 ## Download and run
 
-- **GitCode (primary, faster in mainland China)**: <https://gitcode.com/kele551/hotnews/releases> — download `hotnews-v1.5.5.exe`
-- **GitHub (mirror)**: <https://github.com/kele551/hotnews/releases>
+- **GitHub (primary)**: <https://github.com/kele551/hotnews/releases> — download `hotnews-v1.6.0.exe`
+- **GitCode (mirror)**: <https://gitcode.com/kele551/hotnews/releases>
 
 Double-click the exe; the browser opens automatically. Exit from the page's top-right "退出程序" button.
 

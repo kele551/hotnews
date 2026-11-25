@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 作者: 海风（kele551）   https://gitcode.com/kele551/hotnews
+# 作者: 海风（kele551）   https://github.com/kele551/hotnews
 """新闻流配额 _pick_news_with_quota 的单测 —— 2026-11-12「娱乐整栏消失」的修复。
 
 背景（装机态实测，2026-11-12 21:4x）：

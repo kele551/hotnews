@@ -17,6 +17,7 @@
 import ast
 import os
 import re
+import json
 import html
 import hashlib
 import ipaddress
@@ -29,7 +30,7 @@ SERVER = os.path.join(REPO, "server.py")
 INDEX = os.path.join(REPO, "static", "index.html")
 
 WANT_FUNCS = {"_clean", "_oss_window_date", "_oss_search_url", "_oss_created_ts",
-              "_oss_link", "_oss_desc", "_oss_items_from_payload",
+              "_oss_link", "_oss_desc", "_oss_items_from_payload", "_oss_topic_of",
               # 【2026-11-12】周榜：只做定义与接线断言，不在这里调用（它们要碰网络 / 气泡）
               "_oss_week_load_disk", "_oss_week_announce", "_oss_week_refresh",
               "_kick_oss_week",
@@ -52,16 +53,26 @@ WANT_FUNCS = {"_clean", "_oss_window_date", "_oss_search_url", "_oss_created_ts"
               # 【2026-11-12 十四修 / 十五修】网页卡片描述行：纯中文用途说明 + 出口补字段/过滤
               "_oss_card_intro", "_oss_with_intro", "_oss_display_rows",
               # 【2026-11-12 九修】气泡抬头拆分：周榜气泡抬头要正确取到「开源周榜」
-              "_balloon_split_head"}
+              "_balloon_split_head",
+              # 【2026-11-25】自定义关注榜：配置读取 / 纯映射 / 快照（网络部分只做接线断言）
+              "_oss_watch_config", "_oss_watch_snapshot", "_oss_watch_pick",
+              "_oss_installed_map", "_oss_installed_programs",
+              "_oss_watch_topics", "_oss_watch_topic_search", "_oss_better_peer",
+              "_github_token", "_github_headers"}
 WANT_CONSTS = {"OSS_ENABLED", "OSS_CLS", "OSS_SOURCE_ID", "OSS_SOURCE_LABEL",
                "OSS_WINDOW_DAYS", "OSS_LIMIT", "OSS_POOL_EXTRA", "OSS_TTL", "OSS_FAIL_TTL",
                "OSS_SEARCH_URL", "OSS_IMAGE_BASE", "OSS_AVATAR_HOST", "OSS_NAME_RX", "_OSS_BLOCK_RX",
+               "_OSS_BOT_OWNER_RX", "_OSS_PLACEHOLDER_RX", "_OSS_NONAPP_RX", "_OSS_TOPIC_SKIP",
+               "_OSS_TOPIC_KEYWORDS", "_OSS_TOPIC_MAX",
                "OSS_WEEK_DAYS", "OSS_WEEK_LIMIT", "OSS_WEEK_TTL",
                "OSS_WEEK_MIN_VELOCITY", "OSS_WEEK_SHOWN_TTL", "OSS_SPEED_LIMIT",
                "OSS_SPEED_MIN_HOURS", "OSS_SPEED_SEED_TTL", "OSS_SPEED_BASE_MAX_AGE",
                "OSS_TOAST_MS", "BALLOON_PER_ITEM_MS",
                "OSS_BOOM_TOAST_GAP", "OSS_BOOM_TOAST_PICK", "APP_URL",
-               "_GH_BADGE_PNG_B64", "SOURCES"}
+               "_GH_BADGE_PNG_B64", "SOURCES",
+               "OSS_WATCH_TTL", "OSS_WATCH_LIMIT", "OSS_WATCH_PER_QUERY",
+               "OSS_WATCH_TOPIC_TAGS", "OSS_WATCH_TOPIC_PER_TAG",
+               "_OSS_INSTALLED_MAP", "_OSS_FALLBACK_MAP"}
 
 CST = timezone(timedelta(hours=8))
 # 全程钉死这一天：跨天跑测试不许变绿变红（口径断言要的是"30 天前那个日期"，不是"今天"）
@@ -91,7 +102,8 @@ def load():
     tree = ast.parse(src)
     ns = {"re": re, "html": html, "hashlib": hashlib, "ipaddress": ipaddress,
           "urllib": urllib, "urllib.parse": urllib.parse,
-          "datetime": datetime, "timedelta": timedelta, "timezone": timezone, "CST": CST}
+          "datetime": datetime, "timedelta": timedelta, "timezone": timezone, "CST": CST,
+          "os": os, "json": json, "time": __import__("time")}
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in WANT_FUNCS and not node.decorator_list:
             exec(compile(ast.Module(body=[node], type_ignores=[]), SERVER, "exec"), ns)
@@ -129,6 +141,9 @@ def repo(name, stars, created="2026-10-05T09:12:33Z", desc="A tiny thing", lang=
          "stargazers_count": stars, "forks_count": kw.get("forks", stars // 10),
          "created_at": created, "description": desc, "language": lang,
          "topics": kw.get("topics", []), "archived": kw.get("archived", False)}
+    for k in ("fork", "is_template", "owner", "_pinned"):
+        if k in kw:
+            r[k] = kw[k]
     return r
 
 
@@ -136,6 +151,10 @@ def main():
     ns, tree, src = load()
     OSS_CLS = ns["OSS_CLS"]
     mk = ns["_oss_items_from_payload"]
+    # 关注榜配置读取依赖模块级 CONFIG；摘要模式没有，这里注入一份假配置。
+    ns["CONFIG"] = {"watchlist": {"enabled": True,
+                                  "keywords": ["iptv", "media player"],
+                                  "repos": ["Threadfin/Threadfin", "iptv-org/iptv"]}}
 
     print("---- 1) 榜单口径：窗口 / 排序参数 / 时间解析")
     check("近 30 天 → 窗口日期", ns["_oss_window_date"](30, FIXED_TODAY), "2026-09-28")
@@ -241,6 +260,38 @@ def main():
     check("archived（站方自己都不维护了）→ 剔除",
           mk({"items": [dict(repo("old/five", 1500), archived=True)]},
              30, 20, FIXED_TODAY, None), [])
+    # 【2026-11-25 准确性】fork / 模板 / 机器人账号 / 占位简介，四类不进新锐榜。
+    _fork = dict(repo("fork/one", 5000), fork=True)
+    check("fork（别人项目的拷贝）→ 剔除", mk({"items": [_fork]}, 30, 20, FIXED_TODAY, None), [])
+    _tmpl = dict(repo("tpl/one", 5000), is_template=True)
+    check("模板仓库（空架子）→ 剔除", mk({"items": [_tmpl]}, 30, 20, FIXED_TODAY, None), [])
+    _bot = repo("dependabot/one", 5000, desc="A thing")
+    check("机器人账号仓库 → 剔除", mk({"items": [_bot]}, 30, 20, FIXED_TODAY, None), [])
+    _placeholder = repo("x/placeholder", 5000, desc="readme")
+    check("占位简介（readme / test repo 等）→ 剔除",
+          mk({"items": [_placeholder]}, 30, 20, FIXED_TODAY, None), [])
+    # 【2026-11-25 准确性】教程 / 清单 / 资料合集不是可当同类用的应用，三榜共用闸一并剔除。
+    for _na in ("awesome-python curated list of python tools",
+                "system-design-primer for learning system design",
+                "roadmap to become a frontend developer",
+                "interview questions and cheatsheet collection"):
+        check_true("教程/清单类被共用闸剔除：%s" % _na[:24],
+                   mk({"items": [repo("na/list", 50000, desc=_na)]},
+                      30, 20, FIXED_TODAY, None) == [])
+    check("干净仓库带 owner 字段不误伤",
+          len(mk({"items": [dict(repo("ok/one", 5000, desc="A useful tool"),
+                                  owner={"login": "alice-dev"})]},
+                 30, 20, FIXED_TODAY, None)), 1)
+    # 【2026-11-25 准确性】同题材扎堆：同一热点事件刷出一堆仓库，每个题材最多留 2 个。
+    _gta = [repo("gta/one", 9000, desc="GTA VI port to PC"),
+            repo("gta/two", 8000, desc="Xbox Series port of GTA VI"),
+            repo("gta/three", 7000, desc="GTA VI compatibility layer"),
+            repo("gta/four", 6000, desc="Run GTA VI on Windows")]
+    check("同题材（GTA/Xbox 移植）最多留 2 条",
+          len(mk({"items": _gta}, 30, 20, FIXED_TODAY, None)), ns["_OSS_TOPIC_MAX"])
+    _mix = _gta + [repo("ok/music", 5000, desc="A self-hosted music streaming server")]
+    check("被挤掉的同题材让位给别的方向（音乐类照常入选）",
+          len(mk({"items": _mix}, 30, 20, FIXED_TODAY, None)), ns["_OSS_TOPIC_MAX"] + 1)
     # 名字里带敏感词也要拦住：上面那条 "bad/one" 是干净名，这里换成会命中的名
     check("仓库名命中 → 剔除", mk({"items": [repo("nsfw/demo", 1500, desc="demo")]},
                                 30, 20, FIXED_TODAY, None), [])
@@ -489,6 +540,8 @@ def main():
                and "7 天周榜 ·" not in idx and "30 天榜 ·" not in idx
                and "涨速榜 · 星/天" not in idx)
     check_true("默认落在周榜", 'state.ossTab = "week"' in idx)
+    check_true("月榜按钮只在当前 tab=month 时高亮（切本机档不再连带点亮月榜）",
+               'data-osstab="month" class="${(_ossA.tab === "month") ? "on" : ""}"' in idx)
     check_true("开源栏标题按栏目叫周榜/速榜/月榜，不写「近 N 天新建」",
                "开源周榜 · 按日均涨星排" in idx and "开源速榜 · 按真实净增星/天排" in idx
                and "开源月榜 · 按累计星标排" in idx
@@ -755,6 +808,9 @@ def main():
     check("有中文用途说明 → usable=True", ns["_oss_cn_usable"](_it_intro), True)
     check("只有英文原文简介 → usable=False",
           ns["_oss_cn_usable"]({"desc": "GitHub 开源月榜｜简介原文：A tool for something"}), False)
+    check("气泡大字不把「简介原文：」前缀词当正文（纯英文走语言兜底标签）",
+          ns["_oss_cn_intro"]({"desc": "GitHub 开源月榜 · Python｜简介原文：A feature-rich CLI downloader",
+                               "lang": "Python"}), "Python 开源项目")
     _cn_good = {"title": "a/good", "velocity": 900,
                 "desc": "GitHub 开源周榜 · Swift｜这是一个全功能的桌面备份工具。"}
     _cn_bad = {"title": "b/bad", "velocity": 5000,
@@ -910,12 +966,17 @@ def main():
                and src.count('"oss_speed": _oss_display_rows(') >= 1)
     check_true("desc 内部字段不动（气泡仍按 ｜ 抽中文，口径不受影响）",
                'bits.append("日均涨星 %d" % int(round(velocity)))' in src)
-    check_true("前端卡片优先用 intro，新闻卡片仍显示 desc",
-               'hasOwnProperty.call(it, "intro")' in idx
-               and 'const desc = (hasIntro ? (it.intro || "") : (it.desc || "")).trim();' in idx)
+    check_true("前端卡片优先用 intro；intro 为空串时回退 desc（不再抱空简介留白）",
+               'const hasIntro = !!(it.intro && String(it.intro).trim());' in idx
+               and 'const desc = (hasIntro ? String(it.intro) : (it.desc || it.desc_en || "")).trim();' in idx)
     check_true("前端描述行对开源卡片加 full 类、CSS 放开多行不裁切",
                'desc${hasIntro ? " full" : ""}' in idx
                and ".news .desc.full" in idx and "overflow:visible" in idx)
+    # 【2026-11-25】开源卡片悬停提示优先中文 intro，没有再退英文 desc_en / 仓库名；
+    # 新闻条目没有 intro，仍用 title_en。
+    check_true("开源卡片悬停提示优先中文简介 intro，空 intro 退 desc_en",
+               "const hoverTitle = hasIntro ? it.intro : (it.desc_en || it.title_en || it.title);" in idx
+               and 'title="${esc(hoverTitle)}"' in idx)
 
     print("---- 8e) 十五修：网页三榜只列有中文介绍的项目")
     _bank = [dict(_card1, title="a/one", rank=1),
@@ -984,6 +1045,121 @@ def main():
     check_true("meta 出口只读快照，不碰网络 / 缓存文件",
                "def _oss_speed_meta" in src
                and "open(" not in "".join(ast.unparse(n) for n in fnodes(tree, "_oss_speed_meta")))
+
+    print("---- 8g) 本机推荐榜（2026-11-25）：本机软件映射 / 配置开关 / 鉴权头 / 前端第四档")
+    # 纯映射：给一份假的本机已装软件清单（DisplayName, Publisher），断言命中方向词/锚定仓库/命中名。
+    _fake_progs = [
+        ("Yaoplayer 1.0.9-2 (公开版)", "Yaoplayer"),
+        ("Mozilla Firefox (x64 zh-CN)", "Mozilla"),
+        ("LibreOffice 26.8.2.2", "The Document Foundation"),
+        ("微信", "腾讯科技(深圳)有限公司"),   # 商业软件：不在映射表，不命中
+        ("Microsoft .NET Runtime - 8.0.34", "Microsoft Corporation"),  # 运行库：不命中
+    ]
+    _mk, _mr, _mm = ns["_oss_installed_map"](_fake_progs)
+    check_true("本机播放器命中媒体播放器方向",
+               any("media player" in k for k in _mk) and "mpv-player/mpv" in _mr)
+    check_true("Firefox / LibreOffice 各带自己方向",
+               any("web browser" in k for k in _mk) and any("office suite" in k for k in _mk))
+    check_true("商业软件与运行库不进命中清单",
+               not any("微信" in m or ".NET" in m for m in _mm))
+    check("命中名带回本机软件（用于页面说明）", _mm,
+          ["Yaoplayer 1.0.9-2 (公开版)", "Mozilla Firefox (x64 zh-CN)", "LibreOffice 26.8.2.2"])
+    # 空清单 → 空方向、不抛异常。
+    check("空软件清单 → 空方向", ns["_oss_installed_map"]([]), ([], [], []))
+    # 主表一条开源软件都没命中时，退一步按在用软件类别找同类开源替代品。
+    _only_commercial = [("微信", "腾讯科技(深圳)有限公司"), ("迅雷", "迅雷网络技术有限公司")]
+    _fk, _fr, _fm = ns["_oss_installed_map"](_only_commercial)
+    check_true("无开源软件时按商业软件类别兜底开源方向",
+               any("messenger" in k or "downloader" in k for k in _fk) and _fm)
+    check_true("兜底命中名仍带回本机软件", "微信" in _fm and "迅雷" in _fm)
+    # 配置开关：enabled=false 整档回空三元组；enabled=true 时方向来自本机扫描（摘要模式读不到
+    # 注册表，回空方向，不报错）。手工 watchlist.keywords/repos 不再并入。
+    ns["CONFIG"]["watchlist"]["enabled"] = False
+    check("watchlist.enabled=false → 空三元组", ns["_oss_watch_config"](), ([], [], []))
+    ns["CONFIG"]["watchlist"]["enabled"] = True
+    _ckw, _crep, _cmatch = ns["_oss_watch_config"]()
+    check_true("开启时配置返回三元组（词/仓/命中）", isinstance(_ckw, list)
+               and isinstance(_crep, list) and isinstance(_cmatch, list))
+    # 锚定老仓库也能进榜：推荐榜复用同一映射函数，不受 30 天窗口剔除（窗口只在搜索 URL 段）。
+    _old = repo("iptv-org/iptv", 144661, created="2018-03-01T09:12:33Z", desc="IPTV playlist collection", lang="JavaScript")
+    _w = mk({"items": [_old]}, days=30, limit=20, today=FIXED_TODAY, translate=None)
+    check_true("锚定老仓库不被窗口剔除（推荐榜要留参考项目）", len(_w) == 1 and _w[0]["title"] == "iptv-org/iptv")
+    # 锚定标记透传：raw 带 _pinned → 条目 pinned=True；普通搜索条目不带。
+    _pin = repo("7zip/7zip", 12000, _pinned=True)
+    _plain = repo("plain/one", 99999)
+    _mix = mk({"items": [_plain, _pin]}, days=30, limit=20, today=FIXED_TODAY, translate=None)
+    check_true("锚定仓库条目带 pinned 标记、普通搜索条目不带",
+               next(x for x in _mix if x["title"] == "7zip/7zip").get("pinned") is True
+               and next(x for x in _mix if x["title"] == "plain/one").get("pinned") is False)
+    # 保底截断：低星锚定不能被高星普通搜索条目挤出前 N（keep_pinned 先留锚定再补其余）。
+    _pool = [repo("plain/big%d" % i, 90000 - i, _pinned=False) for i in range(20)]
+    _pool.append(repo("pin/small", 100, _pinned=True))
+    _keep = mk({"items": _pool}, days=30, limit=20, today=FIXED_TODAY,
+               translate=None, keep_pinned=True)
+    check_true("低星锚定保底进榜、不被高星普通条目挤出",
+               any(x["title"] == "pin/small" for x in _keep) and len(_keep) == 20)
+    # 保底只保证入选，不占前排：整榜按累计星标降序，低星锚定排在高星普通条目之后。
+    _stars = [x["stars"] for x in _keep]
+    check("整榜按星标降序（锚定不固定前排）", _stars, sorted(_stars, reverse=True))
+    # 同类更优阈值：基准 10000 星，达到 1.5 倍且高 1000 星才标更优；小差距不算。
+    _bp = ns["_oss_better_peer"]
+    check("同类更优：1.5 倍且 +1000 星才达标", _bp(10000, 16000), True)
+    check("同类更优：差距不够不算", _bp(10000, 12000), False)
+    check("同类更优：无基准不标", _bp(0, 99999), False)
+    # 鉴权头：无令牌也不报错；令牌不在响应 / 前端页面里泄露。
+    # 本机 secrets 里可能有真 PAT，先把路径屏蔽掉，单独验证匿名兜底分支。
+    _orig_exists = ns["os"].path.exists
+    def _no_secrets(p):
+        return False if "git-credentials" in str(p) else _orig_exists(p)
+    ns["os"].path.exists = _no_secrets
+    _h = ns["_github_headers"]()
+    ns["os"].path.exists = _orig_exists
+    check_true("无令牌时头里只有 Accept（不报错）",
+               "Authorization" not in _h and _h.get("Accept", "").startswith("application/vnd.github"))
+    check_true("推荐榜后端走鉴权头（_github_headers 被搜索/单仓两处调用）",
+               calls_inside(tree, "_oss_watch_search_one", "_github_headers")
+               and calls_inside(tree, "_oss_watch_repo_raw", "_github_headers"))
+    # 前端：第四档「本机」按钮、state 回填、命中清单、标题分支都接上了。
+    check_true("前端有「本机」档按钮与 ossWatch 状态",
+               'data-osstab="watch"' in idx and "state.ossWatch" in idx
+               and "meta.watch_items" in idx and "oss_watch" in idx
+               and "watch_matched" in idx and "ossWatchMatched" in idx)
+    check_true("推荐榜条目经展示出口过滤（与三榜同一道中文简介闸）",
+               calls_inside(tree, "api_oss", "_oss_display_rows"))
+
+    # 【2026-11-25】关注榜接进气泡兜底：纯函数按累计星标排、中文优先、24h 不重播。
+    _wp = ns["_oss_watch_pick"]
+    _now = 10 ** 9
+    _w_cn_high = {"title": "a/hi", "stars": 900,
+                  "desc": "GitHub 开源月榜 · Rust｜这是一个全功能的桌面媒体播放器。"}
+    _w_cn_low = {"title": "b/lo", "stars": 12000,
+                 "desc": "GitHub 开源月榜 · Swift｜一款小巧的录屏剪辑工具。"}
+    _w_bad = {"title": "c/bad", "stars": 30000,
+              "desc": "GitHub 开源月榜 · JavaScript · 日均涨星 346"}
+    check("关注榜兜底：有中文的条目优先（哪怕星标更低）",
+          _wp([_w_bad, _w_cn_low, _w_cn_high], {}, _now, 1)[0]["title"], "b/lo")
+    check("关注榜兜底：同有中文按累计星标降序",
+          _wp([_w_cn_high, _w_cn_low], {}, _now, 2)[0]["title"], "b/lo")
+    check("关注榜兜底：整档无中文才回退标签条目",
+          _wp([_w_bad], {}, _now, 1)[0]["title"], "c/bad")
+    _shown = {"b/lo": _now - 60}
+    check("关注榜兜底：24h 内播过的跳过",
+          _wp([_w_cn_low, _w_cn_high], _shown, _now, 1)[0]["title"], "a/hi")
+    _w_one = _wp([_w_cn_high], {}, _now, 1)[0]
+    check_true("关注档条目标记 boom_watch、不冒充涨速",
+               _w_one.get("boom_watch") is True and _w_one.get("boom_real") is False
+               and _w_one.get("boom_val") == 0.0)
+    # 接线：开源席与暴涨播报都在速/周/月榜挡光后回落到关注榜快照。
+    check_true("开源席兜底接入关注榜快照",
+               calls_inside(tree, "_oss_carousel_seat", "_oss_watch_snapshot")
+               and calls_inside(tree, "_oss_carousel_seat", "_oss_watch_pick"))
+    check_true("暴涨播报兜底接入关注榜快照",
+               calls_inside(tree, "_oss_boom_announce", "_oss_watch_snapshot")
+               and calls_inside(tree, "_oss_boom_announce", "_oss_watch_pick"))
+    _entry_w = ns["_oss_boom_entry"](dict(_w_one))
+    check("关注档气泡文案标注「关注 · 按累计星标排」、右下角不画涨速",
+          _entry_w[6], "")
+    check("关注档气泡来源标注关注", _entry_w[5], "关注 · 按累计星标排")
 
     print("---- 9) 对外文案红线词（新增这一节的代码与注释一起扫）")
     sec = src[src.index("# ============ 开源热榜"):src.index('@app.get("/api/version")')]

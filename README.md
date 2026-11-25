@@ -3,8 +3,8 @@
 
 <h1>hotnews · 热点新闻检索</h1>
 
-<a href="https://gitcode.com/kele551/hotnews/releases" title="点击去下载（各平台发行版合计 · 实时）"><img alt="Downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Ddownloads&style=flat-square" height="30"></a>
-<a href="https://gitcode.com/kele551/hotnews" title="浏览量 · 各平台访问计数合计 · 实时"><img alt="浏览量" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Dviews&style=flat-square" height="30"></a>
+<a href="https://github.com/kele551/hotnews/releases" title="点击去下载（发行版 · 实时）"><img alt="Downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Ddownloads&style=flat-square" height="30"></a>
+<a href="https://github.com/kele551/hotnews" title="浏览量 · 实时"><img alt="浏览量" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fkele551-badge.kele551.workers.dev%2F%3Frepo%3Dhotnews%26kind%3Dviews&style=flat-square" height="30"></a>
 
 <a href="https://github.com/kele551/hotnews/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
 <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square">
@@ -20,15 +20,15 @@
 <img alt="Free" src="https://img.shields.io/badge/费用-免费无广告-brightgreen?style=flat-square">
 <img alt="No Tracking" src="https://img.shields.io/badge/用户数据-不采集不上传-green?style=flat-square">
 
-<a href="https://gitcode.com/kele551/hotnews/releases"><img alt="Download from GitCode" src="https://img.shields.io/badge/%F0%9F%93%A5_%E4%B8%8B%E8%BD%BD-GitCode%E4%B8%BB%E6%BA%90-c71d24?style=flat-square&logo=gitee&logoColor=white&labelColor=3d4552"></a>
-<a href="https://github.com/kele551/hotnews"><img alt="GitHub mirror" src="https://img.shields.io/badge/%F0%9F%90%99_%E6%BA%90%E7%A0%81-GitHub%E9%95%9C%E5%83%8F-24292f?style=flat-square&logo=github&logoColor=white&labelColor=3d4552"></a>
+<a href="https://github.com/kele551/hotnews/releases"><img alt="Download from GitHub" src="https://img.shields.io/badge/%F0%9F%93%A5_%E4%B8%8B%E8%BD%BD-GitHub%E4%B8%BB%E6%BA%90-24292f?style=flat-square&logo=github&logoColor=white&labelColor=3d4552"></a>
+<a href="https://github.com/kele551/hotnews"><img alt="GitHub source" src="https://img.shields.io/badge/%F0%9F%90%99_%E6%BA%90%E7%A0%81-GitHub%E4%B8%BB%E6%BA%90-24292f?style=flat-square&logo=github&logoColor=white&labelColor=3d4552"></a>
 <a href="https://www.bilibili.com/video/BV12BpQ6mEGm"><img alt="Bilibili demo" src="https://img.shields.io/badge/%F0%9F%93%BA_%E6%BC%94%E7%A4%BA-B%E7%AB%99%E8%A7%86%E9%A2%91-00a1d6?style=flat-square&logo=bilibili&logoColor=white&labelColor=3d4552"></a>
 <a href="https://github.com/kele551/hotnews/issues"><img alt="Issues" src="https://img.shields.io/badge/%F0%9F%90%9E_%E5%8F%8D%E9%A6%88-%E6%8F%90Issue-0969da?style=flat-square&labelColor=3d4552"></a>
 <a href="#支持项目"><img alt="Sponsor" src="https://img.shields.io/badge/%E2%98%95_%E8%B5%9E%E8%B5%8F-%E8%AF%B7%E5%96%9D%E5%92%96%E5%95%A1-ff69b4?style=flat-square&labelColor=3d4552"></a>
 
 <p>📰 <b>国内 / 国际热点新闻图库</b>　·　本地抓取，只看标题与原文链接</p>
 
-<p>作者 <b>海风（kele551）</b>　·　<a href="https://gitcode.com/kele551/hotnews">GitCode（主）</a>　·　<a href="https://github.com/kele551/hotnews">GitHub（镜像）</a>　·　<a href="https://atomgit.com/kele551/hotnews">AtomGit（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
+<p>作者 <b>海风（kele551）</b>　·　<a href="https://github.com/kele551/hotnews">GitHub（主源）</a>　·　<a href="https://gitcode.com/kele551/hotnews">GitCode（镜像）</a>　·　<a href="docs/README_EN.md">English</a></p>
 </div>
 
 
@@ -50,23 +50,21 @@
 
 ## 使用
 
-下载 [最新 Release](https://gitcode.com/kele551/hotnews/releases) 里的 `hotnews-v1.6.0.exe`，双击运行，自动打开浏览器。
+下载 [最新 Release](https://github.com/kele551/hotnews/releases) 里的 `hotnews-v1.6.1.exe`，双击运行，自动打开浏览器。
 
 - 自动选端口（8000 起，被占则顺延）
 - 启动时自动检查更新（可关闭，见 `config.json`）
 - 页面右上角「检查更新」手动触发
 - 右下角气泡提醒（见下文），点气泡可直接打开对应新闻
 
-> **国内用户请从 GitCode 下载（速度快）**；**三个平台代码一致**：[GitCode](https://gitcode.com/kele551/hotnews)（主源）· [GitHub](https://github.com/kele551/hotnews)（镜像）· [AtomGit](https://atomgit.com/kele551/hotnews)（自动镜像 GitHub，含发行版附件）。老仓库已于 2026-10-17 起停更，只留最后一版、不再放新包，故不附链接。
-> 境外仓库国内近期时常连不通，所以下载、提 Issue、看协议这三件日常事**都走 GitCode**；GitHub 只在 GitCode 也取不到时当后备。
-> **二进制发行包请从 GitCode（主）或 GitHub（镜像）下载**；三个平台都收 Issue / PR。
+> **代码主线与下载、Issue / PR 都在 [GitHub](https://github.com/kele551/hotnews)（主源）**；[GitCode](https://gitcode.com/kele551/hotnews) 仅作国内镜像，不主动维护。老仓库已于 2026-10-17 起停更，只留最后一版、不再放新包，故不附链接。
 
 ---
 
-## 数据源（v1.6.0）
+## 数据源（v1.6.1）
 
 <details>
-<summary><b>数据源（v1.6.0）</b>（点击展开）</summary>
+<summary><b>数据源（v1.6.1）</b>（点击展开）</summary>
 
 
 每个源都是**实测连通 + 带图**之后才加入的；实测失败的（无法访问、无图、停更）一律没有采用。
@@ -448,10 +446,9 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 > **默认全自动、不弹确认框**：启动后静默检查 → 静默下载 → 验签 + 校验 sha256/尺寸 → 自动替换运行。
 > **只有出问题才提示一次**，并且始终保留旧版本可继续使用。详见下面「升级体验」一节。
 
-- 启动时后台静默检查 `version.json`（国内优先走 GitCode）
-- 更新源按顺序试两个地址，**每一个都必须通过 Ed25519 验签**才被采用：
-  1. `https://gitcode.com/api/v5/repos/kele551/hotnews/raw/version.json?ref=main`（GitCode 主源）
-  2. `https://raw.githubusercontent.com/kele551/hotnews/main/version.json`（GitHub 兜底）
+- 启动时后台静默检查 `version.json`
+- 更新源只走 GitHub 主源，**必须通过 Ed25519 验签**才被采用：
+  1. `https://raw.githubusercontent.com/kele551/hotnews/main/version.json`（GitHub 主源）
 - 发现新版 → 后台下载 exe → 校验 sha256 → 自动替换重启（替换前还会再校验一次尺寸与 sha256）
 - 也可点页面「检查更新」按钮手动触发（手动触发同样不再弹确认框）
 
@@ -535,7 +532,7 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 - **自动构建与产物校验**：`.github/workflows/build.yml` 在 Windows runner 上装依赖、用 `build_exe.spec` 打包、校验版本号与署名、打印每个产物的 SHA256 并上传 artifact；产物来源、SHA256 自核验、将来的代码签名计划，以及升级通道已有的 Ed25519 签名校验，见 [CODE_SIGNING_POLICY.md](docs/CODE_SIGNING_POLICY.md)。
 - **第三方组件与许可**：运行时只依赖 4 个第三方库（版本在 `requirements.txt` 里固定），全部是宽松许可，**没有 GPL/AGPL、没有需要商业授权的组件**：fastapi 0.142.2（MIT）· uvicorn 0.54.0（BSD-3-Clause）· feedparser 6.0.14（BSD-2-Clause）· httpx 0.28.1（BSD-3-Clause）；传递依赖（starlette / pydantic / anyio / h11 / idna / click / certifi 等）的清单见 [COMPLIANCE.md](docs/COMPLIANCE.md) 第 5 节，其余全部是 Python 3.13 标准库。
 - **许可与合规**：MIT，见 [LICENSE](LICENSE)，提交贡献即表示同意以同一许可分发；聚合与抓取边界、隐私、知识产权，以及**数据源合规口径（只用境内站点）与它的两处例外**见 [COMPLIANCE.md](docs/COMPLIANCE.md)（第 7 节、7.1 与 7.3 节：7.1 是国际娱乐栏接入 2 家境外娱乐媒体；7.3 是「开源热榜」这一栏接入 GitHub 公开仓库榜，**属非新闻内容**）。
-- **署名与发布**：中文场景统一写「海风（kele551）」，仓库地址 https://gitcode.com/kele551/hotnews ；维护者用的 `tools/publish.py`、签名私钥与发布凭据都在维护者本机工作区，**不在本仓库内**。
+- **署名与发布**：中文场景统一写「海风（kele551）」，仓库地址 https://github.com/kele551/hotnews ；维护者用的 `tools/publish.py`、签名私钥与发布凭据都在维护者本机工作区，**不在本仓库内**。
 - **行尾与打包清单**：见上文「仓库约定」——`.gitattributes` 统一 LF（`说明.txt` 保持 CRLF）；`python build.py --list` 可以在真正打包前核对清单里没有本机调试产物。
 
 ---
@@ -578,4 +575,4 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 
 ---
 
-<p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://gitcode.com/kele551/hotnews">GitCode 主仓库</a> · <a href="https://github.com/kele551/hotnews">GitHub 镜像</a></sub></p>
+<p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://github.com/kele551/hotnews">GitHub 主仓库</a> · <a href="https://gitcode.com/kele551/hotnews">GitCode 镜像</a></sub></p>

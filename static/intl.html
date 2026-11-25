@@ -16,6 +16,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>World News - HotNews</title>
 <script>
 /* 【2026-10-24 补】这一页原来写死 data-theme="dark"，主题判断在页尾才跑，
@@ -32,7 +33,7 @@
 </script>
 <style>
   :root{
-    --font:"Segoe UI","Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    --font:"Manrope","Geist","Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
     --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
     --bg:#171a20; --bg-1:#1c2027; --card:#20252d; --card-2:#262d37;
     --line:#303844; --line-2:#3e4856;
@@ -83,7 +84,7 @@
   .spacer{flex:1}
   .btn{height:30px;padding:0 12px;border-radius:var(--r-btn);border:1px solid var(--line);
     background:var(--card-2);color:var(--txt);font-size:var(--fs-meta);
-    display:inline-flex;align-items:center;gap:6px;transition:background .15s,border-color .15s}
+    display:inline-flex;align-items:center;gap:6px;transition:background-color 300ms cubic-bezier(0.22,1,0.36,1),border-color 300ms cubic-bezier(0.22,1,0.36,1)}
   .btn:hover{border-color:var(--line-2);background:var(--card)}
   .btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-ink);font-weight:600}
   .btn.primary:hover{filter:brightness(1.07)}
@@ -107,9 +108,9 @@
 
   .news{display:flex;align-items:flex-start;gap:12px;padding:11px 13px;
     border:1px solid var(--line);border-radius:9px;background:var(--card);
-    transition:border-color .15s,transform .15s}
+    transition:border-color 300ms cubic-bezier(0.22,1,0.36,1),transform 300ms cubic-bezier(0.22,1,0.36,1)}
   .news:hover{border-color:var(--line-2);transform:translateX(2px)}
-  .news .rank{width:22px;flex:none;text-align:center;font-size:15px;font-weight:700;
+  .news .rank{width:22px;flex:none;text-align:center;font-size:14px;font-weight:600;
     color:var(--txt-3);font-variant-numeric:tabular-nums;padding-top:1px}
   .news.hot .rank{color:var(--accent)}
   .news .body{flex:1;min-width:0}
@@ -122,12 +123,12 @@
   .news .meta-row{display:flex;align-items:center;gap:7px;margin-top:7px;
     font-size:var(--fs-micro);color:var(--txt-3);flex-wrap:wrap}
   .news .thumb2{width:112px;flex:none;aspect-ratio:16/9;border-radius:6px;overflow:hidden;
-    background:linear-gradient(118deg,var(--card-2),var(--line));display:block}
+    background:var(--card-2);display:block}
   .news .thumb2 img{width:100%;height:100%;object-fit:cover;display:block}
   .news .thumb2 i{display:flex;width:100%;height:100%;align-items:center;justify-content:center;
     font-style:normal;font-size:var(--fs-micro);font-weight:700;color:var(--txt-2);letter-spacing:.5px}
   .tag{display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:5px;
-    font-size:10px;background:var(--card-2);border:1px solid var(--line);color:var(--txt-3);
+    font-size:12px;background:var(--card-2);border:1px solid var(--line);color:var(--txt-3);
     white-space:nowrap}
   .tag.cls{color:var(--txt-2);border-color:var(--line-2)}
   /* 来源上色（与 index.html 同一套：一家一个固定色相，色相来自服务端 SRC_HUES）。
@@ -142,7 +143,7 @@
   .hotrow{display:flex;gap:12px;align-items:center;padding:10px 13px;background:var(--card);
     border:1px solid var(--line);border-radius:9px}
   .hotrow:hover{border-color:var(--line-2)}
-  .hotrow .rank{font-size:15px;font-weight:700;color:var(--txt-3);min-width:22px;text-align:center;
+  .hotrow .rank{font-size:14px;font-weight:600;color:var(--txt-3);min-width:22px;text-align:center;
     font-variant-numeric:tabular-nums}
   .hotrow.hot .rank{color:var(--accent)}
   .hmain{flex:1;display:flex;flex-direction:column;gap:5px;min-width:0}
@@ -152,7 +153,7 @@
   .hmeta{display:flex;gap:8px;align-items:center;font-size:var(--fs-micro);color:var(--txt-3);
     flex-wrap:wrap}
   .srcline{display:inline-flex;align-items:center;gap:4px}
-  .src{font-size:10px;font-weight:700;padding:1px 7px;border-radius:5px;
+  .src{font-size:12px;font-weight:600;padding:1px 7px;border-radius:5px;
     background:var(--card-2);border:1px solid var(--line-2);color:var(--txt-2);white-space:nowrap}
 
   .empty{padding:44px 16px;text-align:center;color:var(--txt-3);
@@ -184,7 +185,7 @@
   </div>
 </header>
 <main><div id="grid"><div class="empty">Loading the latest world headlines...</div></div></main>
-<footer>HotNews &middot; World edition &middot; by HaiFeng (kele551) &middot; gitcode.com/kele551/hotnews (main) &middot; github.com/kele551/hotnews (mirror)</footer>
+<footer>HotNews &middot; World edition &middot; by HaiFeng (kele551) &middot; github.com/kele551/hotnews</footer>
 
 <script>
 /* ================= 主题：与首页共用同一套键，两页观感一致 ================= */

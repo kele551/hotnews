@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>热点新闻检索</title>
 <!--
   【2026-10-24 UI 整改】三栏布局（栏目 / 列表 / 状态），石墨灰暗色为默认，可切亮色。
@@ -14,7 +15,7 @@
 <style>
   /* ===== 设计令牌（四款软件共用一套，本程序只改 --accent） ===== */
   :root{
-    --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Segoe UI",system-ui,sans-serif;
+    --font:"Manrope","Geist","Microsoft YaHei UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
     --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
     --bg:#171a20; --bg-1:#1c2027; --card:#20252d; --card-2:#262d37;
     --line:#303844; --line-2:#3e4856;
@@ -207,7 +208,7 @@
     transition:border-color .15s,transform .15s}
   .news:hover{border-color:var(--line-2);transform:translateX(2px)}
   .news.sel{outline:2px solid var(--accent);outline-offset:1px}
-  .news .rank{width:22px;flex:none;text-align:center;font-size:15px;font-weight:700;
+  .news .rank{width:22px;flex:none;text-align:center;font-size:14px;font-weight:600;
     color:var(--txt-3);font-variant-numeric:tabular-nums;padding-top:1px}
   .news.hot .rank{color:var(--accent)}
   .news .body{flex:1;min-width:0}
@@ -224,14 +225,14 @@
   .news .meta{display:flex;align-items:center;gap:7px;margin-top:7px;
     font-size:var(--fs-micro);color:var(--txt-2);flex-wrap:wrap}
   .news .thumb2{width:112px;flex:none;aspect-ratio:16/9;border-radius:6px;overflow:hidden;
-    background:linear-gradient(118deg,var(--card-2),var(--line));display:block}
+    background:var(--card-2);display:block}
   .news .thumb2 img{width:100%;height:100%;object-fit:cover;display:block;
-    animation:imgfade .3s ease both}
+    animation:imgfade 300ms cubic-bezier(0.22,1,0.36,1) both}
   @keyframes imgfade{from{opacity:0}to{opacity:1}}
   .news .thumb2 i{display:flex;width:100%;height:100%;align-items:center;justify-content:center;
     font-style:normal;font-size:var(--fs-micro);font-weight:700;color:var(--txt-2);letter-spacing:.5px}
   .tag{display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:5px;
-    font-size:10px;background:var(--card-2);border:1px solid var(--line);color:var(--txt-2);
+    font-size:12px;background:var(--card-2);border:1px solid var(--line);color:var(--txt-2);
     white-space:nowrap}
   .tag.cls{color:var(--txt-2);border-color:var(--line-2)}
   .tag.fresh{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,var(--line))}
@@ -246,6 +247,9 @@
      两颗徽章同时出现时用户才看得懂「为什么星少的项目排在前面」。 */
   .tag.vel{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 38%,var(--line));
     background:color-mix(in srgb,var(--ok) 10%,var(--card-2));font-weight:700}
+  /* 本机推荐档：同类方向里星标明显高于本机在用代表项目的，标「同类更优」。 */
+  .tag.better{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--line));
+    background:color-mix(in srgb,var(--ok) 14%,var(--card-2));font-weight:700}
   /* 同一栏目里 30 天 / 7 天 切换，沿用页面已有的按钮配色，不新增第三套主色。 */
   .oss-switch{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
   .oss-switch button{font:inherit;font-size:12px;padding:5px 12px;border-radius:7px;cursor:pointer;
@@ -295,7 +299,7 @@
   .hotrow{display:flex;gap:12px;align-items:center;padding:10px 13px;background:var(--card);
     border:1px solid var(--line);border-radius:9px;transition:border-color .15s,transform .15s}
   .hotrow:hover{border-color:var(--line-2);transform:translateX(2px)}
-  .hotrow .rank{font-size:15px;font-weight:700;color:var(--txt-3);min-width:22px;text-align:center;
+  .hotrow .rank{font-size:14px;font-weight:600;color:var(--txt-3);min-width:22px;text-align:center;
     font-variant-numeric:tabular-nums}
   .hotrow.hot .rank{color:var(--accent)}
   .hotrow .hmain{flex:1;display:flex;flex-direction:column;gap:5px;min-width:0}
@@ -306,7 +310,7 @@
     flex-wrap:wrap}
   .hotrow .heat{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums}
   .srcline{display:inline-flex;align-items:center;gap:4px}
-  .src{font-size:10px;font-weight:700;padding:1px 7px;border-radius:5px;
+  .src{font-size:12px;font-weight:600;padding:1px 7px;border-radius:5px;
     background:color-mix(in srgb,var(--danger) 10%,transparent);
     border:1px solid color-mix(in srgb,var(--danger) 32%,var(--line));
     color:var(--danger);white-space:nowrap}   /* 2026-10-24 用户要求：来源站点用红字 */
@@ -333,7 +337,7 @@
   .srcrow{padding:8px 0}
   .srcrow .txt b{font-size:var(--fs-meta);font-weight:600;display:flex;align-items:center;gap:6px}
   .srcrow .txt span{font-size:var(--fs-micro);color:var(--txt-2);margin-top:1px}
-  .srcrow .pill{height:20px;padding:0 8px;font-size:10px}
+  .srcrow .pill{height:20px;padding:0 8px;font-size:12px}
   .keys{display:flex;flex-direction:column;gap:7px;font-size:var(--fs-meta);margin-top:8px}
   .keys > div{display:flex;justify-content:space-between;align-items:center}
 
@@ -493,7 +497,7 @@
 
     <div id="grid"></div>
 
-    <footer class="ft">热点新闻 · 作者 海风（kele551）　·　<a href="https://gitcode.com/kele551/hotnews" target="_blank" rel="noopener">gitcode.com/kele551/hotnews</a>　·　所有请求只在本机；本页没有任何外部资源</footer>
+    <footer class="ft">热点新闻 · 作者 海风（kele551）　·　<a href="https://github.com/kele551/hotnews" target="_blank" rel="noopener">github.com/kele551/hotnews</a>　·　所有请求只在本机；本页没有任何外部资源</footer>
   </section>
 
   <!-- ============ 右栏：视图开关 + 源健康度 + 快捷键 ============ -->
@@ -593,33 +597,41 @@ state.ossSpeedReal = Number(SSR && SSR.oss_speed_real) || 0;
 state.ossSpeedStale = !!(SSR && SSR.oss_speed_stale);
 state.ossSpeedRealAt = Number(SSR && SSR.oss_speed_real_at) || 0;
 state.ossSpeedSource = (SSR && SSR.oss_speed_source) || "";
+// 【2026-11-25】本机推荐榜（按本机已装软件扫出的方向词 + 锚定仓库）。
+state.ossWatch = (SSR && SSR.oss_watch) || [];
+state.ossWatchAt = Number(SSR && SSR.oss_watch_at) || 0;
+state.ossWatchSource = (SSR && SSR.oss_watch_source) || "";
+state.ossWatchMatched = (SSR && SSR.oss_watch_matched) || [];
 state.ossTab = "week";            // 默认落在 7 天周榜：用户要的就是这批上星快的新项目
 // 气泡点「打开」带 ?oss=week；涨速榜也留一个深链，方便以后投送。
 try{
   const _ossQ = new URLSearchParams(location.search).get("oss");
-  if(_ossQ === "week" || _ossQ === "speed") state.ossTab = _ossQ;
+  if(_ossQ === "week" || _ossQ === "speed" || _ossQ === "watch") state.ossTab = _ossQ;
 }catch(_){ }
 state.ossDeepLinked = false;      // 自动选中栏目只做一次，不反复抢焦点
 // 三档任一有内容就算开源榜还活着（速榜首轮空榜时用它保住左栏与软件栏里的入口）。
 function _ossAliveTop(){
-  return !!(state.oss.length || state.ossWeek.length || state.ossSpeed.length);
+  return !!(state.oss.length || state.ossWeek.length || state.ossSpeed.length || state.ossWatch.length);
 }
 function activeOss(){
   const t = state.ossTab;
-  const raw = t === "week" ? state.ossWeek : (t === "speed" ? state.ossSpeed : state.oss);
+  const raw = t === "week" ? state.ossWeek : (t === "speed" ? state.ossSpeed
+            : (t === "watch" ? state.ossWatch : state.oss));
   return {
     tab: t,
     week: t === "week",
     speed: t === "speed",
+    watch: t === "watch",
     items: Array.isArray(raw) ? raw : [],
     win: t === "speed" ? "7+30"
       : (Number(t === "week" ? state.ossWeekWin : state.ossWin) || (t === "week" ? 7 : 30)),
     at: Number(t === "week" ? state.ossWeekAt
-      : (t === "speed" ? state.ossSpeedAt : state.ossAt)) || 0
+      : (t === "speed" ? state.ossSpeedAt
+        : (t === "watch" ? state.ossWatchAt : state.ossAt))) || 0
   };
 }
 function setOssTab(t){
-  state.ossTab = (t === "week" || t === "speed") ? t : "month";
+  state.ossTab = (t === "week" || t === "speed" || t === "watch") ? t : "month";
   buildClsOptions(); renderLeft(); render();
 }
 // 切换按钮用事件委托：整块 grid 会被反复重建，绑在按钮上重绘一次就丢一次。
@@ -841,7 +853,7 @@ function buildClsOptions(){
   // 下拉里不 push OSS_CLS，左栏也不再显示独立「开源热榜」按钮（见 renderLeft）；
   // 气泡深链 ?oss=week/speed 改成落到「软件」栏并切到对应档（见 applyOss）。
   // 没有软件新闻、但开源榜有数据时，也要把「软件」补进下拉，否则左栏点了选不中。
-  const _ossAlive = (state.oss || []).length || (state.ossWeek || []).length || (state.ossSpeed || []).length;
+  const _ossAlive = (state.oss || []).length || (state.ossWeek || []).length || (state.ossSpeed || []).length || (state.ossWatch || []).length;
   if(_ossAlive && !set.includes("软件")) set.push("软件");
   set.sort((a, b) => clsRank(a) - clsRank(b));
   sel.innerHTML = '<option value="">全部分类</option>' + set.map(c => `<option>${esc(c)}</option>`).join("");
@@ -861,7 +873,7 @@ function renderLeft(){
   // 【2026-11-12 用户定】开源不再单列一栏：把三档条数并进「软件」栏的计数里，
   // 用户点「软件」就看到软件新闻 + GitHub 三榜。左栏从此没有独立「开源热榜」按钮。
   // 三档任一有数据就算开源活着；软件栏计数 = 软件新闻数 + 当前档开源条数。
-  const _ossAlive = (state.oss || []).length || (state.ossWeek || []).length || (state.ossSpeed || []).length;
+  const _ossAlive = (state.oss || []).length || (state.ossWeek || []).length || (state.ossSpeed || []).length || (state.ossWatch || []).length;
   if(_ossAlive) cnt.set("软件", (cnt.get("软件") || 0) + activeOss().items.length);
   const keys = [...cnt.keys()].filter(k => !EXCLUDED_CLS.has(k)).sort((a, b) => clsRank(a) - clsRank(b));
   let html = `<button type="button" class="side-item ${cur === "" ? "on" : ""}" data-cls="">
@@ -909,8 +921,14 @@ function cardHTML(it, showCls, rank){
   // 【2026-11-12 十四修】开源条目由服务端补了 intro（纯中文用途说明），有这个字段
   // 就只显示它：desc 开头那串「GitHub 开源周榜 · 语言 · 日均涨星 N」不再占用描述行，
   // 中文说明整句显示、不截断。新闻条目没有 intro 字段，照旧显示 desc，一个字不动。
-  const hasIntro = Object.prototype.hasOwnProperty.call(it, "intro");
-  const desc = (hasIntro ? (it.intro || "") : (it.desc || "")).trim();
+  // 【2026-11-25 修】intro 可能是空串（翻译未开、站方只有英文原文时，服务端给不出
+  // 中文说明）：这时不能抱着空 intro 不回退，否则卡片描述行整片空白。判定改成「intro
+  // 有非空内容才算有简介」，空串一律回退 desc，再不行才用 desc_en 兜底。
+  const hasIntro = !!(it.intro && String(it.intro).trim());
+  const desc = (hasIntro ? String(it.intro) : (it.desc || it.desc_en || "")).trim();
+  // 悬停提示：开源条目优先中文用途说明（intro），没有再退回英文原简介 / 仓库名；
+  // 新闻条目没有 intro，照旧用 title_en（译文未开时保留的英文标题）。
+  const hoverTitle = hasIntro ? it.intro : (it.desc_en || it.title_en || it.title);
   // 「同一件事，几家在报」：服务端把被折叠掉的兄弟稿挂在这条上（判据与去重同一套，
   // 见 server._dedup_same_event 的 with_also）。只有**不同来源**才算"几家"，
   // 同一家媒体自己的副本不会挂上来。展开看到的是各家把同一件事写成了什么样 ——
@@ -931,7 +949,7 @@ function cardHTML(it, showCls, rank){
     <div class="rank">${rank}</div>
     <div class="body">
       <h3><a href="${esc(link)}" target="_blank" rel="noopener" data-cls="${esc(it.cls || "")}"
-             title="${esc(it.title_en || it.desc_en || it.title)}">${esc(it.title)}</a></h3>
+             title="${esc(hoverTitle)}">${esc(it.title)}</a></h3>
       ${desc ? `<p class="desc${hasIntro ? " full" : ""}">${esc(desc)}</p>` : ""}
       <div class="meta">
         ${showCls && it.cls ? `<span class="tag cls">${esc(it.cls)}</span>` : ""}
@@ -940,6 +958,7 @@ function cardHTML(it, showCls, rank){
         ${isNew ? '<span class="tag fresh">新增</span>' : ""}
         ${it.stars ? `<span class="tag star" title="GitHub 累计星标数（30 天榜按它排名）">★ ${fmtHeat(it.stars)}</span>` : ""}
         ${it.velocity ? `<span class="tag vel" title="日均涨星 = 累计星标 ÷ 建库天数（7 天周榜按它排名）">↗ 日均 +${fmtHeat(it.velocity)}</span>` : ""}
+        ${it.better_peer ? `<span class="tag better" title="同类方向里星标 / 被收藏明显高于本机在用的代表项目，可作更优替代参考">✔ 同类更优</span>` : ""}
         ${it.has_speed ? `<span class="tag spd" title="近 ${it.speed_hours} 小时真实净增 ${fmtHeat(it.delta)} 星，按间隔折算成 ${it.speed_day} 星/天（涨速榜按它排名）">⚡ +${fmtHeat(it.speed_day)} 星/天</span>` : ""}
         <!-- 【2026-11-12 十一修】速榜只列真实涨了星的项目，首轮留空榜等对比数据；
              原「日均 +N · 待对比」标签（平均数假榜）整段删除，不再出现。 -->
@@ -1008,19 +1027,24 @@ function render(){
   // 【2026-11-12】同一栏目里 30 天 / 7 天 切换。空档也必须把切换按钮画出来，
   // 否则周榜还没抓到时用户会卡在空页面、切不回 30 天榜。
   // 【2026-11-12 用户指定】按钮只写「速榜 / 周榜 / 月榜」；速榜在左、月榜在右。
+  // 【2026-11-25】扫到本机可参考的软件方向才多出「本机」档；没扫到就不画这个按钮。
+  const _watchOn = state.ossWatch && state.ossWatch.length;
   const ossSwitch = `<div class="oss-switch">`
       + `<button type="button" data-osstab="speed" class="${_ossA.speed ? "on" : ""}">速榜</button>`
       + `<button type="button" data-osstab="week" class="${_ossA.week ? "on" : ""}">周榜</button>`
-      + `<button type="button" data-osstab="month" class="${(_ossA.week || _ossA.speed) ? "" : "on"}">月榜</button>`
+      + `<button type="button" data-osstab="month" class="${(_ossA.tab === "month") ? "on" : ""}">月榜</button>`
+      + (_watchOn ? `<button type="button" data-osstab="watch" class="${_ossA.watch ? "on" : ""}">本机</button>` : "")
       + `</div>`;
   // 开源榜正文（标题 / 卡片 / 规则脚注）抽成函数，独立栏与「软件」栏共用同一份口径，
   // 免得两处各写一套、改一处漏一处。【2026-11-12 用户定】GitHub 榜也放进「软件」栏目。
   function ossBoardHTML(){
-    const _ossTitle = _ossA.week
-      ? `开源周榜 · 按日均涨星排`
-      : (_ossA.speed
-        ? `开源速榜 · 按真实净增星/天排`
-        : `开源月榜 · 按累计星标排`);
+    const _ossTitle = _ossA.watch
+      ? `本机推荐 · 按你电脑里已装的开源项目找同类`
+      : (_ossA.week
+        ? `开源周榜 · 按日均涨星排`
+        : (_ossA.speed
+          ? `开源速榜 · 按真实净增星/天排`
+          : `开源月榜 · 按累计星标排`));
     let oh = `<h2 class="sech">${_ossTitle}</h2>`;
     oh += `<div class="newslist">` + oss.map(it => cardHTML(it, false, Number(it.rank) || 0)).join("") + `</div>`;
     // 数据时间要写出来：两档刷新节奏不同，不写就会被人当成"页面卡住了"。
@@ -1028,11 +1052,15 @@ function render(){
       ? new Date(ossAt * 1000).toLocaleString("zh-CN",
           {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit"})
       : "-";
-    const _ossRule = _ossA.week
-      ? "日均涨星 = 星标 ÷ 建库天数，上星快的新项目排前面"
-      : (_ossA.speed
-        ? `只列真实涨了星的项目，按「净增星 ÷ 间隔小时 × 24 = 星/天」降序；不是日均涨星，和周榜不是同一批`
-        : "按累计星标降序");
+    const _matched = (state.ossWatchMatched || []).slice(0, 6);
+    const _ossRule = _ossA.watch
+      ? (("自动检索本机已装的开源软件" + (_matched.length ? "（" + _matched.join("、") + "）" : ""))
+         + "，沿同类方向与标签在 GitHub 找参考项目，按累计星标排；✔ 同类更优 = 同方向里被收藏明显更高的可选替代")
+      : (_ossA.week
+        ? "日均涨星 = 星标 ÷ 建库天数，上星快的新项目排前面"
+        : (_ossA.speed
+          ? `只列真实涨了星的项目，按「净增星 ÷ 间隔小时 × 24 = 星/天」降序；不是日均涨星，和周榜不是同一批`
+          : "按累计星标降序"));
     // 【十六修】本批没有新增涨星时，页面上摆的是「最近一次真实净增」，如实标出来；
     // 空态不再给一个反复不兑现的出榜时间承诺，也不冒充刚刷出来的实时数据。
     const _spStale = _ossA.speed && state.ossSpeedStale;
@@ -1042,8 +1070,10 @@ function render(){
       : _ot;
     const _spNote = _spStale
       ? ` · 本批暂无新增，显示最近一次真实净增（${_rt}）` : "";
+    const _freq = _ossA.watch ? "每 6 小时一批"
+      : (_ossA.week ? "每 1 小时一批" : (_ossA.speed ? "随两榜换批更新" : "每 6 小时一批"));
     oh += `<p class="muted xs" style="text-align:center;padding-top:6px">共 ${oss.length} 条 · `
-        + `更新于 ${_spStale ? _rt : _ot}（${_ossA.week ? "每 1 小时一批" : (_ossA.speed ? "随两榜换批更新" : "每 6 小时一批")}）· `
+        + `更新于 ${_spStale ? _rt : _ot}（${_freq}）· `
         + _ossRule + _spNote + ` · `
         + `只列公开仓库名与站方自己写的一句简介，点卡片直达 GitHub 原页面</p>`;
     return oh;
@@ -1344,6 +1374,11 @@ function applyOss(items, meta){
     // 【十六修】本批无新增时标注「最近一次真实净增」及其时间，不冒充实时。
     state.ossSpeedStale = !!meta.speed_stale;
     state.ossSpeedRealAt = Number(meta.speed_real_at) || 0;
+    // 【2026-11-25】本机推荐榜：只增字段，空响应不清掉 SSR / 上一次那份。
+    if(Array.isArray(meta.watch_items) && meta.watch_items.length) state.ossWatch = meta.watch_items;
+    if(meta.watch_updatedAt) state.ossWatchAt = Number(meta.watch_updatedAt) || 0;
+    state.ossWatchSource = meta.watch_source || "";
+    state.ossWatchMatched = Array.isArray(meta.watch_matched) ? meta.watch_matched : [];
   }
   buildClsOptions();
   renderLeft();
@@ -1800,21 +1835,21 @@ function anchorToHotList(){
 </script>
 <!-- ===== 外观：主题三档 + 主色（2026-10-24 四款统一组件） ===== -->
 <style>
-#apFab{z-index:70;width:30px;height:30px;border-radius:50%;flex:none;margin-left:6px;border:1px solid var(--line);background:transparent;color:var(--txt-2);display:grid;place-items:center;cursor:pointer;font-size:13px;padding:0}
+#apFab{z-index:70;width:30px;height:30px;border-radius:50%;flex:none;margin-left:6px;border:1px solid var(--line);background:transparent;color:var(--txt-2);display:grid;place-items:center;cursor:pointer;font-size:14px;padding:0}
 #apFab:hover{color:var(--accent);border-color:var(--accent)}
 #apPop{position:fixed;z-index:71;width:250px;background:var(--card);border:1px solid var(--line-2);
   border-radius:12px;box-shadow:var(--shadow-2);padding:12px;display:none}
 #apPop.on{display:block}
 .ap-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-.ap-lab{font-size:11px;color:var(--txt-3);width:30px;flex:none}
+.ap-lab{font-size:12px;color:var(--txt-3);width:30px;flex:none}
 .ap-seg{display:flex;gap:4px;flex:1}
 .ap-seg button{flex:1;height:26px;border-radius:7px;border:1px solid var(--line);background:transparent;
-  color:var(--txt-2);font-size:11px;cursor:pointer;padding:0}
+  color:var(--txt-2);font-size:12px;cursor:pointer;padding:0}
 .ap-seg button.on{background:color-mix(in srgb,var(--accent) 15%,transparent);border-color:var(--accent);color:var(--accent);font-weight:600}
 .ap-sw{display:flex;gap:8px;flex:1}
 .ap-sw button{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;flex:none}
 .ap-sw button.on{border-color:var(--txt)}
-.ap-hint{font-size:10px;color:var(--txt-3);line-height:1.5;margin-top:9px}
+.ap-hint{font-size:12px;color:var(--txt-3);line-height:1.5;margin-top:9px}
 #btnTheme,#themeBtn{display:none!important}
 html[data-accent="blue"]{--accent:#4f8cff;--accent-ink:#04122e}
 html[data-accent="green"]{--accent:#3ecf8e;--accent-ink:#062016}

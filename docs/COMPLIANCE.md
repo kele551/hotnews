@@ -1,7 +1,7 @@
 # 合规声明（COMPLIANCE）
 
 > 本文件的合规口径与《合规守法》条款一致（维护者工作区章程 §9）。  
-> 作者：海风（kele551） · 仓库：https://gitcode.com/kele551/hotnews  
+> 作者：海风（kele551） · 仓库：https://github.com/kele551/hotnews  
 > 最近更新：2026-10-09
 
 **一句话**：本工具是**个人学习用的新闻标题聚合器** —— 只把各新闻网站**公开的标题、摘要与原文链接**
@@ -39,9 +39,11 @@
 - ⚠ **唯一会把"内容"发往第三方的路径：可选的机器翻译，默认关闭。**
   打开后（`config.json` 里 `translate.enabled = true`），国际栏的**英文条目标题与摘要**
   会经第三方翻译服务转成中文：
-  - 默认后端 **MyMemory**（`api.mymemory.translated.net`，**境外**，免费免 key）；
-  - 也可改用 **百度翻译**（`fanyi-api.baidu.com`，**境内**，需自备 appid/secret）或
-    **DeepL**（`api-free.deepl.com`，**境外**，需自备 auth key）。
+  - 主后端可选 **百度翻译**（`fanyi-api.baidu.com`，**境内**，需用户自备 appid/secret）或
+    **DeepL**（`api-free.deepl.com`，**境外**，需自备 auth key）；主后端不可用时另有
+    **有道公开演示端点**（`aidemo.youdao.com`，**境内**，免 key，仅作兜底）；
+    凭证只写在本机私有覆盖文件（`%LOCALAPPDATA%\hotnews\config.local.json`），
+    **不进版本库、不随安装包分发**，仓库默认配置里一律留空。
   **发出去的只有公开的新闻标题/摘要（每条最长 300 字），不含任何用户数据、不含本机信息**；
   译文只缓存在本机（`translate_cache.json`）。
   **默认关闭**，所以新装用户与国际栏保持"零内容出网"。
@@ -184,7 +186,7 @@ annotated-types（MIT）、certifi（MPL-2.0）、sgmllib3k（BSD）、soupsieve
   文章页补图有单轮条数上限（国内 96 条、国际 48 条），
   且**按来源轮流分配**，不会对单一站点连续打点；
 - 请求头自报身份：浏览器 UA **追加**项目标识
-  `HotnewsAggregator/1.5 (+https://gitcode.com/kele551/hotnews)`（`server.py` 的 `BOT_ID`）。
+  `HotnewsAggregator/1.5 (+https://github.com/kele551/hotnews)`（`server.py` 的 `BOT_ID`）。
   用「追加」而不是整个替换 UA，是因为实测部分源（如 mefcl）会按 UA 判断
   是否为普通浏览器访问，纯 bot UA 会被挡在门外 —— 那样等于把源打挂；
   追加式标识同样让站方在日志里认得出我们、找得到仓库、提得出移除要求；
@@ -339,7 +341,7 @@ python tools/preflight_release.py --e2e    # 追加端到端抓取（真联网�
 题材闸门、跳转域名收口与前后端接线）、`test_archive_backfill.py`（本机归档）、
 `test_balloon_shown.py`（气泡投放记录）。
 
-作者：海风（kele551）　https://gitcode.com/kele551/hotnews
+作者：海风（kele551）　https://github.com/kele551/hotnews
 
 ## 9. 开发方式与责任
 

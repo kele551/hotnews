@@ -1,28 +1,23 @@
 # -*- coding: utf-8 -*-
-r"""热点新闻 hotnews —— 一键发布流水线（GitCode 主 + GitHub 镜像）
+r"""热点新闻 hotnews —— 一键发布流水线（GitHub 主源；GitCode 仅被动镜像）
 
 与狐径、桌面壁纸的 `tools/publish.py` 同一套路，只是产物名、版本号来源、发布说明来源不同。
 （2026-10-26 移植进仓库：v1.5.8 是照这套顺序**手工**发的，下一版别再靠人记流程。）
 
-依赖: 一枚 GitCode 私人令牌（存一次长期复用）。HTTP 层只用 Python 标准库 ——
-本机没有 third-party HTTP 库，以前那版依赖它，结果在这台机器上**整条流水线跑不起来**，
-只能临时手搓脚本发版（2026-10-26 就是这个坑，见维护者工作区的发布记录）。
-GitHub 侧走本机登录态的 gh.exe（它自己会挑线路，比手搓 REST 稳）；路径可用
-环境变量 HOTNEWS_GH 或 ~/.hotnews-publish.json 的 "gh" 覆盖。
+依赖: GitHub 侧走本机登录态的 gh.exe（它自己会挑线路，比手搓 REST 稳）；路径可用
+环境变量 HOTNEWS_GH 或 ~/.hotnews-publish.json 的 "gh" 覆盖。HTTP 层只用 Python 标准库。
 
-【2026-10-26 换目标】Gitee 那份老仓库已停更、且平台早已禁止上传（451；严禁 push /
-传附件 / 发 Release），客户端也不再去取（老地址一律不出现），
-所以本脚本的发布目标改成：GitCode（国内主源）+ GitHub（国外镜像）。
-AtomGit 不用推 —— 它按分钟级自动镜像 GitHub，连发行版附件一起镜像（当天实测过）。
+【2026-11-25 换目标】GitHub 是唯一对外主源：Release、二进制附件、升级源 version.json/.sig
+只发 GitHub。GitCode（=AtomGit）降为**纯被动镜像**——只随 main/tag 同步源码，不建发行版、
+不传二进制附件、不参与附件与升级源验真。gitee 早已禁止上传（451），严禁 push / 传附件 /
+发 Release，客户端也不再去取（老地址一律不出现）。
 
 用法:
-    python tools/publish.py set-token <令牌>
     python tools/publish.py whoami
-    python tools/publish.py release 1.5.9                # 只发 GitCode
-    python tools/publish.py release 1.5.9 --github       # 双平台（用户要求两个都发）
-    python tools/publish.py release 1.5.9 --skip-build   # 已打包，只做发布
-    python tools/publish.py release 1.5.9 --notes 文件.md
-    python tools/publish.py verify 1.5.8                 # 只读：线上验真，什么都不发
+    python tools/publish.py release 1.6.1                # 发 GitHub 主源（GitCode 仅镜像源码）
+    python tools/publish.py release 1.6.1 --skip-build   # 已打包，只做发布
+    python tools/publish.py release 1.6.1 --notes 文件.md
+    python tools/publish.py verify 1.6.0                 # 只读：线上验真，什么都不发
 
 release 的自检默认**联网**跑（tools/preflight_release.py 会把链接与徽章、线上升级源对齐
 两节都查）。本机网络不通时按同样方式传下去即可，它会把该节跳过并在日志里写明：
@@ -41,10 +36,10 @@ release 依次做:
     ③+ 用 Ed25519 私钥给 version.json 的**原始字节**签名 -> version.json.sig
        私钥位置：环境变量 HOTNEWS_ED25519_KEY → ~/.hotnews-publish.json 的 "ed25519_key"
        → 找不到就中止。⚠ 四款软件**各用一把钥匙**，别拿狐径那把签热点的清单。
-    ④ 提交 + 打 tag + **只推 tag**（GitCode 与 GitHub 两个远端）
-    ⑤ GitCode 建发行版 + 上传 hotnews-vX.Y.Z.exe / version.json / version.json.sig
-    ⑥ 同步 GitHub（--github：tag + Release + 附件；代码由 ④⑤ 的 main 推送完成）
-    ⑦ 验真：两个平台各下载回来比对 SHA256；并**回读线上 version.json + .sig**，
+    ④ 提交 + 打 tag + **只推 tag**（GitHub 主源；GitCode 被动镜像同步 tag）
+    ⑤ 跳过 GitCode 建版/传附件（被动镜像，不挂二进制）
+    ⑥ GitHub 建 Release + 上传 hotnews-vX.Y.Z.exe / version.json / version.json.sig
+    ⑦ 验真：GitHub 下载回来比对 SHA256；并**回读线上 version.json + .sig**，
        用客户端内置公钥真验一遍（验不过就算发布失败 —— 别让用户先发现升级通道是断的）
 
 发版铁律（顺序不能换）：④ 里 **tag 先推、main 最后推**。升级源就是 main 上那份
@@ -82,7 +77,12 @@ BRANCH = 'main'
 GC_API = 'https://gitcode.com/api/v5'
 GC_WEB = 'https://gitcode.com'
 GH_REPO = '%s/%s' % (OWNER, REPO)
-# 推送目标：GitCode（国内主源）+ GitHub（国外镜像）。
+# 【2026-11-25 口径】GitHub 是主源：Release、附件、升级源 version.json/.sig 只发 GitHub；
+# GitCode（=AtomGit）降为**纯被动镜像**——只随 main/tag 同步源码，不在上面建发行版、不传
+# 二进制附件、不参与附件与升级源验真。历史 v1.6.0 及以前 GitCode 上挂过的附件属旧做法，
+# 本版起不再维护。
+GC_PUBLISH = False
+# 推送目标：GitHub（主源）+ GitCode（被动镜像，仅同步源码与 tag）。
 # ⚠ 本仓库的 remote **名字**是历史遗留：GitHub 那台叫 origin。gitee 早已禁止上传（451），
 # 2026-11-11 线上仓库已清空、本机 remote 与跟踪引用也已全部删除、禁止再添加；其它历史入口
 # （atomgit）的 remote 同样已删除。所以这里**按 URL 认远端、不按名字写死**
@@ -328,7 +328,7 @@ def make_version_json(exe, notes='', sign_key=None):
     d = _read_version_json()
     ver = str(d.get('version') or '')
     d['launcher'] = {
-        'url': '%s/%s/%s/releases/download/v%s/%s' % (GC_WEB, OWNER, REPO, ver, exe.name),
+        'url': 'https://github.com/%s/releases/download/v%s/%s' % (GH_REPO, ver, exe.name),
         'sha256': hashlib.sha256(data).hexdigest().upper(),
         'size': len(data),
     }
@@ -404,7 +404,7 @@ def _git_raw(args):
 
 
 def remotes_by_host():
-    """按 **URL** 挑出要推的两个远端（GitCode 主源 + GitHub 镜像），返回 remote 名字列表。
+    """按 **URL** 挑出要推的远端：GitHub 主源 + GitCode 被动镜像（仅同步源码/tag）。
 
     本仓库的 remote 名字是历史遗留：GitHub 叫 `origin`。`gitee` 早已禁止上传（451），
     2026-11-11 线上仓库已清空、本机 remote 与跟踪引用全部删除且禁止再添加；`atomgit` 入口的
@@ -425,13 +425,15 @@ def remotes_by_host():
             got.setdefault('github', name)
         else:
             other.append('%s(%s)' % (name, low.split('//')[-1].split('/')[0]))
-    missing = [k for k in ('gitcode', 'github') if k not in got]
-    if missing:
-        raise RuntimeError('本仓库没有 %s 的 remote —— 拒绝发布（升级源必须两平台都在）'
-                           % '/'.join(missing))
+    if 'github' not in got:
+        raise RuntimeError('本仓库没有 GitHub 的 remote —— 拒绝发布（GitHub 是主源，必须在）')
     if other:
         print('   不推这些 remote（已停更或自动镜像）:', ', '.join(other))
-    return [got['gitcode'], got['github']]
+    # GitHub 主源在前；GitCode 是被动镜像，存在才同步源码/tag。
+    order = [got['github']]
+    if 'gitcode' in got:
+        order.append(got['gitcode'])
+    return order
 
 
 def _push(remote, ref):
@@ -489,7 +491,7 @@ def git_commit_and_tag(ver):
 
 
 def git_push_branch():
-    """⑤⑥ 都做完、附件已验真之后，才让升级源在两个平台上生效。"""
+    """附件已验真之后，才让升级源在 GitHub 主源生效。"""
     targets = remotes_by_host()
     for remote in targets:
         _push(remote, BRANCH)
@@ -729,7 +731,10 @@ def gc_asset_url(ver, name):
 
 
 def verify(ver, assets):
-    """两个平台各把附件下回来比 sha256。GitHub 裸下载口不通时自动改走 API 附件口再试。"""
+    """把附件下回来比 sha256。GitHub 裸下载口不通时自动改走 API 附件口再试。
+
+    2026-11-25 起只验 GitHub（主源）；GitCode 是被动镜像，不挂附件，不参与验真。
+    """
     ok = True
     tag = 'v%s' % ver
     for p in assets:
@@ -740,7 +745,6 @@ def verify(ver, assets):
         big = size > 2 * 1024 * 1024
         dl = DEADLINE_BIG if big else DEADLINE_SMALL
         for label, url in (
-                ('GitCode', gc_asset_url(ver, name)),
                 ('GitHub', 'https://github.com/%s/%s/releases/download/%s/%s'
                  % (OWNER, REPO, tag, quote(name)))):
             # GitHub 那条浏览器下载口**只试一次**：它 302 到 objects.githubusercontent.com，
@@ -767,7 +771,7 @@ def verify(ver, assets):
             print('  [%s] %s %-22s %9d B  一致=%s%s'
                   % ('PASS' if same else 'FAIL', label, name, len(data), same, via))
             sys.stdout.flush()
-    print('   下载页:', '%s/%s/%s/releases/tag/v%s' % (GC_WEB, OWNER, REPO, ver))
+    print('   下载页: https://github.com/%s/%s/releases/tag/v%s' % (OWNER, REPO, ver))
     return ok
 
 
@@ -785,15 +789,16 @@ def _client_pubkey():
 
 
 def verify_signature(vj, vsig):
-    """回读两平台线上的 version.json + version.json.sig，用客户端内置公钥**真验一遍**。
+    """回读线上 version.json + version.json.sig，用客户端内置公钥**真验一遍**。
 
     这一步验的是"用户点检查更新时到底能不能过"：
       · 线上 version.json 的原始字节 → 与本地发布的那份一致；
       · 同目录的 version.json.sig 拿得到、且用客户端内置公钥验得过。
     任何一条不过就返回 False（发版算失败，别让用户自己发现升级通道是断的）。
+    2026-11-25 起只验 GitHub（主源）；GitCode 是被动镜像，不作为升级通道。
     """
     import urllib.request          # noqa: F401  (老代码留个记号，实际取数走 _download)
-    print('⑦+ 线上升级源验签（用客户端内置公钥，两个平台各一次）:')
+    print('⑦+ 线上升级源验签（用客户端内置公钥，GitHub）:')
     if str(REPO_DIR) not in sys.path:
         sys.path.insert(0, str(REPO_DIR))
     try:
@@ -803,13 +808,11 @@ def verify_signature(vj, vsig):
     pub = bytes.fromhex(_client_pubkey())
     local_raw = open(str(vj), 'rb').read()
     ok = True
-    # 客户端读的就是这两个地址：GitCode 的 raw 走 API（它没有 Gitee 那种 /raw/分支 直链），
-    # GitHub 用 raw.githubusercontent.com。带一个时间戳参数是防 CDN 给回半新半旧的缓存。
+    # 客户端只读 GitHub raw（updater.py REMOTE_VERSION_URLS 已去掉 GitCode 候选）。
+    # 带一个时间戳参数是防 CDN 给回半新半旧的缓存。
     bust = int(time.time())
-    gc_base = GC_API + '/repos/%s/%s/raw' % (OWNER, REPO)
     gh_base = 'https://raw.githubusercontent.com/%s/%s/%s' % (OWNER, REPO, BRANCH)
     for label, mk in (
-            ('GitCode', lambda f: '%s/%s?ref=%s&t=%d' % (gc_base, f, BRANCH, bust)),
             ('GitHub', lambda f: '%s/%s?v=%d' % (gh_base, f, bust))):
         # 806 B 与 128 B 两个小文件：单次 recv 60 s、总预算 120 s、最多 3 轮，
         # 最坏也就三分钟出头，不会再出现"一条链路把整轮验真拖没影"的写法。
@@ -818,7 +821,7 @@ def verify_signature(vj, vsig):
         sig_raw = _download(mk('version.json.sig'), SOCK_TMO, 3, deadline=120,
                             label='%s version.json.sig' % label)
         if raw is None or sig_raw is None:
-            print('  [FAIL] %s 线上 version.json / .sig 取不到（GitCode 与 GitHub 都必须能取到）' % label)
+            print('  [FAIL] %s 线上 version.json / .sig 取不到（GitHub 主源必须能取到）' % label)
             ok = False
             continue
         same_bytes = raw == local_raw
@@ -918,8 +921,8 @@ def cmd_release(ver, skip_build=False, notes_file=None, with_github=False):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
-    token = load_token()
-    if not token:
+    token = load_token() if GC_PUBLISH else None
+    if GC_PUBLISH and not token:
         sys.exit('没有令牌, 先跑: python tools/publish.py set-token <令牌>')
     t0 = time.time()
 
@@ -967,22 +970,23 @@ def cmd_release(ver, skip_build=False, notes_file=None, with_github=False):
     # 老客户端只读 version.json（多一个附件对它无害）—— 这就是"兼容老版本"的做法。
     assets = [exe, vj, vsig]
 
-    # ── 发版顺序是铁律（2026-10-26 定）：tag 先推 → 两平台建发行版传附件 →
+    # ── 发版顺序是铁律（2026-10-26 定）：tag 先推 → GitHub 建发行版传附件 →
     #    附件验真 → **main 最后推**（升级源就是 main 上那份 version.json，它一上线
     #    全体老用户立刻开始提示升级；那时附件必须已经躺好，否则用户点了个 404）。
     git_commit_and_tag(ver)
-    gitcode_release(ver, token, assets, notes)
-    if with_github:
-        nf = notes_file
-        if not nf:
-            nf = REPO_DIR / '_notes.md'
-            nf.write_text(notes or ('v%s' % ver), encoding='utf-8')
-        sync_github(ver, assets, nf)
-        if not notes_file and Path(nf).exists():
-            Path(nf).unlink()
+    if GC_PUBLISH:
+        gitcode_release(ver, token, assets, notes)
     else:
-        print('⑥ 跳过 GitHub (加 --github 才同步)')
-    print('⑦ 验真（附件字节，两个平台各一次）:')
+        print('⑤ GitCode 为被动镜像，本次不建发行版、不传附件（仅随 main/tag 同步源码）')
+    nf = notes_file
+    if not nf:
+        nf = REPO_DIR / '_notes.md'
+        nf.write_text(notes or ('v%s' % ver), encoding='utf-8')
+    sync_github(ver, assets, nf)
+    if not notes_file and Path(nf).exists():
+        Path(nf).unlink()
+    print('⑥ GitHub Release + 附件 已同步')
+    print('⑦ 验真（附件字节，GitHub 主源）:')
     ok = verify(ver, assets)
     if not ok:
         sys.exit('❌ 附件验真没通过 —— main 先不推，线上仍是上一版；修好再重跑本脚本')
@@ -1014,7 +1018,6 @@ def main():
     elif a == 'release' and len(sys.argv) > 2:
         sys.exit(cmd_release(sys.argv[2],
                              skip_build='--skip-build' in sys.argv,
-                             with_github='--github' in sys.argv,
                              notes_file=(sys.argv[sys.argv.index('--notes') + 1]
                                          if '--notes' in sys.argv else None)))
     else:
@@ -1027,7 +1030,7 @@ def cmd_verify(ver):
     什么时候用它：① 发完版想确认"用户点检查更新真的能过"；② 用户报"升级失败"时，
     先在这里判断是通道断了还是包坏了，别一上来就改代码发新版。
     附件比的是本地仓库里那份 version.json 指向的字节 —— 所以它同时回答
-    "线上清单说的 size/sha256，跟两个平台上真实能被下载到的文件对不对得上"。
+    "线上清单说的 size/sha256，跟 GitHub 主源上真实能被下载到的文件对不对得上"。
     """
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -1061,8 +1064,8 @@ def cmd_verify(ver):
               % ('PASS' if same else 'FAIL', exe_name, same,
                  lau.get('size'), exe.stat().st_size))
     elif not exe.is_file():
-        print('  [WARN] 本地没有 %s —— 只能验线上两平台的字节，比不了"清单说的对不对"' % exe)
-    print('② 附件验真（两个平台各一次）:')
+        print('  [WARN] 本地没有 %s —— 只能验线上 GitHub 的字节，比不了"清单说的对不对"' % exe)
+    print('② 附件验真（GitHub 主源）:')
     ok = verify(ver, assets) and ok
     ok = verify_signature(vj, vsig) and ok
     print('验真结果:', 'PASS' if ok else 'FAIL')
