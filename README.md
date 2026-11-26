@@ -578,4 +578,10 @@ pyinstaller build_exe.spec --clean --noconfirm   # 产出 dist/热点新闻.exe
 
 ---
 
+## 检索关键词 / Search keywords
+
+**中文**：热点新闻、今日热榜、微博热搜、知乎热榜、头条热榜、新闻聚合、国际新闻、实时热点、热榜汇总、新闻阅读器、Windows 软件
+
+**English**: hot news, trending topics, news aggregator, news reader, weibo hot search, zhihu hot list, world news, RSS feed, desktop app, Windows
+
 <p align="center"><sub>© 2026 海风（kele551） · MIT License · <a href="https://github.com/kele551/hotnews">GitHub（唯一主源）</a></sub></p>
